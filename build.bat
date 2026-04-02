@@ -63,17 +63,24 @@ if not exist changelog.tmp (
 REM ========================================
 REM 4. Build RENUP.exe
 REM ========================================
+set "RELEASE_DIR=G:\1.Program\2.Tool\3.ToolNoi\RENUP"
+if not exist "%RELEASE_DIR%" mkdir "%RELEASE_DIR%"
+
 echo [BUILD] Dang build RENUP.exe...
 echo.
-pyinstaller --onefile --windowed --name "RENUP" --distpath . --add-data "version.txt;." --icon "icon.ico" --hidden-import customtkinter --hidden-import darkdetect --collect-all customtkinter RENUP_gui.py
-if not exist "RENUP.exe" (
+pyinstaller --onefile --windowed --name "RENUP" --distpath "%RELEASE_DIR%" --add-data "version.txt;." --add-data "icon.ico;." --icon "icon.ico" --hidden-import customtkinter --hidden-import darkdetect --collect-all customtkinter RENUP_gui.py
+if not exist "%RELEASE_DIR%\RENUP.exe" (
     echo [LOI] Build that bai!
     pause
     exit /b 1
 )
 echo.
-echo [OK] Build thanh cong: RENUP.exe
+echo [OK] Build thanh cong: %RELEASE_DIR%\RENUP.exe
 echo.
+
+REM Copy files can thiet vao release folder
+if not exist "%RELEASE_DIR%\bin\codes" mkdir "%RELEASE_DIR%\bin\codes"
+copy /y "bin\codes\*.json" "%RELEASE_DIR%\bin\codes\" >nul
 
 REM Don dep
 if exist "RENUP.spec" del "RENUP.spec"
@@ -101,7 +108,7 @@ echo.>> release_notes.tmp
 echo ### Thay doi>> release_notes.tmp
 type changelog.tmp >> release_notes.tmp
 
-gh release create "v%NEW_VER%" RENUP.exe --title "RENUP v%NEW_VER%" --notes-file release_notes.tmp
+gh release create "v%NEW_VER%" "%RELEASE_DIR%\RENUP.exe" --title "RENUP v%NEW_VER%" --notes-file release_notes.tmp
 if errorlevel 1 (
     echo [LOI] Tao release that bai!
     del changelog.tmp release_notes.tmp 2>nul
