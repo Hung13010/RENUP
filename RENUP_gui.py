@@ -4,9 +4,8 @@ import os
 try:
     import customtkinter as ctk
 except ImportError:
-    import subprocess as _sp
-    _sp.check_call([sys.executable, '-m', 'pip', 'install', 'customtkinter'])
-    import customtkinter as ctk
+    print("LOI: Chua cai customtkinter. Chay: pip install customtkinter")
+    sys.exit(1)
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -61,6 +60,9 @@ class RenupApp(ctk.CTk):
         self.minsize(950, 600)
 
         app_dir = get_app_dir()
+        icon_path = os.path.join(app_dir, 'icon.ico')
+        if os.path.exists(icon_path):
+            self.iconbitmap(icon_path)
         self.bin_dir = os.path.join(app_dir, 'bin')
         self.input_dir = os.path.join(self.bin_dir, 'Input')
         self.output_dir = os.path.join(self.bin_dir, 'output_videos')
@@ -212,18 +214,8 @@ class RenupApp(ctk.CTk):
                        ).pack(side="left")
 
         # Function selector
-        fn_header = ctk.CTkFrame(parent, fg_color="transparent")
-        fn_header.pack(fill="x", pady=(0, 4))
-        ctk.CTkLabel(fn_header, text="⚙  CHỌN CHỨC NĂNG",
-                      font=("Segoe UI", 11, "bold")).pack(side="left")
-        ctk.CTkButton(fn_header, text="Mở codes", width=80, height=24,
-                       font=("Segoe UI", 9), fg_color="#2E7D6A",
-                       hover_color="#246354", command=self._open_codes_folder
-                       ).pack(side="right")
-        ctk.CTkButton(fn_header, text="Refresh", width=65, height=24,
-                       font=("Segoe UI", 9), fg_color="#2E7D6A",
-                       hover_color="#246354", command=self._reload_codes
-                       ).pack(side="right", padx=(0, 4))
+        ctk.CTkLabel(parent, text="⚙  CHỌN CHỨC NĂNG",
+                      font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 4))
 
         self._load_codes()
         self.func_var = ctk.StringVar(value=self._code_names[0] if self._code_names else "")
