@@ -1,0 +1,34 @@
+# Build artifacts
+RENUP.exe
+NoiVideo.exe
+*.spec
+build/
+dist/
+__pycache__/
+
+# FFmpeg binaries (too large for git)
+bin/ffmpeg.exe
+bin/ffplay.exe
+bin/ffprobe.exe
+
+# Video files
+bin/Input/*.mp4
+bin/Input/*.avi
+bin/Input/*.mkv
+bin/Input/*.mov
+bin/output_videos/
+
+# Temp files
+bin/_temp_list_*.txt
+*.pyc
+
+# FFmpeg docs & presets (not needed in repo)
+doc/
+presets/
+bin/Fonts/
+bin/*.ffpreset
+bin/ffprobe.xsd
+bin/MavideoChatGPT.txt
+
+# Old exe
+.exe

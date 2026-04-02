@@ -1,0 +1,6 @@
+{
+    "name": "Nén Video 1920 (re-encode H.264)",
+    "type": "reencode",
+    "description": "Resize video về 1920px ngang (Full HD) và encode lại bằng H.264, preset veryfast, bitrate 8000 Kbps",
+    "command": "ffmpeg -i {input} -vf scale=1920:-1 -c:v libx264 -preset veryfast -b:v 8000k {output} -y"
+}

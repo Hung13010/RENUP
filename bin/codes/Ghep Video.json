@@ -1,0 +1,6 @@
+{
+    "name": "Ghép Video (nối nhiều video)",
+    "type": "concat",
+    "description": "Ghép nối nhiều video thành 1 file, sử dụng FFmpeg concat demuxer, không re-encode",
+    "command": "ffmpeg -f concat -safe 0 -i {list_file} -c copy {output} -y"
+}

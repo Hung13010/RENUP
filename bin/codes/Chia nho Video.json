@@ -1,0 +1,6 @@
+{
+    "name": "Chia nhỏ Video (cắt theo thời lượng)",
+    "type": "split_video",
+    "description": "Chia mỗi video trong Input thành nhiều phần nhỏ theo thời lượng chỉ định (giây), không re-encode",
+    "command": "ffmpeg -i {input} -c copy -f segment -segment_time {duration} -reset_timestamps 1 {output_pattern} -y"
+}

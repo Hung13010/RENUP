@@ -1,0 +1,6 @@
+{
+    "name": "Convert MP4 → MP3 (trích xuất audio)",
+    "type": "convert_mp3",
+    "description": "Trích xuất audio từ tất cả file MP4 trong Input, lưu thành MP3",
+    "command": "ffmpeg -i {input} -vn -acodec libmp3lame -q:a 2 {output} -y"
+}
