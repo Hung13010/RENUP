@@ -1,0 +1,8 @@
+{
+    "name": "PNG → JPG",
+    "type": "convert_image",
+    "description": "Convert tất cả file PNG trong Input sang JPG (chất lượng 95%)",
+    "from_ext": [".png"],
+    "to_ext": ".jpg",
+    "quality": 95
+}

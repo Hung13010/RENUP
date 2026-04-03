@@ -1,0 +1,7 @@
+{
+    "name": "WEBP → PNG",
+    "type": "convert_image",
+    "description": "Convert tất cả file WEBP trong Input sang PNG",
+    "from_ext": [".webp"],
+    "to_ext": ".png"
+}

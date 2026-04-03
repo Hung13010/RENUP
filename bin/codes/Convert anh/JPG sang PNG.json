@@ -1,0 +1,7 @@
+{
+    "name": "JPG → PNG",
+    "type": "convert_image",
+    "description": "Convert tất cả file JPG/JPEG trong Input sang PNG",
+    "from_ext": [".jpg", ".jpeg"],
+    "to_ext": ".png"
+}

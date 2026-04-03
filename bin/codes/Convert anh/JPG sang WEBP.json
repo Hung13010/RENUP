@@ -1,0 +1,8 @@
+{
+    "name": "JPG → WEBP",
+    "type": "convert_image",
+    "description": "Convert tất cả file JPG/JPEG trong Input sang WEBP (nhẹ hơn JPG ~30%)",
+    "from_ext": [".jpg", ".jpeg"],
+    "to_ext": ".webp",
+    "quality": 90
+}

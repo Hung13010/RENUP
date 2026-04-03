@@ -1,0 +1,8 @@
+{
+    "name": "PNG → WEBP",
+    "type": "convert_image",
+    "description": "Convert tất cả file PNG trong Input sang WEBP (nhẹ hơn, giữ chất lượng)",
+    "from_ext": [".png"],
+    "to_ext": ".webp",
+    "quality": 90
+}

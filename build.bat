@@ -68,7 +68,7 @@ if not exist "%RELEASE_DIR%" mkdir "%RELEASE_DIR%"
 
 echo [BUILD] Dang build RENUP.exe...
 echo.
-pyinstaller --onefile --windowed --name "RENUP" --distpath "%RELEASE_DIR%" --add-data "version.txt;." --add-data "icon.ico;." --icon "icon.ico" --hidden-import customtkinter --hidden-import darkdetect --collect-all customtkinter RENUP_gui.py
+pyinstaller --onefile --windowed --name "RENUP" --distpath "%RELEASE_DIR%" --add-data "version.txt;." --add-data "icon.ico;." --add-data "ui;ui" --icon "icon.ico" --additional-hooks-dir "." --hidden-import PIL --paths "%APPDATA%\Python\Python39\site-packages" RENUP_gui.py
 if not exist "%RELEASE_DIR%\RENUP.exe" (
     echo [LOI] Build that bai!
     pause
