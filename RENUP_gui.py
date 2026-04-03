@@ -58,6 +58,9 @@ class Api:
         self.ffprobe_path = os.path.join(self.bin_dir, 'ffprobe.exe')
         self.noi_txt_path = os.path.join(self.bin_dir, 'Noi.txt')
         self.is_running = False
+        self._paused = False
+        self._stopped = False
+        self._current_procs = []
         self._lock = threading.Lock()
         self._window = None
         self._code_map = {}
@@ -68,6 +71,57 @@ class Api:
     def _js(self, code):
         if self._window:
             self._window.evaluate_js(code)
+
+    def pause(self):
+        if not self.is_running:
+            return
+        self._paused = not self._paused
+        self._js(f"uiApi.setPaused({str(self._paused).lower()})")
+        if self._paused:
+            # Suspend all FFmpeg processes
+            for proc in self._current_procs:
+                try:
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    handle = kernel32.OpenProcess(0x0800, False, proc.pid)  # PROCESS_SUSPEND_RESUME
+                    kernel32.DebugActiveProcess(proc.pid)
+                except Exception:
+                    pass
+            self._log("=== TAM DUNG ===", 'info')
+            self._js("uiApi.setStatus('Tam dung...')")
+        else:
+            # Resume all FFmpeg processes
+            for proc in self._current_procs:
+                try:
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    kernel32.DebugActiveProcessStop(proc.pid)
+                except Exception:
+                    pass
+            self._log("=== TIEP TUC ===", 'info')
+            self._js("uiApi.setStatus('Dang xu ly...')")
+
+    def stop(self):
+        if not self.is_running:
+            return
+        self._stopped = True
+        self._paused = False
+        # Kill all running FFmpeg processes
+        for proc in self._current_procs:
+            try:
+                # Resume first if paused
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                try:
+                    kernel32.DebugActiveProcessStop(proc.pid)
+                except Exception:
+                    pass
+                proc.kill()
+            except Exception:
+                pass
+        self._current_procs.clear()
+        self._log("=== DA DUNG ===", 'err')
+        self._js("uiApi.setStatus('Da dung.')")
 
     def _log(self, msg, tag=''):
         safe = msg.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
@@ -197,6 +251,9 @@ class Api:
         if self.is_running:
             return
         self.is_running = True
+        self._stopped = False
+        self._paused = False
+        self._current_procs.clear()
         self._js("uiApi.setRunning(true)")
 
         func_name = params.get('func', '')
@@ -336,33 +393,37 @@ class Api:
 
         total = len(mp4s)
         self._log(f"Tim thay {total} file | {workers} luong.", 'info')
+        self._js(f"uiApi.initProcessTable({json.dumps(mp4s)})")
+
         ok_count = [0]
         done_count = [0]
 
-        def update(success):
+        def update(idx, success):
             with self._lock:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            pct = int(d / total * 100)
-            self._js(f"uiApi.setProgress({pct}, '{d}/{total}')")
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang convert... {d}/{total} file')")
 
-        def convert_one(i, mp4):
+        def convert_one(idx, mp4):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
             mp3 = os.path.splitext(mp4)[0] + '.mp3'
             inp = os.path.join(input_dir, mp4)
             out = os.path.join(output_dir, mp3)
-            self._log(f"[{i}/{total}] {mp4} -> {mp3}", 'info')
             dur = self._get_duration(inp)
             cmd = [self.ffmpeg_path, '-i', inp, '-vn', '-acodec', 'libmp3lame', '-q:a', '2',
                    '-progress', 'pipe:1', '-nostats', out, '-y']
-            return self._run_ffmpeg(cmd, i, total, dur, mp3)
+            return self._run_ffmpeg_with_table(cmd, idx, dur, mp3)
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, mp4 in enumerate(mp4s, 1):
+            for i, mp4 in enumerate(mp4s):
                 futures[ex.submit(convert_one, i, mp4)] = i
             for f in as_completed(futures):
+                idx = futures[f]
                 try: success, _ = f.result()
                 except: success = False
                 update(success)
@@ -414,7 +475,7 @@ class Api:
             cmd = [self.ffmpeg_path, '-i', inp, '-c', 'copy', '-f', 'segment',
                    '-segment_time', str(seg), '-reset_timestamps', '1', pattern, '-y']
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                                     text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
             proc.communicate()
             ok = proc.returncode == 0
             if ok:
@@ -447,6 +508,8 @@ class Api:
         workers = max(1, params.get('workers', 2))
         cmd_template = code.get('command', '')
 
+        self._detect_gpu()
+
         if not input_dir or not output_dir:
             self._log("Chua chon folder.", 'err')
             return
@@ -460,39 +523,48 @@ class Api:
 
         total = len(files)
         self._log(f"Tim thay {total} video | {workers} luong.", 'info')
+
+        # Init process table
+        files_json = json.dumps(files)
+        self._js(f"uiApi.initProcessTable({files_json})")
+
         ok_count = [0]
         done_count = [0]
 
-        def update(success):
+        def update(idx, success):
             with self._lock:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang nen... {d}/{total} video')")
 
-        def encode_one(i, vf):
+        def encode_one(idx, vf):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
             inp = os.path.join(input_dir, vf)
             out = os.path.join(output_dir, vf)
-            self._log(f"[{i}/{total}] Nen: {vf}", 'info')
             dur = self._get_duration(inp)
 
             raw = cmd_template.replace('{input}', inp).replace('{output}', out)
             parts = raw.split()
             if parts and parts[0].lower() in ('ffmpeg', 'ffmpeg.exe'): parts = parts[1:]
             parts = [p for p in parts if p != '-y']
+            parts = self._swap_to_gpu(parts)
             cmd = [self.ffmpeg_path] + parts + ['-progress', 'pipe:1', '-nostats', '-y']
 
-            return self._run_ffmpeg(cmd, i, total, dur, vf)
+            return self._run_ffmpeg_with_table(cmd, idx, dur, vf)
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, vf in enumerate(files, 1):
+            for i, vf in enumerate(files):
                 futures[ex.submit(encode_one, i, vf)] = i
             for f in as_completed(futures):
+                idx = futures[f]
                 try: success, _ = f.result()
                 except: success = False
-                update(success)
+                update(idx, success)
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
@@ -527,25 +599,28 @@ class Api:
 
         total = len(files)
         self._log(f"Tim thay {total} anh | {workers} luong.", 'info')
+        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+
         ok_count = [0]
         done_count = [0]
 
-        def update(success):
+        def update(idx, success):
             with self._lock:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang convert... {d}/{total} anh')")
 
-        def convert_one(i, filename):
+        def convert_one(idx, filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
             inp = os.path.join(input_dir, filename)
             new_name = os.path.splitext(filename)[0] + to_ext
             out = os.path.join(output_dir, new_name)
-            self._log(f"[{i}/{total}] {filename} -> {new_name}", 'info')
             try:
                 img = Image.open(inp)
-                # Convert RGBA to RGB for JPG (no alpha support)
                 if to_ext in ('.jpg', '.jpeg') and img.mode in ('RGBA', 'P'):
                     bg = Image.new('RGB', img.size, (255, 255, 255))
                     if img.mode == 'P':
@@ -564,31 +639,123 @@ class Api:
                     save_kwargs = {'optimize': True}
 
                 img.save(out, **save_kwargs)
-                self._log(f"  [{i}/{total}] OK: {new_name}", 'ok')
+                self._log(f"  OK: {new_name}", 'ok')
                 return (True, new_name)
             except Exception as e:
-                self._log(f"  [{i}/{total}] LOI: {e}", 'err')
+                self._log(f"  LOI: {e}", 'err')
                 return (False, new_name)
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in enumerate(files, 1):
+            for i, f in enumerate(files):
                 futures[ex.submit(convert_one, i, f)] = i
             for f in as_completed(futures):
+                idx = futures[f]
                 try:
                     success, _ = f.result()
                 except:
                     success = False
-                update(success)
+                update(idx, success)
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} anh ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} anh.')")
 
+    # ── GPU Detection ──
+
+    _gpu_encoder = None
+    _gpu_checked = False
+
+    def _detect_gpu(self):
+        """Detect available GPU encoder. Run once, cache result."""
+        if self._gpu_checked:
+            return self._gpu_encoder
+        self._gpu_checked = True
+        try:
+            r = subprocess.run(
+                [self.ffmpeg_path, '-hide_banner', '-encoders'],
+                capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            )
+            output = r.stdout
+            # Priority: NVIDIA > AMD > Intel
+            if 'h264_nvenc' in output:
+                self._gpu_encoder = 'nvenc'
+                self._log("GPU detected: NVIDIA NVENC", 'ok')
+            elif 'h264_amf' in output:
+                self._gpu_encoder = 'amf'
+                self._log("GPU detected: AMD AMF", 'ok')
+            elif 'h264_qsv' in output:
+                self._gpu_encoder = 'qsv'
+                self._log("GPU detected: Intel QSV", 'ok')
+            else:
+                self._gpu_encoder = None
+                self._log("Khong tim thay GPU encoder, su dung CPU", 'info')
+        except Exception:
+            self._gpu_encoder = None
+        return self._gpu_encoder
+
+    def _swap_to_gpu(self, cmd_parts):
+        """Replace CPU encoder with GPU encoder in command parts."""
+        gpu = self._detect_gpu()
+        if not gpu:
+            return cmd_parts
+
+        # Map: cpu_encoder → gpu_encoder
+        gpu_map = {
+            'nvenc': {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc'},
+            'amf':   {'libx264': 'h264_amf',   'libx265': 'hevc_amf'},
+            'qsv':   {'libx264': 'h264_qsv',   'libx265': 'hevc_qsv'},
+        }
+        replacements = gpu_map.get(gpu, {})
+
+        new_parts = []
+        for p in cmd_parts:
+            new_parts.append(replacements.get(p, p))
+
+        # Remove CPU-specific params that GPU doesn't support
+        # -preset values: GPU uses 'fast' instead of 'veryfast'/'medium'/etc for nvenc
+        # -crf is CPU only → replace with GPU equivalent
+        result = []
+        skip_next = False
+        for idx, p in enumerate(new_parts):
+            if skip_next:
+                skip_next = False
+                continue
+            if p == '-crf' and gpu:
+                # Replace -crf with GPU equivalent
+                skip_next = True
+                crf_val = new_parts[idx + 1] if idx + 1 < len(new_parts) else '23'
+                if gpu == 'nvenc':
+                    result.extend(['-rc', 'constqp', '-qp', crf_val])
+                elif gpu == 'amf':
+                    result.extend(['-rc', 'cqp', '-qp_i', crf_val, '-qp_p', crf_val])
+                elif gpu == 'qsv':
+                    result.extend(['-global_quality', crf_val])
+            elif p == '-preset' and gpu:
+                result.append('-preset')
+                skip_next = True
+                result.append('fast')
+            else:
+                result.append(p)
+        return result
+
     # ── FFmpeg runner ──
 
     def _run_ffmpeg(self, cmd, i, total, duration, label):
+        if self._stopped:
+            return False, label
+
+        # Limit FFmpeg to half of CPU cores
+        cpu_count = os.cpu_count() or 4
+        threads = max(1, cpu_count // 2)
+        cmd = [cmd[0], '-threads', str(threads)] + cmd[1:]
+
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                                 text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+
+        # Track process for pause/stop
+        self._current_procs.append(proc)
+
         stderr_lines = []
 
         def drain():
@@ -599,6 +766,8 @@ class Api:
 
         last_pct = -1
         for line in proc.stdout:
+            if self._stopped:
+                break
             line = line.strip()
             if line.startswith('out_time_ms='):
                 try:
@@ -613,6 +782,13 @@ class Api:
         proc.wait()
         t.join()
 
+        # Remove from tracked processes
+        if proc in self._current_procs:
+            self._current_procs.remove(proc)
+
+        if self._stopped:
+            return False, label
+
         if proc.returncode == 0:
             self._log(f"  [{i}/{total}] OK: {label}", 'ok')
             return True, label
@@ -622,13 +798,67 @@ class Api:
         self._log(f"  [{i}/{total}] LOI: {last_err}", 'err')
         return False, label
 
+    def _run_ffmpeg_with_table(self, cmd, idx, duration, label):
+        """Like _run_ffmpeg but updates process table row instead of log."""
+        if self._stopped:
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'stopped')")
+            return False, label
+
+        cpu_count = os.cpu_count() or 4
+        threads = max(1, cpu_count // 2)
+        cmd = [cmd[0], '-threads', str(threads)] + cmd[1:]
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+        self._current_procs.append(proc)
+
+        stderr_lines = []
+        def drain():
+            for line in proc.stderr:
+                stderr_lines.append(line)
+        t = threading.Thread(target=drain, daemon=True)
+        t.start()
+
+        last_pct = -1
+        for line in proc.stdout:
+            if self._stopped:
+                break
+            line = line.strip()
+            if line.startswith('out_time_ms='):
+                try:
+                    val = int(line.split('=')[1])
+                    if val >= 0 and duration > 0:
+                        pct = min(99, int(val / 1_000_000 / duration * 100))
+                        if pct > last_pct:
+                            self._js(f"uiApi.updateProcessItem({idx}, {pct}, 'running')")
+                            last_pct = pct
+                except (ValueError, ZeroDivisionError):
+                    pass
+        proc.wait()
+        t.join()
+
+        if proc in self._current_procs:
+            self._current_procs.remove(proc)
+
+        if self._stopped:
+            self._js(f"uiApi.updateProcessItem({idx}, {last_pct}, 'stopped')")
+            return False, label
+
+        if proc.returncode == 0:
+            return True, label
+
+        err = ''.join(stderr_lines).strip()
+        last_err = err.splitlines()[-1] if err else 'Unknown error'
+        self._log(f"LOI {label}: {last_err}", 'err')
+        return False, label
+
     # ── Helpers ──
 
     def _get_duration(self, filepath):
         try:
             r = subprocess.run(
                 [self.ffprobe_path, '-v', 'quiet', '-print_format', 'json', '-show_format', filepath],
-                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
             return float(json.loads(r.stdout)['format']['duration'])
         except Exception:
             return 0.0

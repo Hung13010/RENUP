@@ -138,6 +138,13 @@ button {
 .btn-accent { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; box-shadow: 0 3px 10px rgba(46,125,106,0.25); }
 .btn-accent:hover { transform: translateY(-1px); box-shadow: 0 5px 15px rgba(46,125,106,0.35); }
 .btn-accent:disabled { background: #ccc; color: #888; box-shadow: none; cursor: not-allowed; transform: none; }
+.btn-pause { background: #FFF3E0; color: #E67E22; border: 1px solid #E67E22; border-radius: 7px; font-size: 14px; }
+.btn-pause:hover:not(:disabled) { background: #FDEBD0; }
+.btn-pause:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-pause.resumed { background: #E8F5E9; color: var(--accent); border-color: var(--accent); }
+.btn-stop { background: #FDEDEC; color: var(--danger); border: 1px solid var(--danger); border-radius: 7px; font-size: 14px; }
+.btn-stop:hover:not(:disabled) { background: #FADBD8; }
+.btn-stop:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-muted { background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border); }
 .btn-muted:hover { background: #e0e0e0; }
 .btn-danger { background: #fee2e2; color: var(--danger); border: 1px solid rgba(231,76,60,0.3); }
@@ -197,18 +204,59 @@ button {
 }
 #addToListBtn:hover { box-shadow: 0 5px 15px rgba(46,125,106,0.35); }
 
-/* ── LOG ── */
+/* ── PROCESS TABLE ── */
+#processSection { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.process-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
+.process-table th {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--surface); border-bottom: 2px solid var(--border);
+  padding: 7px 10px; text-align: left;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--text-muted); white-space: nowrap;
+}
+.process-table td {
+  padding: 5px 10px; border-bottom: 1px solid var(--surface2);
+  vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.process-table tr:hover td { background: #fafafa; }
+.pcol-num { width: 40px; text-align: center; }
+.pcol-name { }
+.pcol-progress { width: 140px; }
+.pcol-status { width: 100px; text-align: center; }
+
+/* Mini progress bar in table */
+.mini-progress { width: 100%; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
+.mini-progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.3s; border-radius: 4px; }
+.mini-pct { font-size: 9px; font-family: monospace; color: var(--text-dim); margin-top: 2px; }
+
+/* Status badge */
+.status-badge {
+  display: inline-block; font-size: 9px; font-weight: 600;
+  padding: 2px 8px; border-radius: 3px; font-family: monospace; white-space: nowrap;
+}
+.badge-waiting { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
+.badge-running { background: #fff7ed; color: #E67E22; border: 1px solid #fed7aa; }
+.badge-done { background: #f0fdf4; color: var(--accent); border: 1px solid #bbf7d0; }
+.badge-error { background: #fef2f2; color: var(--danger); border: 1px solid #fecaca; }
+.badge-paused { background: #FFF3E0; color: #E67E22; border: 1px solid #FDEBD0; }
+.badge-stopped { background: #f3f4f6; color: #999; border: 1px solid #d1d5db; }
+
+/* ── LOG (compact) ── */
 .log-header {
-  padding: 8px 14px; background: var(--surface);
+  padding: 6px 14px; background: var(--surface);
   border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
-  font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.07em;
   text-transform: uppercase; color: var(--text-muted); flex-shrink: 0;
+  cursor: pointer; display: flex; align-items: center; gap: 6px;
 }
+.log-header .toggle { font-size: 8px; transition: transform 0.2s; }
+.log-header .toggle.collapsed { transform: rotate(-90deg); }
 .log-wrap {
-  flex: 1; overflow-y: auto; background: var(--log-bg);
-  padding: 10px 14px; font-family: 'Consolas', monospace; font-size: 11px;
-  line-height: 1.6; color: #d4d4d4;
+  height: 120px; overflow-y: auto; background: var(--log-bg);
+  padding: 8px 14px; font-family: 'Consolas', monospace; font-size: 10px;
+  line-height: 1.5; color: #d4d4d4; flex-shrink: 0;
 }
+.log-wrap.collapsed { display: none; }
 .log-ok { color: #66BB6A; }
 .log-err { color: #E74C3C; }
 .log-info { color: #8CA0B3; }
@@ -278,16 +326,18 @@ button {
 
       <div class="settings-row">
         <span class="field-label" style="margin:0;">Luồng</span>
-        <input type="text" id="workers" value="2" style="width:50px;">
+        <input type="text" id="workers" value="1" style="width:50px;">
         <div style="flex:1;"></div>
-        <button id="runBtn" class="btn-accent" style="width:140px;" onclick="pyApi.run()">▶ RUN</button>
+        <button id="runBtn" class="btn-accent" style="width:100px;" onclick="pyApi.run()">▶ RUN</button>
+        <button id="pauseBtn" class="btn-pause" style="width:40px;" onclick="pyApi.pause()">⏸</button>
+        <button id="stopBtn" class="btn-stop" style="width:40px;" onclick="pyApi.stop()">⏹</button>
       </div>
     </div>
   </div>
 
   <!-- RIGHT -->
   <div class="panel-right">
-    <!-- TABLE -->
+    <!-- VIDEO TABLE (for Ghep only) -->
     <div id="tableSection">
       <div class="table-toolbar">
         <span class="toolbar-title">Danh sách video</span>
@@ -311,8 +361,30 @@ button {
       <button id="addToListBtn" onclick="pyApi.addSelectedToEditor()">+ Thêm vào danh sách ghép</button>
     </div>
 
-    <!-- LOG -->
-    <div class="log-header">Log</div>
+    <!-- PROCESS TABLE -->
+    <div id="processSection">
+      <div class="table-toolbar">
+        <span class="toolbar-title">Tiến trình xử lý</span>
+        <span class="toolbar-count" id="processCount">0 file</span>
+        <div class="toolbar-spacer"></div>
+      </div>
+      <div class="table-wrap">
+        <table class="process-table">
+          <thead>
+            <tr>
+              <th class="pcol-num">#</th>
+              <th class="pcol-name">Tên file</th>
+              <th class="pcol-progress">Tiến trình</th>
+              <th class="pcol-status">Trạng thái</th>
+            </tr>
+          </thead>
+          <tbody id="processTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- LOG (compact, collapsible) -->
+    <div class="log-header" onclick="toggleLog()"><span class="toggle" id="logToggle">▼</span> Log</div>
     <div class="log-wrap" id="logArea"></div>
   </div>
 </div>
@@ -396,9 +468,74 @@ window.uiApi = {
     document.getElementById('statusDot').classList.toggle('running', running);
     document.getElementById('statusLabel').textContent = running ? 'running' : 'stopped';
     document.getElementById('runBtn').disabled = running;
+    document.getElementById('pauseBtn').disabled = !running;
+    document.getElementById('stopBtn').disabled = !running;
+    // Reset pause button state
+    const pb = document.getElementById('pauseBtn');
+    pb.innerHTML = '⏸'; pb.classList.remove('resumed');
+  },
+  setPaused(paused) {
+    const pb = document.getElementById('pauseBtn');
+    const dot = document.getElementById('statusDot');
+    const label = document.getElementById('statusLabel');
+    if (paused) {
+      pb.innerHTML = '▶'; pb.classList.add('resumed');
+      dot.classList.remove('running'); label.textContent = 'paused';
+    } else {
+      pb.innerHTML = '⏸'; pb.classList.remove('resumed');
+      dot.classList.add('running'); label.textContent = 'running';
+    }
   },
   setInputDir(path) { document.getElementById('inputDir').value = path; },
   setOutputDir(path) { document.getElementById('outputDir').value = path; },
+
+  // ── Process Table ──
+  initProcessTable(files) {
+    const tbody = document.getElementById('processTableBody');
+    tbody.innerHTML = '';
+    files.forEach((f, i) => {
+      const tr = document.createElement('tr');
+      tr.id = 'proc-' + i;
+      tr.innerHTML =
+        '<td class="pcol-num">' + (i+1) + '</td>' +
+        '<td class="pcol-name">' + escHtml(f) + '</td>' +
+        '<td class="pcol-progress"><div class="mini-progress"><div class="mini-progress-fill" id="pbar-' + i + '"></div></div><div class="mini-pct" id="ppct-' + i + '"></div></td>' +
+        '<td class="pcol-status"><span class="status-badge badge-waiting" id="pstatus-' + i + '">Chờ</span></td>';
+      tbody.appendChild(tr);
+    });
+    document.getElementById('processCount').textContent = files.length + ' file';
+  },
+
+  updateProcessItem(idx, pct, status) {
+    const bar = document.getElementById('pbar-' + idx);
+    const pctEl = document.getElementById('ppct-' + idx);
+    const badge = document.getElementById('pstatus-' + idx);
+    if (!bar) return;
+
+    if (pct >= 0) {
+      bar.style.width = pct + '%';
+      pctEl.textContent = pct + '%';
+    }
+
+    if (status) {
+      const map = {
+        'waiting': ['Chờ', 'badge-waiting'],
+        'running': ['Đang xử lý', 'badge-running'],
+        'done':    ['Xong ✓', 'badge-done'],
+        'error':   ['Lỗi ✗', 'badge-error'],
+        'paused':  ['Tạm dừng', 'badge-paused'],
+        'stopped': ['Đã dừng', 'badge-stopped'],
+      };
+      const [text, cls] = map[status] || ['', ''];
+      badge.textContent = text;
+      badge.className = 'status-badge ' + cls;
+    }
+  },
+
+  clearProcessTable() {
+    document.getElementById('processTableBody').innerHTML = '';
+    document.getElementById('processCount').textContent = '0 file';
+  },
 };
 
 function toggleRow(tr, name, e) {
@@ -421,6 +558,11 @@ function updateLineCount() {
 document.getElementById('editor')?.addEventListener('input', updateLineCount);
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function toggleLog() {
+  document.getElementById('logArea').classList.toggle('collapsed');
+  document.getElementById('logToggle').classList.toggle('collapsed');
+}
 
 // ── pyApi proxy (pywebview exposes this) ──
 const pyApi = new Proxy({}, {
