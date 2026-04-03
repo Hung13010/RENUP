@@ -4,6 +4,7 @@ import subprocess
 import threading
 import json
 import urllib.request
+import urllib.error
 import webbrowser
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -64,6 +65,10 @@ class Api:
         self._lock = threading.Lock()
         self._window = None
         self._code_map = {}
+        self._pending_tasks = []    # [(idx, task_fn), ...]
+        self._task_results = {}     # {idx: True/False}
+        self._current_executor = None
+        self._run_params = None
 
     def set_window(self, window):
         self._window = window
@@ -78,50 +83,126 @@ class Api:
         self._paused = not self._paused
         self._js(f"uiApi.setPaused({str(self._paused).lower()})")
         if self._paused:
-            # Suspend all FFmpeg processes
+            # Suspend running ffmpeg processes
             for proc in self._current_procs:
-                try:
-                    import ctypes
-                    kernel32 = ctypes.windll.kernel32
-                    handle = kernel32.OpenProcess(0x0800, False, proc.pid)  # PROCESS_SUSPEND_RESUME
-                    kernel32.DebugActiveProcess(proc.pid)
-                except Exception:
-                    pass
-            self._log("=== TAM DUNG ===", 'info')
+                self._suspend_process(proc.pid)
+            self._log("=== TAM DUNG (co the thay doi so luong) ===", 'info')
             self._js("uiApi.setStatus('Tam dung...')")
         else:
-            # Resume all FFmpeg processes
+            # Resume running ffmpeg processes
             for proc in self._current_procs:
-                try:
-                    import ctypes
-                    kernel32 = ctypes.windll.kernel32
-                    kernel32.DebugActiveProcessStop(proc.pid)
-                except Exception:
-                    pass
-            self._log("=== TIEP TUC ===", 'info')
+                self._resume_process(proc.pid)
+            # Read new worker count from UI and restart pending tasks
+            new_workers = self._window.evaluate_js("parseInt(document.getElementById('workers').value) || 1")
+            self._log(f"=== TIEP TUC voi {new_workers} luong ===", 'info')
             self._js("uiApi.setStatus('Dang xu ly...')")
+            # If there are pending tasks, start a new batch with new worker count
+            if self._pending_tasks:
+                threading.Thread(target=self._run_pending_tasks, args=(int(new_workers),), daemon=True).start()
+
+    def _suspend_process(self, pid):
+        """Suspend a process by suspending all its threads."""
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            ntdll = ctypes.windll.ntdll
+            handle = kernel32.OpenProcess(0x1F0FFF, False, pid)  # PROCESS_ALL_ACCESS
+            if handle:
+                ntdll.NtSuspendProcess(handle)
+                kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
+    def _resume_process(self, pid):
+        """Resume a suspended process."""
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            ntdll = ctypes.windll.ntdll
+            handle = kernel32.OpenProcess(0x1F0FFF, False, pid)  # PROCESS_ALL_ACCESS
+            if handle:
+                ntdll.NtResumeProcess(handle)
+                kernel32.CloseHandle(handle)
+        except Exception:
+            pass
 
     def stop(self):
         if not self.is_running:
             return
         self._stopped = True
         self._paused = False
-        # Kill all running FFmpeg processes
+        self._kill_all_ffmpeg()
+        self._log("=== DA DUNG ===", 'err')
+        self._js("uiApi.setStatus('Da dung.')")
+
+    def _kill_all_ffmpeg(self):
+        """Kill all tracked FFmpeg processes."""
         for proc in self._current_procs:
             try:
-                # Resume first if paused
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                try:
-                    kernel32.DebugActiveProcessStop(proc.pid)
-                except Exception:
-                    pass
+                self._resume_process(proc.pid)
                 proc.kill()
+                proc.wait(timeout=5)
             except Exception:
                 pass
         self._current_procs.clear()
-        self._log("=== DA DUNG ===", 'err')
-        self._js("uiApi.setStatus('Da dung.')")
+
+    def cleanup(self):
+        """Called when app is closing. Kill all FFmpeg processes."""
+        self._stopped = True
+        self._kill_all_ffmpeg()
+
+    def _run_pending_tasks(self, workers):
+        """Run remaining pending tasks with given worker count."""
+        tasks = list(self._pending_tasks)
+        self._pending_tasks.clear()
+        if not tasks:
+            return
+
+        self._log(f"Chay {len(tasks)} task con lai voi {workers} luong.", 'info')
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            self._current_executor = ex
+            submitted = {}
+            not_submitted = list(tasks)
+
+            # Submit initial batch
+            for idx, task_fn in tasks:
+                if self._stopped or self._paused:
+                    break
+                submitted[ex.submit(task_fn)] = (idx, task_fn)
+                not_submitted.remove((idx, task_fn))
+
+            # Process completed futures
+            for f in as_completed(submitted):
+                idx, task_fn = submitted[f]
+                try:
+                    success, _ = f.result()
+                except:
+                    success = False
+                self._task_results[idx] = success
+                self._update_task_progress(idx, success)
+
+                # If paused during execution, put remaining not-submitted back
+                if self._paused or self._stopped:
+                    break
+
+            # Put unsubmitted tasks back to pending
+            if not_submitted:
+                self._pending_tasks.extend(not_submitted)
+
+            self._current_executor = None
+
+    def _update_task_progress(self, idx, success):
+        """Update process table and progress bar for completed task."""
+        status = 'done' if success else 'error'
+        self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+        with self._lock:
+            done = sum(1 for v in self._task_results.values())
+            ok = sum(1 for v in self._task_results.values() if v)
+            total = self._total_tasks
+        if total > 0:
+            self._js(f"uiApi.setProgress({int(done/total*100)}, '{done}/{total}')")
+            self._js(f"uiApi.setStatus('Dang xu ly... {done}/{total}')")
 
     def _log(self, msg, tag=''):
         safe = msg.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
@@ -498,6 +579,52 @@ class Api:
 
     # ── Re-encode ──
 
+    def _cancel_reencode(self):
+        self._stopped = True
+        self._log("Da huy nen video.", 'info')
+        self._js("uiApi.setStatus('Da huy.')")
+
+    def _check_already_encoded(self, input_dir, files):
+        """Check if videos are already compressed. Return list of warnings."""
+        warnings = []
+        for vf in files:
+            fp = os.path.join(input_dir, vf)
+            try:
+                r = subprocess.run(
+                    [self.ffprobe_path, '-v', 'quiet', '-print_format', 'json',
+                     '-show_streams', '-show_format', fp],
+                    capture_output=True, text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+                )
+                data = json.loads(r.stdout)
+                fmt = data.get('format', {})
+                streams = data.get('streams', [])
+
+                # Check encoder tag (Lavf = FFmpeg encoded)
+                encoder = fmt.get('tags', {}).get('encoder', '')
+                is_ffmpeg = 'lavf' in encoder.lower() or 'lavc' in encoder.lower()
+
+                # Check video stream
+                for s in streams:
+                    if s.get('codec_type') == 'video':
+                        bitrate = int(s.get('bit_rate', 0))
+                        codec = s.get('codec_name', '')
+                        profile = s.get('profile', '')
+
+                        # Low bitrate = already compressed
+                        if bitrate > 0 and bitrate < 1500000:  # < 1.5 Mbps
+                            warnings.append((vf, f"bitrate thap ({bitrate//1000}kbps) - da nen"))
+                        # HEVC = already compressed with modern codec
+                        elif codec == 'hevc' and is_ffmpeg:
+                            warnings.append((vf, "da nen bang HEVC"))
+                        # FFmpeg encoded + High profile = likely re-encoded
+                        elif is_ffmpeg and profile == 'High':
+                            warnings.append((vf, f"da encode boi FFmpeg ({bitrate//1000}kbps)"))
+                        break
+            except Exception:
+                pass
+        return warnings
+
     def _run_reencode(self, params, code):
         self._js("uiApi.setStatus('Dang nen video...')")
         self._js("uiApi.setProgress(0, '')")
@@ -521,53 +648,63 @@ class Api:
             self._log("Khong tim thay video.", 'err')
             return
 
+        # Check for already compressed videos
+        warnings = self._check_already_encoded(input_dir, files)
+        if warnings:
+            self._log(f"⚠ Phat hien {len(warnings)} video co the da nen:", 'err')
+            for vf, reason in warnings:
+                self._log(f"  - {vf}: {reason}", 'err')
+            self._log("Nen lai se giam chat luong. Tiep tuc...", 'info')
+            # Show warning dialog
+            warn_files = '\\n'.join([f"• {vf}: {r}" for vf, r in warnings[:5]])
+            if len(warnings) > 5:
+                warn_files += f"\\n... va {len(warnings)-5} file khac"
+            self._js(f"if(!confirm('⚠ Phat hien {len(warnings)} video da nen:\\n\\n{warn_files}\\n\\nNen lai se giam chat luong!\\nBan co muon tiep tuc?')) {{ pywebview.api._cancel_reencode(); }}")
+            # Small delay to let confirm show
+            import time
+            time.sleep(0.5)
+            if self._stopped:
+                return
+
         total = len(files)
+        self._total_tasks = total
+        self._task_results = {}
         self._log(f"Tim thay {total} video | {workers} luong.", 'info')
 
-        # Init process table
         files_json = json.dumps(files)
         self._js(f"uiApi.initProcessTable({files_json})")
 
-        ok_count = [0]
-        done_count = [0]
+        # Build task functions for each file
+        def make_task(idx, vf):
+            def task_fn():
+                self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+                inp = os.path.join(input_dir, vf)
+                out = os.path.join(output_dir, vf)
+                dur = self._get_duration(inp)
 
-        def update(idx, success):
-            with self._lock:
-                if success: ok_count[0] += 1
-                done_count[0] += 1
-                d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
-            self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
-            self._js(f"uiApi.setStatus('Dang nen... {d}/{total} video')")
+                raw = cmd_template.replace('{input}', inp).replace('{output}', out)
+                parts = raw.split()
+                if parts and parts[0].lower() in ('ffmpeg', 'ffmpeg.exe'): parts = parts[1:]
+                parts = [p for p in parts if p != '-y']
+                parts = self._swap_to_gpu(parts)
+                cmd = [self.ffmpeg_path] + parts + ['-progress', 'pipe:1', '-nostats', '-y']
+                return self._run_ffmpeg_with_table(cmd, idx, dur, vf)
+            return task_fn
 
-        def encode_one(idx, vf):
-            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
-            inp = os.path.join(input_dir, vf)
-            out = os.path.join(output_dir, vf)
-            dur = self._get_duration(inp)
+        all_tasks = [(i, make_task(i, vf)) for i, vf in enumerate(files)]
+        self._pending_tasks = list(all_tasks)
 
-            raw = cmd_template.replace('{input}', inp).replace('{output}', out)
-            parts = raw.split()
-            if parts and parts[0].lower() in ('ffmpeg', 'ffmpeg.exe'): parts = parts[1:]
-            parts = [p for p in parts if p != '-y']
-            parts = self._swap_to_gpu(parts)
-            cmd = [self.ffmpeg_path] + parts + ['-progress', 'pipe:1', '-nostats', '-y']
+        # Run batch
+        self._run_pending_tasks(workers)
 
-            return self._run_ffmpeg_with_table(cmd, idx, dur, vf)
+        # Wait for paused batches to finish (resume will restart)
+        while self._pending_tasks and not self._stopped:
+            import time
+            time.sleep(0.5)
 
-        futures = {}
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, vf in enumerate(files):
-                futures[ex.submit(encode_one, i, vf)] = i
-            for f in as_completed(futures):
-                idx = futures[f]
-                try: success, _ = f.result()
-                except: success = False
-                update(idx, success)
-
-        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
-        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
+        ok = sum(1 for v in self._task_results.values() if v)
+        self._log(f"=== Hoan thanh: {ok}/{total} video ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok}/{total} video.')")
 
     # ── Convert Image ──
 
@@ -666,10 +803,11 @@ class Api:
     _gpu_checked = False
 
     def _detect_gpu(self):
-        """Detect available GPU encoder. Run once, cache result."""
+        """Detect available GPU encoder. Test encode to confirm it works."""
         if self._gpu_checked:
             return self._gpu_encoder
         self._gpu_checked = True
+
         try:
             r = subprocess.run(
                 [self.ffmpeg_path, '-hide_banner', '-encoders'],
@@ -677,34 +815,64 @@ class Api:
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
             )
             output = r.stdout
-            # Priority: NVIDIA > AMD > Intel
-            if 'h264_nvenc' in output:
-                self._gpu_encoder = 'nvenc'
-                self._log("GPU detected: NVIDIA NVENC", 'ok')
-            elif 'h264_amf' in output:
-                self._gpu_encoder = 'amf'
-                self._log("GPU detected: AMD AMF", 'ok')
-            elif 'h264_qsv' in output:
-                self._gpu_encoder = 'qsv'
-                self._log("GPU detected: Intel QSV", 'ok')
-            else:
-                self._gpu_encoder = None
-                self._log("Khong tim thay GPU encoder, su dung CPU", 'info')
         except Exception:
             self._gpu_encoder = None
-        return self._gpu_encoder
+            return None
+
+        # Test each GPU encoder with a real encode
+        candidates = []
+        if 'h264_nvenc' in output:
+            candidates.append(('nvenc', 'h264_nvenc'))
+        if 'h264_amf' in output:
+            candidates.append(('amf', 'h264_amf'))
+        if 'h264_qsv' in output:
+            candidates.append(('qsv', 'h264_qsv'))
+
+        for gpu_name, encoder in candidates:
+            if self._test_gpu_encoder(encoder):
+                self._gpu_encoder = gpu_name
+                labels = {'nvenc': 'NVIDIA NVENC', 'amf': 'AMD AMF', 'qsv': 'Intel QSV'}
+                self._log(f"GPU detected: {labels[gpu_name]} (da test OK)", 'ok')
+                return self._gpu_encoder
+
+        self._gpu_encoder = None
+        self._log("Khong co GPU encoder kha dung, su dung CPU", 'info')
+        return None
+
+    def _test_gpu_encoder(self, encoder):
+        """Test GPU encoder with a tiny encode to confirm it actually works."""
+        try:
+            r = subprocess.run(
+                [self.ffmpeg_path, '-f', 'lavfi', '-i', 'color=c=black:s=256x256:d=0.1',
+                 '-c:v', encoder, '-f', 'null', '-', '-y'],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
 
     def _swap_to_gpu(self, cmd_parts):
-        """Replace CPU encoder with GPU encoder in command parts."""
+        """Replace CPU encoder with GPU encoder in command parts. Add HW accel decode."""
         gpu = self._detect_gpu()
         if not gpu:
             return cmd_parts
 
-        # Map: cpu_encoder → gpu_encoder
         gpu_map = {
             'nvenc': {'libx264': 'h264_nvenc', 'libx265': 'hevc_nvenc'},
             'amf':   {'libx264': 'h264_amf',   'libx265': 'hevc_amf'},
             'qsv':   {'libx264': 'h264_qsv',   'libx265': 'hevc_qsv'},
+        }
+        preset_map = {
+            'nvenc': 'fast',
+            'amf':   'speed',
+            'qsv':   'fast',
+        }
+        # HW accel decode flags (insert before -i)
+        hwaccel_map = {
+            'nvenc': ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'],
+            'amf':   ['-hwaccel', 'dxva2'],
+            'qsv':   ['-hwaccel', 'qsv'],
         }
         replacements = gpu_map.get(gpu, {})
 
@@ -712,9 +880,19 @@ class Api:
         for p in cmd_parts:
             new_parts.append(replacements.get(p, p))
 
-        # Remove CPU-specific params that GPU doesn't support
-        # -preset values: GPU uses 'fast' instead of 'veryfast'/'medium'/etc for nvenc
-        # -crf is CPU only → replace with GPU equivalent
+        # Insert hwaccel flags before first -i
+        hwaccel_flags = hwaccel_map.get(gpu, [])
+        if hwaccel_flags:
+            try:
+                i_idx = new_parts.index('-i')
+                new_parts = new_parts[:i_idx] + hwaccel_flags + new_parts[i_idx:]
+            except ValueError:
+                pass
+
+        # For NVIDIA CUDA hwaccel, change scale filter to scale_cuda
+        if gpu == 'nvenc':
+            new_parts = [p.replace('scale=', 'scale_cuda=') if p.startswith('scale=') else p for p in new_parts]
+
         result = []
         skip_next = False
         for idx, p in enumerate(new_parts):
@@ -722,7 +900,6 @@ class Api:
                 skip_next = False
                 continue
             if p == '-crf' and gpu:
-                # Replace -crf with GPU equivalent
                 skip_next = True
                 crf_val = new_parts[idx + 1] if idx + 1 < len(new_parts) else '23'
                 if gpu == 'nvenc':
@@ -734,7 +911,7 @@ class Api:
             elif p == '-preset' and gpu:
                 result.append('-preset')
                 skip_next = True
-                result.append('fast')
+                result.append(preset_map.get(gpu, 'fast'))
             else:
                 result.append(p)
         return result
@@ -867,9 +1044,23 @@ class Api:
 
     def _check_update(self):
         try:
+            # Cache: only check once per hour
+            cache_file = os.path.join(get_app_dir(), '.update_cache')
+            if os.path.exists(cache_file):
+                import time as _t
+                if _t.time() - os.path.getmtime(cache_file) < 3600:
+                    return
+
             req = urllib.request.Request(GITHUB_API, headers={"User-Agent": "RENUP-Updater"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
+
+            # Update cache
+            try:
+                open(cache_file, 'w').close()
+            except Exception:
+                pass
+
             latest = data.get("tag_name", "").lstrip("v")
             if not latest:
                 return
@@ -883,6 +1074,13 @@ class Api:
                         break
                 safe_url = download_url.replace("'", "\\'")
                 self._js(f"showUpdateDialog('{current}', '{latest}', '{safe_url}')")
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                self._log("GitHub API rate limit. Thu lai sau.", 'info')
+            else:
+                self._log(f"API error: {e.code}", 'err')
+        except urllib.error.URLError:
+            pass  # No internet, silent
         except Exception as e:
             self._log(f"Loi kiem tra update: {e}", 'err')
 
@@ -892,41 +1090,116 @@ class Api:
             return
         self._log("=== Dang tai ban cap nhat... ===", 'info')
         self._js("uiApi.setStatus('Dang tai ban cap nhat...')")
+        self._js("uiApi.setProgress(0, 'Dang tai...')")
 
         def _dl():
+            import time
+            app_dir = get_app_dir()
+            new_exe = os.path.join(app_dir, "RENUP_new.exe")
             try:
-                app_dir = get_app_dir()
-                new_exe = os.path.join(app_dir, "RENUP.exe.new")
-                old_exe = os.path.join(app_dir, "RENUP.exe.old")
-                cur_exe = os.path.join(app_dir, "RENUP.exe")
-
+                # Download with progress
                 req = urllib.request.Request(url, headers={"User-Agent": "RENUP-Updater"})
-                with urllib.request.urlopen(req, timeout=120) as resp:
+                with urllib.request.urlopen(req, timeout=600) as resp:
+                    total_size = int(resp.headers.get('Content-Length', 0))
+                    downloaded = 0
                     with open(new_exe, 'wb') as f:
-                        shutil.copyfileobj(resp, f)
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                pct = int(downloaded / total_size * 100)
+                                mb_dl = downloaded // (1024 * 1024)
+                                mb_total = total_size // (1024 * 1024)
+                                self._js(f"uiApi.setProgress({pct}, 'Tai: {mb_dl}MB / {mb_total}MB')")
+                            else:
+                                mb_dl = downloaded // (1024 * 1024)
+                                self._js(f"uiApi.setProgress(50, 'Tai: {mb_dl}MB...')")
 
-                if os.path.exists(cur_exe):
-                    if os.path.exists(old_exe): os.remove(old_exe)
-                    os.rename(cur_exe, old_exe)
-                os.rename(new_exe, cur_exe)
+                # Verify downloaded file
+                if not os.path.exists(new_exe):
+                    raise Exception("File khong ton tai sau khi tai")
+                file_size = os.path.getsize(new_exe)
+                if file_size < 1024 * 1024:  # Less than 1MB = corrupted
+                    raise Exception(f"File qua nho ({file_size} bytes), co the bi loi")
+                if total_size > 0 and file_size != total_size:
+                    raise Exception(f"Kich thuoc file khong khop: {file_size} vs {total_size}")
 
-                self._log("=== Cap nhat thanh cong! Khoi dong lai. ===", 'ok')
-                self._js("uiApi.setStatus('Cap nhat xong! Hay khoi dong lai.')")
-                self._js("alert('Cap nhat thanh cong!\\nHay dong va mo lai RENUP.')")
+                self._log(f"Da tai xong ({file_size // (1024*1024)}MB). Dang cap nhat...", 'info')
+
+                # Create update batch script
+                bat_path = os.path.join(app_dir, "_update.bat")
+                cur_exe = os.path.join(app_dir, "RENUP.exe")
+                new_name = os.path.basename(new_exe)
+                with open(bat_path, 'w') as f:
+                    f.write(f"""@echo off
+cd /d "{app_dir}"
+timeout /t 3 /nobreak >nul
+REM Try to kill and replace up to 10 times
+for /l %%a in (1,1,10) do (
+    taskkill /F /IM "RENUP.exe" >nul 2>&1
+    timeout /t 1 /nobreak >nul
+    del "RENUP.exe" >nul 2>&1
+    if not exist "RENUP.exe" goto do_rename
+)
+echo [LOI] Khong the xoa file cu. Thu lai sau.
+del "{new_name}" >nul 2>&1
+pause
+exit /b 1
+
+:do_rename
+rename "{new_name}" "RENUP.exe"
+if not exist "RENUP.exe" (
+    echo [LOI] Cap nhat that bai.
+    pause
+    exit /b 1
+)
+start "" "RENUP.exe"
+del "%~f0"
+""")
+
+                self._log("=== Cap nhat thanh cong! Dang khoi dong lai... ===", 'ok')
+                self._js("uiApi.setStatus('Cap nhat xong! Dang khoi dong lai...')")
+                self._js("uiApi.setProgress(100, 'Hoan tat')")
+
+                time.sleep(1)
+                subprocess.Popen(
+                    ['cmd', '/c', bat_path],
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                # Close app
+                if self._window:
+                    self._window.destroy()
+
             except Exception as e:
                 self._log(f"LOI cap nhat: {e}", 'err')
-                if os.path.exists(new_exe): os.remove(new_exe)
+                self._js("uiApi.setStatus('Cap nhat that bai. Thu lai sau.')")
+                self._js("uiApi.setProgress(0, '')")
+                # Cleanup
+                for _ in range(3):
+                    try:
+                        if os.path.exists(new_exe):
+                            os.remove(new_exe)
+                        break
+                    except Exception:
+                        import time
+                        time.sleep(0.5)
 
         threading.Thread(target=_dl, daemon=True).start()
 
     def _ver_cmp(self, v1, v2):
-        def parse(v): return [int(x) for x in v.split('.')]
+        def parse(v):
+            v = v.lstrip('v').split('-')[0].split('+')[0]
+            return [int(x) for x in v.split('.') if x.isdigit()]
         try:
             p1, p2 = parse(v1), parse(v2)
             for a, b in zip(p1, p2):
                 if a != b: return a - b
             return len(p1) - len(p2)
-        except: return 0
+        except Exception:
+            return 0
 
 
 # ══════════════════════════════════════════════════════════════
@@ -955,6 +1228,7 @@ def main():
     )
     api.set_window(window)
     window.events.loaded += api.init
+    window.events.closing += api.cleanup
 
     webview.start(debug=False)
 

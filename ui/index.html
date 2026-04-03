@@ -596,11 +596,23 @@ function escHtml(s) { const d = document.createElement('div'); d.textContent = s
 function showUpdateDialog(current, latest, downloadUrl) {
   document.getElementById('updateCurrent').textContent = 'v' + current;
   document.getElementById('updateLatest').textContent = 'v' + latest;
-  document.getElementById('updateYesBtn').onclick = function() {
-    document.getElementById('updateOverlay').classList.remove('show');
+  const btn = document.getElementById('updateYesBtn');
+  btn.disabled = false;
+  btn.textContent = '⬇ Cập nhật';
+  btn.onclick = function() {
+    if (!downloadUrl) {
+      document.getElementById('updateOverlay').classList.remove('show');
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Đang tải...';
     if (window.pywebview && window.pywebview.api) {
       window.pywebview.api.downloadUpdate(downloadUrl);
     }
+    // Close dialog after 2s (progress shows on main UI)
+    setTimeout(function() {
+      document.getElementById('updateOverlay').classList.remove('show');
+    }, 2000);
   };
   document.getElementById('updateOverlay').classList.add('show');
 }
