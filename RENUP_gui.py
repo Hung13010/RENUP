@@ -874,20 +874,17 @@ class Api:
             if not latest:
                 return
             current = get_version()
+            self._log(f"Kiem tra update: hien tai v{current}, moi nhat v{latest}", 'info')
             if self._ver_cmp(latest, current) > 0:
                 download_url = ""
                 for asset in data.get("assets", []):
                     if asset["name"].lower().endswith(".exe"):
                         download_url = asset["browser_download_url"]
                         break
-                body = data.get("body", "").replace("'", "\\'").replace("\n", "\\n")[:200]
-                self._js(f"""
-                    if(confirm('Co ban cap nhat moi v{latest}!\\n\\nPhien ban hien tai: v{current}\\nPhien ban moi: v{latest}\\n\\n{body}\\n\\nBam OK de cap nhat.')){{
-                        pywebview.api.downloadUpdate('{download_url}');
-                    }}
-                """)
-        except Exception:
-            pass
+                safe_url = download_url.replace("'", "\\'")
+                self._js(f"showUpdateDialog('{current}', '{latest}', '{safe_url}')")
+        except Exception as e:
+            self._log(f"Loi kiem tra update: {e}", 'err')
 
     def downloadUpdate(self, url):
         if not url:

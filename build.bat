@@ -79,8 +79,7 @@ echo [OK] Build thanh cong: %RELEASE_DIR%\RENUP.exe
 echo.
 
 REM Copy files can thiet vao release folder
-if not exist "%RELEASE_DIR%\bin\codes" mkdir "%RELEASE_DIR%\bin\codes"
-copy /y "bin\codes\*.json" "%RELEASE_DIR%\bin\codes\" >nul
+xcopy /y /e /i "bin\codes" "%RELEASE_DIR%\bin\codes" >nul
 copy /y "bin\ffmpeg.exe" "%RELEASE_DIR%\bin\ffmpeg.exe" >nul
 copy /y "bin\ffprobe.exe" "%RELEASE_DIR%\bin\ffprobe.exe" >nul
 

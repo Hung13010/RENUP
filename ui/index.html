@@ -265,6 +265,24 @@ button {
 #tableSection { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
 #tableSection.hidden { display: none; }
 #ghepSection.hidden { display: none; }
+
+/* ── UPDATE DIALOG ── */
+.update-overlay {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5); z-index: 999;
+  align-items: center; justify-content: center;
+}
+.update-overlay.show { display: flex; }
+.update-box {
+  background: #fff; border-radius: 12px; padding: 28px 32px; width: 400px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.2); text-align: center;
+}
+.update-icon { font-size: 36px; margin-bottom: 8px; }
+.update-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+.update-versions { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.8; }
+.update-new { font-size: 14px; font-weight: 700; color: var(--accent); }
+.update-btns { display: flex; gap: 8px; justify-content: center; }
+.update-btns button { width: 140px; }
 </style>
 </head>
 <body>
@@ -395,6 +413,22 @@ button {
   <div class="progress-wrap">
     <span id="progressLabel"></span>
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+  </div>
+</div>
+
+<!-- UPDATE DIALOG -->
+<div class="update-overlay" id="updateOverlay">
+  <div class="update-box">
+    <div class="update-icon">🔄</div>
+    <div class="update-title">Có bản cập nhật mới!</div>
+    <div class="update-versions">
+      Phiên bản hiện tại: <strong id="updateCurrent"></strong><br>
+      Phiên bản mới: <span class="update-new" id="updateLatest"></span>
+    </div>
+    <div class="update-btns">
+      <button class="btn-accent" id="updateYesBtn">⬇ Cập nhật</button>
+      <button class="btn-muted" onclick="document.getElementById('updateOverlay').classList.remove('show')">Bỏ qua</button>
+    </div>
   </div>
 </div>
 
@@ -558,6 +592,18 @@ function updateLineCount() {
 document.getElementById('editor')?.addEventListener('input', updateLineCount);
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function showUpdateDialog(current, latest, downloadUrl) {
+  document.getElementById('updateCurrent').textContent = 'v' + current;
+  document.getElementById('updateLatest').textContent = 'v' + latest;
+  document.getElementById('updateYesBtn').onclick = function() {
+    document.getElementById('updateOverlay').classList.remove('show');
+    if (window.pywebview && window.pywebview.api) {
+      window.pywebview.api.downloadUpdate(downloadUrl);
+    }
+  };
+  document.getElementById('updateOverlay').classList.add('show');
+}
 
 function toggleLog() {
   document.getElementById('logArea').classList.toggle('collapsed');
