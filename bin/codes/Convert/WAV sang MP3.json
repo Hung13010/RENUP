@@ -1,0 +1,7 @@
+{
+    "name": "Convert WAV → MP3",
+    "type": "convert_audio",
+    "description": "Convert tất cả file WAV trong Input sang MP3 (chất lượng cao)",
+    "from_ext": [".wav"],
+    "to_ext": ".mp3"
+}

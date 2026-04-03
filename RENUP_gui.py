@@ -353,6 +353,8 @@ class Api:
                     self._run_reencode(params, code)
                 elif code_type == 'convert_image':
                     self._run_convert_image(params, code)
+                elif code_type == 'convert_audio':
+                    self._run_convert_audio(params, code)
                 else:
                     self._log(f"Khong ho tro type: {code_type}", 'err')
             except Exception as e:
@@ -682,10 +684,7 @@ class Api:
                 out = os.path.join(output_dir, vf)
                 dur = self._get_duration(inp)
 
-                raw = cmd_template.replace('{input}', inp).replace('{output}', out)
-                parts = raw.split()
-                if parts and parts[0].lower() in ('ffmpeg', 'ffmpeg.exe'): parts = parts[1:]
-                parts = [p for p in parts if p != '-y']
+                parts = self._parse_cmd_template(cmd_template, inp, out)
                 parts = self._swap_to_gpu(parts)
                 cmd = [self.ffmpeg_path] + parts + ['-progress', 'pipe:1', '-nostats', '-y']
                 return self._run_ffmpeg_with_table(cmd, idx, dur, vf)
@@ -797,10 +796,80 @@ class Api:
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} anh ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} anh.')")
 
+    # ── Convert Audio ──
+
+    def _run_convert_audio(self, params, code):
+        self._js("uiApi.setStatus('Dang convert audio...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log(f"=== Bat dau: {code.get('name', 'Convert Audio')} ===", 'info')
+
+        input_dir = params['inputDir']
+        output_dir = params['outputDir']
+        workers = max(1, params.get('workers', 2))
+        from_exts = [e.lower() for e in code.get('from_ext', [])]
+        to_ext = code.get('to_ext', '.mp3')
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder.", 'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+        files = sorted(
+            f for f in os.listdir(input_dir)
+            if os.path.splitext(f)[1].lower() in from_exts
+        )
+        if not files:
+            self._log(f"Khong tim thay file {', '.join(from_exts)} trong Input.", 'err')
+            return
+
+        total = len(files)
+        self._log(f"Tim thay {total} file | {workers} luong.", 'info')
+        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success: ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang convert... {d}/{total} file')")
+
+        def convert_one(idx, filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            inp = os.path.join(input_dir, filename)
+            new_name = os.path.splitext(filename)[0] + to_ext
+            out = os.path.join(output_dir, new_name)
+            dur = self._get_duration(inp)
+            cmd = [self.ffmpeg_path, '-i', inp, '-vn',
+                   '-acodec', 'libmp3lame', '-q:a', '2',
+                   '-progress', 'pipe:1', '-nostats', out, '-y']
+            return self._run_ffmpeg_with_table(cmd, idx, dur, new_name)
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in enumerate(files):
+                futures[ex.submit(convert_one, i, f)] = i
+            for f in as_completed(futures):
+                idx = futures[f]
+                try:
+                    success, _ = f.result()
+                except:
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} file ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} file.')")
+
     # ── GPU Detection ──
 
     _gpu_encoder = None
     _gpu_checked = False
+    _has_scale_cuda = False
 
     def _detect_gpu(self):
         """Detect available GPU encoder. Test encode to confirm it works."""
@@ -833,11 +902,29 @@ class Api:
                 self._gpu_encoder = gpu_name
                 labels = {'nvenc': 'NVIDIA NVENC', 'amf': 'AMD AMF', 'qsv': 'Intel QSV'}
                 self._log(f"GPU detected: {labels[gpu_name]} (da test OK)", 'ok')
+                # Check if scale_cuda filter exists
+                if gpu_name == 'nvenc':
+                    self._has_scale_cuda = 'scale_cuda' in output or self._test_scale_cuda()
+                    if self._has_scale_cuda:
+                        self._log("scale_cuda: co", 'info')
+                    else:
+                        self._log("scale_cuda: khong co, dung scale CPU", 'info')
                 return self._gpu_encoder
 
         self._gpu_encoder = None
         self._log("Khong co GPU encoder kha dung, su dung CPU", 'info')
         return None
+
+    def _test_scale_cuda(self):
+        try:
+            r = subprocess.run(
+                [self.ffmpeg_path, '-filters'],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            )
+            return 'scale_cuda' in r.stdout
+        except Exception:
+            return False
 
     def _test_gpu_encoder(self, encoder):
         """Test GPU encoder with a tiny encode to confirm it actually works."""
@@ -883,14 +970,18 @@ class Api:
         # Insert hwaccel flags before first -i
         hwaccel_flags = hwaccel_map.get(gpu, [])
         if hwaccel_flags:
+            # If no scale_cuda, don't use hwaccel_output_format cuda
+            # (need CPU frames for scale filter)
+            if gpu == 'nvenc' and not self._has_scale_cuda:
+                hwaccel_flags = ['-hwaccel', 'cuda']
             try:
                 i_idx = new_parts.index('-i')
                 new_parts = new_parts[:i_idx] + hwaccel_flags + new_parts[i_idx:]
             except ValueError:
                 pass
 
-        # For NVIDIA CUDA hwaccel, change scale filter to scale_cuda
-        if gpu == 'nvenc':
+        # For NVIDIA CUDA with scale_cuda support
+        if gpu == 'nvenc' and self._has_scale_cuda:
             new_parts = [p.replace('scale=', 'scale_cuda=') if p.startswith('scale=') else p for p in new_parts]
 
         result = []
@@ -1029,6 +1120,34 @@ class Api:
         self._log(f"LOI {label}: {last_err}", 'err')
         return False, label
 
+    def _parse_cmd_template(self, template, input_path, output_path):
+        """Parse command template, replacing {input}/{output} without breaking paths with spaces."""
+        # Replace placeholders with unique tokens
+        token_in = '\x00INPUT\x00'
+        token_out = '\x00OUTPUT\x00'
+        raw = template.replace('{input}', token_in).replace('{output}', token_out)
+
+        # Split on whitespace (safe since tokens have no spaces)
+        parts = raw.split()
+
+        # Remove ffmpeg prefix
+        if parts and parts[0].lower() in ('ffmpeg', 'ffmpeg.exe'):
+            parts = parts[1:]
+
+        # Remove -y
+        parts = [p for p in parts if p != '-y']
+
+        # Replace tokens back with actual paths
+        result = []
+        for p in parts:
+            if token_in in p:
+                result.append(p.replace(token_in, input_path))
+            elif token_out in p:
+                result.append(p.replace(token_out, output_path))
+            else:
+                result.append(p)
+        return result
+
     # ── Helpers ──
 
     def _get_duration(self, filepath):
@@ -1156,6 +1275,9 @@ if not exist "RENUP.exe" (
     pause
     exit /b 1
 )
+REM Cleanup old files
+del "RENUP.exe.old" >nul 2>&1
+del ".update_cache" >nul 2>&1
 start "" "RENUP.exe"
 del "%~f0"
 """)
