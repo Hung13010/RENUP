@@ -1162,44 +1162,42 @@ class Api:
     # ── Auto Update ──
 
     def _check_update(self):
+        import time as _t
+        # Wait for UI to fully load
+        _t.sleep(3)
+
         try:
-            # Cache: only check once per hour
-            cache_file = os.path.join(get_app_dir(), '.update_cache')
-            if os.path.exists(cache_file):
-                import time as _t
-                if _t.time() - os.path.getmtime(cache_file) < 3600:
-                    return
+            current = get_version()
 
             req = urllib.request.Request(GITHUB_API, headers={"User-Agent": "RENUP-Updater"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
 
-            # Update cache
-            try:
-                open(cache_file, 'w').close()
-            except Exception:
-                pass
-
             latest = data.get("tag_name", "").lstrip("v")
             if not latest:
                 return
-            current = get_version()
+
             self._log(f"Kiem tra update: hien tai v{current}, moi nhat v{latest}", 'info')
-            if self._ver_cmp(latest, current) > 0:
+
+            cmp = self._ver_cmp(latest, current)
+            if cmp > 0:
                 download_url = ""
                 for asset in data.get("assets", []):
                     if asset["name"].lower().endswith(".exe"):
                         download_url = asset["browser_download_url"]
                         break
+                self._log(f"Co ban cap nhat moi v{latest}!", 'ok')
                 safe_url = download_url.replace("'", "\\'")
                 self._js(f"showUpdateDialog('{current}', '{latest}', '{safe_url}')")
+            else:
+                self._log(f"Dang dung phien ban moi nhat.", 'info')
         except urllib.error.HTTPError as e:
             if e.code == 403:
                 self._log("GitHub API rate limit. Thu lai sau.", 'info')
             else:
                 self._log(f"API error: {e.code}", 'err')
         except urllib.error.URLError:
-            pass  # No internet, silent
+            self._log("Khong co ket noi mang.", 'info')
         except Exception as e:
             self._log(f"Loi kiem tra update: {e}", 'err')
 
