@@ -1131,18 +1131,19 @@ class RenupApp(ctk.CTk):
 
         duration = self._get_file_duration(input_path)
 
-        cmd = [
-            self.ffmpeg_path,
-            '-i', input_path,
-            '-vf', 'scale=1920:-2',
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-b:v', '8000k',
-            '-c:a', 'aac',
-            '-b:a', '128k',
+        # Parse command from JSON template
+        raw = cmd_template.replace('{input}', input_path).replace('{output}', output_path)
+        # Remove "ffmpeg" from template, we use our own path
+        parts = raw.split()
+        if parts and parts[0].lower() in ('ffmpeg', 'ffmpeg.exe'):
+            parts = parts[1:]
+        # Remove -y if present (we add it ourselves)
+        parts = [p for p in parts if p != '-y']
+
+        cmd = [self.ffmpeg_path] + parts + [
             '-progress', 'pipe:1',
             '-nostats',
-            output_path, '-y'
+            '-y'
         ]
 
         proc = subprocess.Popen(

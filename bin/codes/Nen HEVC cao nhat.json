@@ -1,0 +1,6 @@
+{
+    "name": "Nén HEVC chất lượng cao nhất (H.265 CRF 18)",
+    "type": "reencode",
+    "description": "Encode lại bằng H.265/HEVC CRF 18 — chất lượng gần như không đổi, dung lượng giảm ~30-40%.",
+    "command": "ffmpeg -i {input} -c:v libx265 -crf 18 -preset medium -c:a aac -b:a 128k {output} -y"
+}

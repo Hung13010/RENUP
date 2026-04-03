@@ -1,0 +1,6 @@
+{
+    "name": "Nén Video 1920 - CRF 24 (chất lượng tự động)",
+    "type": "reencode",
+    "description": "Resize video về 1920px ngang, encode H.264 với CRF 24 — file nhỏ hơn, chất lượng tự điều chỉnh",
+    "command": "ffmpeg -i {input} -vf scale=1920:-2 -c:v libx264 -preset veryfast -crf 24 -c:a aac -b:a 128k {output} -y"
+}

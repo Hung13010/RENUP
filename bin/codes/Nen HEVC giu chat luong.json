@@ -1,0 +1,6 @@
+{
+    "name": "Nén HEVC giữ chất lượng (H.265 CRF 23)",
+    "type": "reencode",
+    "description": "Encode lại bằng H.265/HEVC — giữ nguyên chất lượng, dung lượng giảm ~50% so với gốc. Không resize.",
+    "command": "ffmpeg -i {input} -c:v libx265 -crf 23 -preset medium -c:a aac -b:a 128k {output} -y"
+}
