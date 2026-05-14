@@ -138,6 +138,8 @@ button {
 .btn-accent { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; box-shadow: 0 3px 10px rgba(46,125,106,0.25); }
 .btn-accent:hover { transform: translateY(-1px); box-shadow: 0 5px 15px rgba(46,125,106,0.35); }
 .btn-accent:disabled { background: #ccc; color: #888; box-shadow: none; cursor: not-allowed; transform: none; }
+.btn-reload { margin-left: 8px; padding: 4px 10px; background: #E3F2FD; color: #1976D2; border: 1px solid #90CAF9; border-radius: 6px; font-size: 11px; font-family: monospace; cursor: pointer; }
+.btn-reload:hover { background: #BBDEFB; }
 .btn-pause { background: #FFF3E0; color: #E67E22; border: 1px solid #E67E22; border-radius: 7px; font-size: 14px; }
 .btn-pause:hover:not(:disabled) { background: #FDEBD0; }
 .btn-pause:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -298,6 +300,7 @@ button {
     <div class="dot" id="statusDot"></div>
     <span id="statusLabel">stopped</span>
   </div>
+  <button id="reloadBtn" class="btn-reload" hidden onclick="reloadApp()" title="Reload app (dev only)">⟳ Reload</button>
 </div>
 
 <!-- MAIN -->
@@ -321,6 +324,29 @@ button {
         <div class="settings-row">
           <input type="text" id="splitSeconds" value="300" style="width:80px;">
           <span style="font-size:11px; color:var(--text-muted);">giây / phần</span>
+        </div>
+      </div>
+
+      <div id="convertSection" style="display:none;">
+        <div class="field-label">🔄 Convert sang</div>
+        <div class="settings-row">
+          <select id="convertTarget" style="width:160px;">
+            <option value="MP4">MP4 (H.264+AAC, YouTube chuẩn)</option>
+            <option value="MOV">MOV (H.264+AAC, Apple)</option>
+            <option value="MKV">MKV (H.264+AAC, Matroska)</option>
+            <option value="WEBM">WEBM (VP9+Opus, web)</option>
+            <option value="AVI">AVI (MPEG-4+MP3, legacy)</option>
+            <option value="FLV">FLV (H.264+AAC, Flash)</option>
+            <option value="WMV">WMV (WMV2+WMA, Windows Media)</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="overlaySection" style="display:none;">
+        <div class="field-label">🖼 Ảnh overlay (PNG)</div>
+        <div class="input-row">
+          <input type="text" id="overlayPath" placeholder="Chọn file PNG overlay..." readonly>
+          <button class="browse-btn" onclick="pyApi.browseOverlayFile()">📂</button>
         </div>
       </div>
     </div>
@@ -436,6 +462,12 @@ button {
 // ── Globals ──
 let selectedRows = new Set();
 
+function reloadApp() {
+  const running = !document.getElementById('runBtn') || document.getElementById('runBtn').disabled;
+  if (running && !confirm('App đang chạy. Reload sẽ kill mọi ffmpeg đang chạy. Tiếp tục?')) return;
+  pyApi.restart();
+}
+
 function onFuncChanged() {
   const sel = document.getElementById('funcSelect');
   const val = sel.value;
@@ -470,6 +502,22 @@ window.uiApi = {
 
   showSplitSection(show) {
     document.getElementById('splitSection').style.display = show ? 'block' : 'none';
+  },
+
+  showConvertSection(show) {
+    document.getElementById('convertSection').style.display = show ? 'block' : 'none';
+  },
+
+  showOverlaySection(show) {
+    document.getElementById('overlaySection').style.display = show ? 'block' : 'none';
+  },
+
+  setOverlayPath(p) {
+    document.getElementById('overlayPath').value = p;
+  },
+
+  setDevMode(isDev) {
+    document.getElementById('reloadBtn').hidden = !isDev;
   },
 
   setVideos(videos) {
@@ -634,7 +682,9 @@ const pyApi = new Proxy({}, {
           outputDir: document.getElementById('outputDir').value,
           workers: parseInt(document.getElementById('workers').value) || 2,
           splitSeconds: parseInt(document.getElementById('splitSeconds').value) || 300,
+          convertTarget: document.getElementById('convertTarget').value,
           editorText: document.getElementById('editor').value,
+          overlayPath: document.getElementById('overlayPath').value,
         }];
       }
       if (method === 'saveNoiTxt') args = [document.getElementById('editor').value];

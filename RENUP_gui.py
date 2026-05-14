@@ -214,10 +214,37 @@ class Api:
         self._load_codes()
         self._js(f"uiApi.setVersion('{get_version()}')")
         self._js(f"uiApi.setCodes({json.dumps(self._code_groups)})")
+        # Dev mode = running from source, not from PyInstaller bundle
+        is_dev = not getattr(sys, 'frozen', False)
+        self._js(f"uiApi.setDevMode({str(is_dev).lower()})")
         # Trigger UI update for the initially selected function
         self._js("onFuncChanged()")
         self._load_noi_txt()
         threading.Thread(target=self._check_update, daemon=True).start()
+
+    def restart(self):
+        """Dev-mode reload: spawn a fresh Python process and exit current one."""
+        if getattr(sys, 'frozen', False):
+            cmd = [sys.executable]
+        else:
+            cmd = [sys.executable, os.path.abspath(sys.argv[0])]
+        try:
+            subprocess.Popen(cmd, creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP, close_fds=True)
+        except Exception as e:
+            self._log(f"Loi spawn process moi: {e}", 'err')
+            return
+        # Give the new process a moment to start, then teardown current one
+        threading.Timer(0.4, self._teardown_for_restart).start()
+
+    def _teardown_for_restart(self):
+        try:
+            self._kill_all_ffmpeg()
+        except Exception:
+            pass
+        try:
+            self._window.destroy()
+        except Exception:
+            os._exit(0)
 
     def _load_codes(self):
         self._code_map = {}
@@ -270,6 +297,8 @@ class Api:
         code_type = code.get('type', '')
         self._js(f"uiApi.showGhepSection({str(code_type == 'concat').lower()})")
         self._js(f"uiApi.showSplitSection({str(code_type == 'split_video').lower()})")
+        self._js(f"uiApi.showConvertSection({str(code_type == 'convert_video').lower()})")
+        self._js(f"uiApi.showOverlaySection({str(code_type == 'overlay_corner').lower()})")
 
     def addSeparator(self):
         self._js("document.getElementById('editor').value += '#\\n'; updateLineCount();")
@@ -297,6 +326,12 @@ class Api:
             path = result[0]
             safe = path.replace('\\', '\\\\')
             self._js(f"uiApi.setOutputDir('{safe}')")
+
+    def browseOverlayFile(self):
+        result = self._window.create_file_dialog(webview.OPEN_DIALOG, file_types=('PNG files (*.png)',))
+        if result and len(result) > 0:
+            path = result[0]
+            self._js(f"uiApi.setOverlayPath({json.dumps(path)})")
 
     def refreshVideos(self):
         input_dir = self._window.evaluate_js("document.getElementById('inputDir').value")
@@ -355,6 +390,14 @@ class Api:
                     self._run_convert_image(params, code)
                 elif code_type == 'convert_audio':
                     self._run_convert_audio(params, code)
+                elif code_type == 'strip_metadata':
+                    self._run_strip_metadata(params, code)
+                elif code_type == 'pad_duration':
+                    self._run_pad_duration(params, code)
+                elif code_type == 'convert_video':
+                    self._run_convert_video(params, code)
+                elif code_type == 'overlay_corner':
+                    self._run_overlay_corner(params, code)
                 else:
                     self._log(f"Khong ho tro type: {code_type}", 'err')
             except Exception as e:
@@ -796,6 +839,137 @@ class Api:
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} anh ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} anh.')")
 
+    # ── Overlay Corner ──
+
+    def _run_overlay_corner(self, params, code):
+        self._js("uiApi.setStatus('Dang ghep overlay...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log(f"=== Bat dau: {code.get('name', 'Overlay Corner')} ===", 'info')
+
+        input_dir = params.get('inputDir', '')
+        output_dir = params.get('outputDir', '')
+        workers = max(1, params.get('workers', 2))
+        overlay_path = params.get('overlayPath', '').strip()
+        size = int(code.get('size', 65))
+        margin = int(code.get('margin', 20))
+        position = code.get('position', 'bottom-right')
+        from_exts = [e.lower() for e in code.get('from_ext', ['.jpg', '.jpeg', '.png', '.webp'])]
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder Input hoac Output.", 'err')
+            return
+
+        if not overlay_path:
+            self._log("Chua chon file overlay PNG.", 'err')
+            return
+
+        if not os.path.isfile(overlay_path):
+            self._log(f"Khong tim thay file overlay: {overlay_path}", 'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        files = sorted(
+            f for f in os.listdir(input_dir)
+            if os.path.splitext(f)[1].lower() in from_exts
+        )
+        if not files:
+            self._log(f"Khong tim thay file {', '.join(from_exts)} trong Input.", 'err')
+            return
+
+        # Open overlay once and resize — shared across all worker threads (read-only after resize)
+        try:
+            overlay_src = Image.open(overlay_path).convert('RGBA')
+            overlay_src = overlay_src.resize((size, size), Image.LANCZOS)
+        except Exception as e:
+            self._log(f"Khong mo duoc file overlay: {e}", 'err')
+            return
+
+        total = len(files)
+        self._log(f"Tim thay {total} anh | overlay: {os.path.basename(overlay_path)} | {workers} luong.", 'info')
+        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success: ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang ghep overlay... {d}/{total} anh')")
+
+        def composite_one(idx, filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            inp = os.path.join(input_dir, filename)
+            out = os.path.join(output_dir, filename)
+            ext = os.path.splitext(filename)[1].lower()
+            try:
+                base = Image.open(inp).convert('RGBA')
+                w, h = base.size
+
+                # Compute paste position
+                if position == 'bottom-right':
+                    paste_x = w - size - margin
+                    paste_y = h - size - margin
+                elif position == 'bottom-left':
+                    paste_x = margin
+                    paste_y = h - size - margin
+                elif position == 'top-right':
+                    paste_x = w - size - margin
+                    paste_y = margin
+                elif position == 'top-left':
+                    paste_x = margin
+                    paste_y = margin
+                else:
+                    paste_x = w - size - margin
+                    paste_y = h - size - margin
+
+                # Clamp so the overlay never extends outside the image
+                paste_x = max(0, paste_x)
+                paste_y = max(0, paste_y)
+
+                base.paste(overlay_src, (paste_x, paste_y), overlay_src)
+
+                save_kwargs = {}
+                if ext in ('.jpg', '.jpeg'):
+                    # JPEG does not support alpha — flatten onto white background
+                    flat = Image.new('RGB', base.size, (255, 255, 255))
+                    flat.paste(base, mask=base.split()[3])
+                    flat.save(out, 'JPEG', quality=95, optimize=True)
+                elif ext == '.png':
+                    base.save(out, 'PNG', optimize=True)
+                elif ext == '.webp':
+                    base.save(out, 'WEBP', quality=95, method=4)
+                else:
+                    base.convert('RGB').save(out)
+
+                self._log(f"  OK: {filename}", 'ok')
+                return (True, filename)
+            except Exception as e:
+                self._log(f"  LOI: {filename}: {e}", 'err')
+                return (False, filename)
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in enumerate(files):
+                if self._stopped:
+                    break
+                futures[ex.submit(composite_one, i, f)] = i
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success, _ = fut.result()
+                except Exception:
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} anh ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} anh.')")
+
     # ── Convert Audio ──
 
     def _run_convert_audio(self, params, code):
@@ -864,6 +1038,362 @@ class Api:
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} file ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} file.')")
+
+    # ── Strip Metadata ──
+
+    def _run_strip_metadata(self, params, code):
+        mode = code.get('mode', 'video')
+        self._js(f"uiApi.setStatus('Dang xoa metadata ({mode})...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log(f"=== Bat dau: {code.get('name', 'Strip metadata')} ===", 'info')
+
+        # Probe GPU once. Will only effective when preset's command actually re-encodes (libx264/libx265).
+        gpu = self._detect_gpu() if mode == 'video' else None
+        if mode == 'video':
+            if gpu:
+                self._log(f"GPU encoder: {gpu.upper()} (uu tien neu re-encode)", 'ok')
+            else:
+                self._log("Khong co GPU encoder, dung CPU.", 'info')
+
+        input_dir = params['inputDir']
+        output_dir = params['outputDir']
+        workers = max(1, params.get('workers', 2))
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder.", 'err')
+            return
+        os.makedirs(output_dir, exist_ok=True)
+
+        if mode == 'image':
+            default_exts = ['.jpg', '.jpeg', '.png', '.webp']
+        elif mode == 'audio':
+            default_exts = ['.mp3', '.m4a', '.wav', '.flac', '.aac', '.ogg']
+        else:
+            default_exts = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.ts', '.m4v']
+        from_exts = [e.lower() for e in code.get('from_ext', default_exts)]
+
+        files = sorted(
+            f for f in os.listdir(input_dir)
+            if os.path.splitext(f)[1].lower() in from_exts
+        )
+        if not files:
+            self._log(f"Khong tim thay file {', '.join(from_exts)} trong Input.", 'err')
+            return
+
+        total = len(files)
+        self._log(f"Tim thay {total} file | {workers} luong.", 'info')
+        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success: ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang xoa metadata... {d}/{total}')")
+
+        def strip_image(idx, filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            inp = os.path.join(input_dir, filename)
+            out = os.path.join(output_dir, filename)
+            try:
+                img = Image.open(inp)
+                # Rebuild via putdata to drop EXIF/ICC/XMP/C2PA — save(exif=None) alone doesn't strip all chunks
+                clean = Image.new(img.mode, img.size)
+                clean.putdata(list(img.getdata()))
+                ext = os.path.splitext(filename)[1].lower()
+                if ext in ('.jpg', '.jpeg'):
+                    clean.save(out, 'JPEG', quality=95, optimize=True)
+                elif ext == '.png':
+                    clean.save(out, 'PNG', optimize=True)
+                elif ext == '.webp':
+                    clean.save(out, 'WEBP', quality=95, method=6)
+                else:
+                    clean.save(out)
+                img.close()
+                self._log(f"  OK: {filename}", 'ok')
+                return True
+            except Exception as e:
+                self._log(f"  LOI {filename}: {e}", 'err')
+                return False
+
+        def strip_ffmpeg(idx, filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            inp = os.path.join(input_dir, filename)
+            out = os.path.join(output_dir, filename)
+            dur = self._get_duration(inp) if mode == 'video' else 0
+            cmd_template = code.get('command', '')
+            parts = self._parse_cmd_template(cmd_template, inp, out)
+            if gpu:
+                parts = self._swap_to_gpu(parts)
+            cmd = [self.ffmpeg_path] + parts + ['-progress', 'pipe:1', '-nostats', '-y']
+            success, _ = self._run_ffmpeg_with_table(cmd, idx, dur, filename)
+            return success
+
+        worker_fn = strip_image if mode == 'image' else strip_ffmpeg
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in enumerate(files):
+                if self._stopped: break
+                futures[ex.submit(worker_fn, i, f)] = i
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception:
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} file ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} file.')")
+
+    # ── Convert Video ──
+
+    CONVERT_TARGETS = {
+        'MP4':  {'ext': '.mp4',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart']},
+        'MOV':  {'ext': '.mov',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']},
+        'MKV':  {'ext': '.mkv',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']},
+        'WEBM': {'ext': '.webm', 'args': ['-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0', '-deadline', 'good', '-cpu-used', '4', '-c:a', 'libopus', '-b:a', '128k']},
+        'AVI':  {'ext': '.avi',  'args': ['-c:v', 'mpeg4', '-vtag', 'XVID', '-q:v', '5', '-c:a', 'libmp3lame', '-q:a', '4']},
+        'FLV':  {'ext': '.flv',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100']},
+        'WMV':  {'ext': '.wmv',  'args': ['-c:v', 'wmv2', '-b:v', '4M', '-c:a', 'wmav2', '-b:a', '192k']},
+    }
+
+    CONVERT_SOURCE_EXTS = ['.mp4', '.mov', '.mkv', '.avi', '.flv', '.webm', '.wmv',
+                           '.ts', '.mpg', '.mpeg', '.m2v', '.vob', '.m4v',
+                           '.3gp', '.3gpp', '.mxf', '.hevc', '.h265', '.f4v']
+
+    def _run_convert_video(self, params, code):
+        target = (params.get('convertTarget') or 'MP4').upper()
+        spec = self.CONVERT_TARGETS.get(target)
+        if not spec:
+            self._log(f"Target khong ho tro: {target}", 'err')
+            return
+        to_ext = spec['ext']
+
+        self._js(f"uiApi.setStatus('Dang convert video sang {target}...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log(f"=== Bat dau: Convert video sang {target} ===", 'info')
+
+        # Try GPU only for H.264-based targets (MP4/MOV/MKV/FLV). WEBM/AVI/WMV use codec không có GPU equivalent.
+        use_gpu = target in ('MP4', 'MOV', 'MKV', 'FLV')
+        if use_gpu:
+            gpu = self._detect_gpu()
+            if gpu:
+                self._log(f"GPU encoder: {gpu.upper()} (uu tien)", 'ok')
+            else:
+                self._log("Khong co GPU encoder, dung CPU.", 'info')
+        else:
+            self._log(f"Target {target} dung codec khong co GPU equivalent, dung CPU.", 'info')
+
+        input_dir = params['inputDir']
+        output_dir = params['outputDir']
+        workers = max(1, params.get('workers', 2))
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder.", 'err')
+            return
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Source = all supported video exts EXCEPT target ext (avoid clobbering input)
+        from_exts = [e for e in self.CONVERT_SOURCE_EXTS if e != to_ext]
+        files = sorted(
+            f for f in os.listdir(input_dir)
+            if os.path.splitext(f)[1].lower() in from_exts
+        )
+        if not files:
+            self._log(f"Khong tim thay video nguon (bo qua *{to_ext}).", 'err')
+            return
+
+        total = len(files)
+        self._log(f"Tim thay {total} video | {workers} luong | -> {target}.", 'info')
+        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success: ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang convert sang {target}... {d}/{total}')")
+
+        def convert_one(idx, filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            inp = os.path.join(input_dir, filename)
+            new_name = os.path.splitext(filename)[0] + to_ext
+            out = os.path.join(output_dir, new_name)
+            dur = self._get_duration(inp)
+            parts = ['-i', inp] + spec['args'] + [out]
+            if use_gpu:
+                parts = self._swap_to_gpu(parts)
+            cmd = [self.ffmpeg_path] + parts + ['-progress', 'pipe:1', '-nostats', '-y']
+            success, _ = self._run_ffmpeg_with_table(cmd, idx, dur, new_name)
+            return success
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in enumerate(files):
+                if self._stopped: break
+                futures[ex.submit(convert_one, i, f)] = i
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception:
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video -> {target} ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video -> {target}.')")
+
+    # ── Pad Duration ──
+
+    def _has_audio_stream(self, path):
+        try:
+            r = subprocess.run(
+                [self.ffprobe_path, '-v', 'error', '-select_streams', 'a',
+                 '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', path],
+                capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            )
+            return 'audio' in (r.stdout or '')
+        except Exception:
+            return False
+
+    def _probe_video_spec(self, path):
+        try:
+            r = subprocess.run(
+                [self.ffprobe_path, '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'stream=width,height,r_frame_rate',
+                 '-of', 'default=noprint_wrappers=1:nokey=1', path],
+                capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            )
+            lines = [l.strip() for l in (r.stdout or '').strip().split('\n') if l.strip()]
+            if len(lines) >= 3:
+                return {'width': int(lines[0]), 'height': int(lines[1]), 'fps': lines[2]}
+        except Exception:
+            pass
+        return {'width': 1920, 'height': 1080, 'fps': '30'}
+
+    def _run_pad_duration(self, params, code):
+        target = int(code.get('target_seconds', 162000))
+        self._js(f"uiApi.setStatus('Dang keo dai video len {target}s...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log(f"=== Bat dau: {code.get('name', 'Pad duration')} ===", 'info')
+
+        gpu = self._detect_gpu()
+        if gpu:
+            self._log(f"GPU encoder: {gpu.upper()} (uu tien)", 'ok')
+        else:
+            self._log("Khong co GPU encoder, dung CPU.", 'info')
+
+        input_dir = params['inputDir']
+        output_dir = params['outputDir']
+        workers = max(1, params.get('workers', 2))
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder.", 'err')
+            return
+        os.makedirs(output_dir, exist_ok=True)
+
+        exts = ('.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.ts', '.m4v')
+        files = sorted(f for f in os.listdir(input_dir) if f.lower().endswith(exts))
+        if not files:
+            self._log("Khong tim thay video.", 'err')
+            return
+
+        total = len(files)
+        self._log(f"Tim thay {total} video | {workers} luong | target: {target}s (~{target/3600:.1f}h).", 'info')
+        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success: ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang keo dai... {d}/{total}')")
+
+        def pad_one(idx, filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            inp = os.path.join(input_dir, filename)
+            out = os.path.join(output_dir, filename)
+            has_audio = self._has_audio_stream(inp)
+            spec = self._probe_video_spec(inp)
+            w, h, fps = spec['width'], spec['height'], spec['fps']
+
+            # Use concat filter + lavfi sources because the bundled FFmpeg (2018) lacks `tpad`.
+            base = [
+                self.ffmpeg_path, '-i', inp,
+                '-f', 'lavfi', '-t', str(target), '-i', f'color=c=black:s={w}x{h}:r={fps}',
+                '-f', 'lavfi', '-t', str(target), '-i', 'anullsrc=r=48000:cl=stereo',
+            ]
+            if has_audio:
+                fc = (
+                    f'[0:v]scale={w}:{h},setsar=1,fps={fps},format=yuv420p[v0];'
+                    f'[1:v]format=yuv420p[v1];'
+                    f'[v0][v1]concat=n=2:v=1:a=0[vout];'
+                    f'[0:a]aformat=sample_rates=48000:channel_layouts=stereo[a0];'
+                    f'[2:a]aformat=sample_rates=48000:channel_layouts=stereo[a1];'
+                    f'[a0][a1]concat=n=2:v=0:a=1[aout]'
+                )
+                maps = ['-map', '[vout]', '-map', '[aout]']
+            else:
+                fc = (
+                    f'[0:v]scale={w}:{h},setsar=1,fps={fps},format=yuv420p[v0];'
+                    f'[1:v]format=yuv420p[v1];'
+                    f'[v0][v1]concat=n=2:v=1:a=0[vout]'
+                )
+                maps = ['-map', '[vout]', '-map', '2:a']
+
+            parts = base[1:] + [
+                '-filter_complex', fc,
+            ] + maps + [
+                '-t', str(target),
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac', '-b:a', '64k',
+                out
+            ]
+            if gpu:
+                parts = self._swap_to_gpu(parts)
+            cmd = [self.ffmpeg_path] + parts + ['-progress', 'pipe:1', '-nostats', '-y']
+
+            success, _ = self._run_ffmpeg_with_table(cmd, idx, target, filename)
+            return success
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in enumerate(files):
+                if self._stopped: break
+                futures[ex.submit(pad_one, i, f)] = i
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception:
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
 
     # ── GPU Detection ──
 
