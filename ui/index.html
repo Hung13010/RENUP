@@ -106,6 +106,7 @@ select optgroup { font-weight: 700; color: var(--header-bg); font-style: normal;
 select option { font-weight: 400; color: var(--text); padding: 4px 8px; }
 
 .input-row { display: flex; gap: 4px; align-items: center; }
+#multiFolderSection .input-row + .input-row { margin-top: 3px; }
 .input-row input[type="text"] { flex: 1; }
 .browse-btn {
   height: 34px; width: 34px; flex-shrink: 0;
@@ -351,21 +352,17 @@ button {
       </div>
 
       <div id="multiFolderSection" style="display:none;">
-        <div class="field-label">📂 Folder cho Ghép 4 Folder</div>
+        <div class="field-label">📂 Folder phụ cho Ghép 4 Folder (gốc = Folder Input ở dưới)</div>
         <div class="input-row">
-          <input type="text" id="gocDir" placeholder="Folder Video gốc..." readonly>
-          <button class="browse-btn" onclick="pyApi.browseGocFolder()">📂</button>
-        </div>
-        <div class="input-row">
-          <input type="text" id="kichBanDir" placeholder="Folder Kịch Bản..." readonly>
+          <input type="text" id="kichBanDir" placeholder="Folder Kịch Bản...">
           <button class="browse-btn" onclick="pyApi.browseKichBanFolder()">📂</button>
         </div>
         <div class="input-row">
-          <input type="text" id="artDir" placeholder="Folder Art..." readonly>
+          <input type="text" id="artDir" placeholder="Folder Art...">
           <button class="browse-btn" onclick="pyApi.browseArtFolder()">📂</button>
         </div>
         <div class="input-row">
-          <input type="text" id="editDir" placeholder="Folder Edit..." readonly>
+          <input type="text" id="editDir" placeholder="Folder Edit...">
           <button class="browse-btn" onclick="pyApi.browseEditFolder()">📂</button>
         </div>
       </div>
@@ -541,7 +538,7 @@ window.uiApi = {
   },
 
   setMultiFolder(key, path) {
-    const map = { goc: 'gocDir', kichban: 'kichBanDir', art: 'artDir', edit: 'editDir' };
+    const map = { kichban: 'kichBanDir', art: 'artDir', edit: 'editDir' };
     const id = map[key];
     if (id) document.getElementById(id).value = path;
   },
@@ -716,7 +713,6 @@ const pyApi = new Proxy({}, {
           editorText: document.getElementById('editor').value,
           overlayPath: document.getElementById('overlayPath').value,
           folders: {
-            goc: document.getElementById('gocDir').value,
             kichban: document.getElementById('kichBanDir').value,
             art: document.getElementById('artDir').value,
             edit: document.getElementById('editDir').value,

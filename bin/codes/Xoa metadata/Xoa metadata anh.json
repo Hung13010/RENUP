@@ -1,0 +1,7 @@
+{
+  "name": "Xóa metadata ảnh (JPG/PNG/WEBP)",
+  "type": "strip_metadata",
+  "mode": "image",
+  "description": "Xóa EXIF/IPTC/XMP/C2PA từ ảnh, giữ nguyên định dạng và chất lượng. Dùng PIL (Pillow) re-save không kèm metadata.",
+  "from_ext": [".jpg", ".jpeg", ".png", ".webp"]
+}

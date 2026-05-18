@@ -1,0 +1,7 @@
+{
+  "name": "Xóa metadata video (nhanh — stream copy)",
+  "type": "strip_metadata",
+  "mode": "video",
+  "description": "Strip C2PA/EXIF/XMP metadata bằng stream copy — không re-encode, gần như tức thì, không giảm chất lượng. LƯU Ý: chỉ xóa metadata, KHÔNG xóa được SynthID hay watermark nhúng trong pixel.",
+  "command": "ffmpeg -i {input} -map_metadata -1 -map_chapters -1 -c:v copy -c:a copy {output} -y"
+}

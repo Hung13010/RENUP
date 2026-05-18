@@ -63,7 +63,7 @@ if not exist changelog.tmp (
 REM ========================================
 REM 4. Build RENUP.exe
 REM ========================================
-set "RELEASE_DIR=G:\1.Program\2.Tool\3.ToolNoi\RENUP"
+set "RELEASE_DIR=G:\1.Program\2.Tool\3.RENUP\RENUP"
 if not exist "%RELEASE_DIR%" mkdir "%RELEASE_DIR%"
 
 echo [BUILD] Dang build RENUP.exe...

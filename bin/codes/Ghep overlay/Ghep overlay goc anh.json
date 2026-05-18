@@ -1,9 +1,9 @@
 {
   "name": "Ghép overlay vào góc dưới-phải",
   "type": "overlay_corner",
-  "description": "Dán 1 ảnh PNG overlay (vd lịch ngày) vào góc dưới-phải của tất cả ảnh trong Input folder. Overlay tự resize về 65x65 px, margin 20 px từ mép.",
+  "description": "Dán 1 ảnh PNG overlay (vd lịch ngày) vào góc dưới-phải của tất cả ảnh trong Input folder. Overlay tự resize về 65x65 px, sát mép.",
   "position": "bottom-right",
   "size": 65,
-  "margin": 20,
+  "margin": 0,
   "from_ext": [".jpg", ".jpeg", ".png", ".webp"]
 }

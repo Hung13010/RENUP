@@ -1,0 +1,5 @@
+{
+  "name": "Convert video (chọn định dạng đích)",
+  "type": "convert_video",
+  "description": "Convert mọi định dạng video sang định dạng đích bạn chọn (MP4 / MOV / MKV / WEBM / AVI / FLV / WMV). Source ext tự detect: MP4, MOV, MKV, AVI, FLV, WEBM, WMV, MPEG, TS, 3GP, MXF, HEVC, ProRes, DNxHR... Khi chọn function này UI sẽ hiện dropdown 'Convert sang' để chọn đích."
+}

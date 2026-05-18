@@ -1,0 +1,6 @@
+{
+  "name": "Kéo dài 45 tiếng (đệm đen + im lặng)",
+  "type": "pad_duration",
+  "description": "Pad mỗi video trong folder Input thành file 45 tiếng. Phần đệm là màn hình đen + im lặng. Output khoảng 150-300MB/file, encode 5-15 phút/file trên CPU tầm trung. Tự detect video câm và sinh silence track nếu cần.",
+  "target_seconds": 162000
+}

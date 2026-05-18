@@ -1164,10 +1164,6 @@ class Api:
                     ]
                 else:
                     diff_summary = ' / '.join(diff_fields) if diff_fields else 'unknown'
-                    self._log(
-                        f"  [{idx + 1}/{total}] {goc_filename}: re-encode (khac spec: {diff_summary})",
-                        'info'
-                    )
                     cmd = [
                         self.ffmpeg_path,
                         '-f', 'concat', '-safe', '0',
@@ -1178,6 +1174,13 @@ class Api:
                         '-progress', 'pipe:1', '-nostats',
                         output_path, '-y',
                     ]
+                    cmd = self._swap_to_gpu(cmd)
+                    gpu_used = self._detect_gpu()
+                    encoder_tag = f"GPU {gpu_used}" if gpu_used else "CPU libx264"
+                    self._log(
+                        f"  [{idx + 1}/{total}] {goc_filename}: re-encode {encoder_tag} (khac spec: {diff_summary})",
+                        'info'
+                    )
 
                 success, _ = self._run_ffmpeg_with_table(cmd, idx, duration, goc_filename)
                 return success, goc_filename

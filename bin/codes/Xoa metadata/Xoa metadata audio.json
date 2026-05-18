@@ -1,0 +1,8 @@
+{
+  "name": "Xóa metadata audio (MP3/M4A/WAV/FLAC)",
+  "type": "strip_metadata",
+  "mode": "audio",
+  "description": "Strip ID3/metadata khỏi file audio, stream copy không re-encode.",
+  "command": "ffmpeg -i {input} -map_metadata -1 -c:a copy {output} -y",
+  "from_ext": [".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg"]
+}

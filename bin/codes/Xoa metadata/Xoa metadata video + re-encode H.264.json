@@ -1,0 +1,7 @@
+{
+  "name": "Xóa metadata + re-encode H.264 (CRF 18)",
+  "type": "strip_metadata",
+  "mode": "video",
+  "description": "Strip metadata + re-encode H.264 CRF 18 để phá fingerprint khung hình. Chậm hơn nhưng làm yếu một số watermark thống kê. LƯU Ý: vẫn KHÔNG đảm bảo xóa được SynthID — watermark kiểu này được thiết kế để sống sót qua re-encode thông thường.",
+  "command": "ffmpeg -i {input} -map_metadata -1 -map_chapters -1 -c:v libx264 -preset medium -crf 18 -c:a aac -b:a 192k {output} -y"
+}
