@@ -349,6 +349,26 @@ button {
           <button class="browse-btn" onclick="pyApi.browseOverlayFile()">📂</button>
         </div>
       </div>
+
+      <div id="multiFolderSection" style="display:none;">
+        <div class="field-label">📂 Folder cho Ghép 4 Folder</div>
+        <div class="input-row">
+          <input type="text" id="gocDir" placeholder="Folder Video gốc..." readonly>
+          <button class="browse-btn" onclick="pyApi.browseGocFolder()">📂</button>
+        </div>
+        <div class="input-row">
+          <input type="text" id="kichBanDir" placeholder="Folder Kịch Bản..." readonly>
+          <button class="browse-btn" onclick="pyApi.browseKichBanFolder()">📂</button>
+        </div>
+        <div class="input-row">
+          <input type="text" id="artDir" placeholder="Folder Art..." readonly>
+          <button class="browse-btn" onclick="pyApi.browseArtFolder()">📂</button>
+        </div>
+        <div class="input-row">
+          <input type="text" id="editDir" placeholder="Folder Edit..." readonly>
+          <button class="browse-btn" onclick="pyApi.browseEditFolder()">📂</button>
+        </div>
+      </div>
     </div>
 
     <!-- BOTTOM: Controls (cố định) -->
@@ -514,6 +534,16 @@ window.uiApi = {
 
   setOverlayPath(p) {
     document.getElementById('overlayPath').value = p;
+  },
+
+  showMultiFolderSection(show) {
+    document.getElementById('multiFolderSection').style.display = show ? 'block' : 'none';
+  },
+
+  setMultiFolder(key, path) {
+    const map = { goc: 'gocDir', kichban: 'kichBanDir', art: 'artDir', edit: 'editDir' };
+    const id = map[key];
+    if (id) document.getElementById(id).value = path;
   },
 
   setDevMode(isDev) {
@@ -685,6 +715,12 @@ const pyApi = new Proxy({}, {
           convertTarget: document.getElementById('convertTarget').value,
           editorText: document.getElementById('editor').value,
           overlayPath: document.getElementById('overlayPath').value,
+          folders: {
+            goc: document.getElementById('gocDir').value,
+            kichban: document.getElementById('kichBanDir').value,
+            art: document.getElementById('artDir').value,
+            edit: document.getElementById('editDir').value,
+          },
         }];
       }
       if (method === 'saveNoiTxt') args = [document.getElementById('editor').value];

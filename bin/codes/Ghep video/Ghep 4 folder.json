@@ -1,0 +1,6 @@
+{
+    "name": "Ghép 4 folder (gốc + kịch bản + art + edit)",
+    "type": "concat_multi_folder",
+    "description": "Với mỗi video trong folder gốc: ghép [video gốc] + [random 1 từ Kịch Bản] + [random 1 từ Art] + [random 1 từ Edit]. Stream-copy, 4 folder phải cùng codec/resolution/bitrate.",
+    "extensions": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v", ".wmv", ".flv"]
+}

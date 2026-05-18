@@ -3,10 +3,12 @@ import os
 import subprocess
 import threading
 import json
+import random
 import urllib.request
 import urllib.error
 import webbrowser
 import shutil
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 
@@ -299,6 +301,7 @@ class Api:
         self._js(f"uiApi.showSplitSection({str(code_type == 'split_video').lower()})")
         self._js(f"uiApi.showConvertSection({str(code_type == 'convert_video').lower()})")
         self._js(f"uiApi.showOverlaySection({str(code_type == 'overlay_corner').lower()})")
+        self._js(f"uiApi.showMultiFolderSection({str(code_type == 'concat_multi_folder').lower()})")
 
     def addSeparator(self):
         self._js("document.getElementById('editor').value += '#\\n'; updateLineCount();")
@@ -332,6 +335,30 @@ class Api:
         if result and len(result) > 0:
             path = result[0]
             self._js(f"uiApi.setOverlayPath({json.dumps(path)})")
+
+    def browseGocFolder(self):
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            path = result[0]
+            self._js(f"uiApi.setMultiFolder('goc', {json.dumps(path)})")
+
+    def browseKichBanFolder(self):
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            path = result[0]
+            self._js(f"uiApi.setMultiFolder('kichban', {json.dumps(path)})")
+
+    def browseArtFolder(self):
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            path = result[0]
+            self._js(f"uiApi.setMultiFolder('art', {json.dumps(path)})")
+
+    def browseEditFolder(self):
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            path = result[0]
+            self._js(f"uiApi.setMultiFolder('edit', {json.dumps(path)})")
 
     def refreshVideos(self):
         input_dir = self._window.evaluate_js("document.getElementById('inputDir').value")
@@ -398,6 +425,8 @@ class Api:
                     self._run_convert_video(params, code)
                 elif code_type == 'overlay_corner':
                     self._run_overlay_corner(params, code)
+                elif code_type == 'concat_multi_folder':
+                    self._run_concat_multi_folder(params, code)
                 else:
                     self._log(f"Khong ho tro type: {code_type}", 'err')
             except Exception as e:
@@ -969,6 +998,159 @@ class Api:
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} anh ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} anh.')")
+
+    # ── Concat Multi-Folder ──
+
+    def _run_concat_multi_folder(self, params, code):
+        self._js("uiApi.setStatus('Dang ghep 4 folder...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau Ghep 4 Folder ===", 'info')
+
+        folders = params.get('folders', {})
+        goc_dir    = folders.get('goc', '').strip()
+        kichban_dir = folders.get('kichban', '').strip()
+        art_dir    = folders.get('art', '').strip()
+        edit_dir   = folders.get('edit', '').strip()
+        output_dir = params.get('outputDir', '').strip()
+        workers    = max(1, params.get('workers', 2))
+
+        # ── Validate folder paths ──
+        folder_labels = [
+            ('Video goc', goc_dir),
+            ('Kich Ban', kichban_dir),
+            ('Art', art_dir),
+            ('Edit', edit_dir),
+            ('Output', output_dir),
+        ]
+        for label, path in folder_labels:
+            if not path:
+                self._log(f"Chua chon folder {label}.", 'err')
+                return
+            if label != 'Output' and not os.path.isdir(path):
+                self._log(f"Khong tim thay folder {label}: {path}", 'err')
+                return
+
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # ── Scan each folder ──
+        extensions = tuple(e.lower() for e in code.get('extensions', [
+            '.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v', '.wmv', '.flv'
+        ]))
+
+        def scan_folder(path, label):
+            files = sorted(
+                f for f in os.listdir(path)
+                if os.path.splitext(f)[1].lower() in extensions
+            )
+            return files
+
+        goc_list    = scan_folder(goc_dir, 'Video goc')
+        kichban_list = scan_folder(kichban_dir, 'Kich Ban')
+        art_list    = scan_folder(art_dir, 'Art')
+        edit_list   = scan_folder(edit_dir, 'Edit')
+
+        for label, lst, path in [
+            ('Video goc', goc_list, goc_dir),
+            ('Kich Ban', kichban_list, kichban_dir),
+            ('Art', art_list, art_dir),
+            ('Edit', edit_list, edit_dir),
+        ]:
+            if not lst:
+                self._log(f"Folder {label} rong, dung.", 'err')
+                return
+
+        total = len(goc_list)
+        self._log(
+            f"Tim thay {total} video goc | "
+            f"Kich Ban: {len(kichban_list)} | Art: {len(art_list)} | Edit: {len(edit_list)} | "
+            f"{workers} luong.",
+            'info'
+        )
+        self._js(f"uiApi.initProcessTable({json.dumps(goc_list)})")
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success: ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang ghep... {d}/{total} video')")
+
+        def process_one(idx, goc_filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+
+            # Pick random auxiliary videos (with replacement)
+            kb_pick  = random.choice(kichban_list)
+            art_pick = random.choice(art_list)
+            edit_pick = random.choice(edit_list)
+
+            self._log(
+                f"[{idx + 1}/{total}] {goc_filename} + {kb_pick} + {art_pick} + {edit_pick}",
+                'info'
+            )
+
+            # Build 4-file concat list in a temp file unique to this worker
+            temp_list = os.path.join(
+                self.bin_dir, f'_temp_multi_{idx}_{uuid.uuid4().hex[:8]}.txt'
+            )
+            entries = [
+                (goc_dir,    goc_filename),
+                (kichban_dir, kb_pick),
+                (art_dir,    art_pick),
+                (edit_dir,   edit_pick),
+            ]
+            try:
+                with open(temp_list, 'w', encoding='utf-8') as fh:
+                    for folder, fname in entries:
+                        fpath = os.path.join(folder, fname)
+                        fh.write(f"file '{fpath}'\n")
+
+                duration = sum(
+                    self._get_duration(os.path.join(folder, fname))
+                    for folder, fname in entries
+                )
+
+                output_path = os.path.join(output_dir, goc_filename)
+                cmd = [
+                    self.ffmpeg_path,
+                    '-f', 'concat', '-safe', '0',
+                    '-i', temp_list,
+                    '-c', 'copy',
+                    '-progress', 'pipe:1', '-nostats',
+                    output_path, '-y',
+                ]
+                success, _ = self._run_ffmpeg(cmd, idx + 1, total, duration, goc_filename)
+                return success, goc_filename
+            finally:
+                if os.path.exists(temp_list):
+                    os.remove(temp_list)
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, goc_filename in enumerate(goc_list):
+                if self._stopped:
+                    break
+                futures[ex.submit(process_one, i, goc_filename)] = i
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success, _ = fut.result()
+                except Exception as e:
+                    success = False
+                    self._log(f"  LOI: {e}", 'err')
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
 
     # ── Convert Audio ──
 
