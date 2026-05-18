@@ -336,12 +336,6 @@ class Api:
             path = result[0]
             self._js(f"uiApi.setOverlayPath({json.dumps(path)})")
 
-    def browseGocFolder(self):
-        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
-        if result and len(result) > 0:
-            path = result[0]
-            self._js(f"uiApi.setMultiFolder('goc', {json.dumps(path)})")
-
     def browseKichBanFolder(self):
         result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if result and len(result) > 0:
@@ -1007,7 +1001,7 @@ class Api:
         self._log("=== Bat dau Ghep 4 Folder ===", 'info')
 
         folders = params.get('folders', {})
-        goc_dir    = folders.get('goc', '').strip()
+        goc_dir    = params.get('inputDir', '').strip()
         kichban_dir = folders.get('kichban', '').strip()
         art_dir    = folders.get('art', '').strip()
         edit_dir   = folders.get('edit', '').strip()
@@ -1016,7 +1010,7 @@ class Api:
 
         # ── Validate folder paths ──
         folder_labels = [
-            ('Video goc', goc_dir),
+            ('Input (Video goc)', goc_dir),
             ('Kich Ban', kichban_dir),
             ('Art', art_dir),
             ('Edit', edit_dir),
@@ -1119,16 +1113,73 @@ class Api:
                     for folder, fname in entries
                 )
 
-                output_path = os.path.join(output_dir, goc_filename)
-                cmd = [
-                    self.ffmpeg_path,
-                    '-f', 'concat', '-safe', '0',
-                    '-i', temp_list,
-                    '-c', 'copy',
-                    '-progress', 'pipe:1', '-nostats',
-                    output_path, '-y',
+                # ── Spec-mismatch detection ──
+                specs = [
+                    self._probe_spec(os.path.join(folder, fname))
+                    for folder, fname in entries
                 ]
-                success, _ = self._run_ffmpeg(cmd, idx + 1, total, duration, goc_filename)
+
+                use_copy = True
+                diff_fields = []
+
+                if any(s is None for s in specs):
+                    use_copy = False
+                    diff_fields.append('probe failure')
+                else:
+                    video_keys = ('v_codec', 'width', 'height', 'fps', 'pix_fmt')
+                    audio_keys = ('a_codec', 'sample_rate', 'channels')
+                    check_keys = video_keys + audio_keys
+
+                    for key in check_keys:
+                        values = [s[key] for s in specs]
+                        if len(set(str(v) for v in values)) > 1:
+                            use_copy = False
+                            # Map internal key name to a readable label
+                            label_map = {
+                                'v_codec': 'video codec',
+                                'width': 'width',
+                                'height': 'height',
+                                'fps': 'frame rate',
+                                'pix_fmt': 'pixel format',
+                                'a_codec': 'audio codec',
+                                'sample_rate': 'audio sample rate',
+                                'channels': 'audio channels',
+                            }
+                            diff_fields.append(label_map.get(key, key))
+
+                output_path = os.path.join(output_dir, goc_filename)
+
+                if use_copy:
+                    self._log(
+                        f"  [{idx + 1}/{total}] {goc_filename}: stream-copy (cung spec)",
+                        'info'
+                    )
+                    cmd = [
+                        self.ffmpeg_path,
+                        '-f', 'concat', '-safe', '0',
+                        '-i', temp_list,
+                        '-c', 'copy',
+                        '-progress', 'pipe:1', '-nostats',
+                        output_path, '-y',
+                    ]
+                else:
+                    diff_summary = ' / '.join(diff_fields) if diff_fields else 'unknown'
+                    self._log(
+                        f"  [{idx + 1}/{total}] {goc_filename}: re-encode (khac spec: {diff_summary})",
+                        'info'
+                    )
+                    cmd = [
+                        self.ffmpeg_path,
+                        '-f', 'concat', '-safe', '0',
+                        '-i', temp_list,
+                        '-c:v', 'libx264', '-preset', 'medium', '-crf', '20',
+                        '-pix_fmt', 'yuv420p',
+                        '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '48000',
+                        '-progress', 'pipe:1', '-nostats',
+                        output_path, '-y',
+                    ]
+
+                success, _ = self._run_ffmpeg_with_table(cmd, idx, duration, goc_filename)
                 return success, goc_filename
             finally:
                 if os.path.exists(temp_list):
@@ -1861,6 +1912,52 @@ class Api:
         return result
 
     # ── Helpers ──
+
+    def _probe_spec(self, file_path):
+        """Probe a media file and return a spec dict for mismatch detection.
+
+        Returns a dict with keys:
+            v_codec, width, height, fps, pix_fmt,
+            a_codec, sample_rate, channels
+        Returns None on any failure (caller should treat as mismatch → re-encode).
+        """
+        try:
+            r = subprocess.run(
+                [
+                    self.ffprobe_path,
+                    '-v', 'error',
+                    '-show_entries',
+                    'stream=codec_type,codec_name,width,height,r_frame_rate,pix_fmt,sample_rate,channels',
+                    '-of', 'json',
+                    file_path,
+                ],
+                capture_output=True,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=10,
+            )
+            data = json.loads(r.stdout)
+        except Exception as e:
+            self._log(f"  [probe] Loi khi probe {os.path.basename(file_path)}: {e}", 'err')
+            return None
+
+        try:
+            streams = data.get('streams', [])
+            v = next((s for s in streams if s.get('codec_type') == 'video'), None)
+            a = next((s for s in streams if s.get('codec_type') == 'audio'), None)
+            return {
+                'v_codec':     (v or {}).get('codec_name'),
+                'width':       (v or {}).get('width'),
+                'height':      (v or {}).get('height'),
+                'fps':         (v or {}).get('r_frame_rate'),
+                'pix_fmt':     (v or {}).get('pix_fmt'),
+                'a_codec':     (a or {}).get('codec_name'),
+                'sample_rate': (a or {}).get('sample_rate'),
+                'channels':    (a or {}).get('channels'),
+            }
+        except Exception as e:
+            self._log(f"  [probe] Loi parse JSON {os.path.basename(file_path)}: {e}", 'err')
+            return None
 
     def _get_duration(self, filepath):
         try:
