@@ -1185,20 +1185,34 @@ class Api:
                     filter_parts.append(f"{concat_pins}concat=n=4:v=1:a=1[v][a]")
                     filter_complex = ';'.join(filter_parts)
 
+                    gpu = self._detect_gpu()
+                    if gpu == 'nvenc':
+                        venc = ['-c:v', 'h264_nvenc', '-preset', 'fast', '-cq', '20']
+                        encoder_tag = 'GPU h264_nvenc'
+                    elif gpu == 'amf':
+                        venc = ['-c:v', 'h264_amf', '-quality', 'speed', '-qp_i', '20', '-qp_p', '22']
+                        encoder_tag = 'GPU h264_amf'
+                    elif gpu == 'qsv':
+                        venc = ['-c:v', 'h264_qsv', '-preset', 'fast', '-global_quality', '20']
+                        encoder_tag = 'GPU h264_qsv'
+                    else:
+                        venc = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20']
+                        encoder_tag = 'CPU libx264'
+
                     cmd = [self.ffmpeg_path]
                     for folder, fname in entries:
                         cmd += ['-i', os.path.join(folder, fname)]
                     cmd += [
                         '-filter_complex', filter_complex,
                         '-map', '[v]', '-map', '[a]',
-                        '-c:v', 'libx264', '-preset', 'medium', '-crf', '20',
+                        *venc,
                         '-pix_fmt', 'yuv420p',
                         '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '48000',
                         '-progress', 'pipe:1', '-nostats',
                         output_path, '-y',
                     ]
                     self._log(
-                        f"  [{idx + 1}/{total}] {goc_filename}: re-encode CPU libx264 (khac spec: {diff_summary})",
+                        f"  [{idx + 1}/{total}] {goc_filename}: re-encode {encoder_tag} (khac spec: {diff_summary})",
                         'info'
                     )
 
