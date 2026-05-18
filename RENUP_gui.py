@@ -1151,34 +1151,54 @@ class Api:
 
                 if use_copy:
                     self._log(
-                        f"  [{idx + 1}/{total}] {goc_filename}: stream-copy (cung spec)",
+                        f"  [{idx + 1}/{total}] {goc_filename}: video stream-copy + audio re-encode AAC (cung spec)",
                         'info'
                     )
                     cmd = [
                         self.ffmpeg_path,
                         '-f', 'concat', '-safe', '0',
                         '-i', temp_list,
-                        '-c', 'copy',
+                        '-c:v', 'copy',
+                        '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '48000',
                         '-progress', 'pipe:1', '-nostats',
                         output_path, '-y',
                     ]
                 else:
                     diff_summary = ' / '.join(diff_fields) if diff_fields else 'unknown'
-                    cmd = [
-                        self.ffmpeg_path,
-                        '-f', 'concat', '-safe', '0',
-                        '-i', temp_list,
+                    # Use concat FILTER (not demuxer): decode -> scale/resample -> re-encode.
+                    # Concat demuxer mangles audio DTS across mismatched sample rates,
+                    # causing silent gaps. Filter decodes & normalizes everything first.
+                    goc_spec = specs[0] if specs and specs[0] else None
+                    target_w   = goc_spec['width']  if goc_spec else 1920
+                    target_h   = goc_spec['height'] if goc_spec else 1080
+                    target_fps = goc_spec['fps']    if goc_spec else '30000/1001'
+
+                    filter_parts = []
+                    for i in range(4):
+                        filter_parts.append(
+                            f"[{i}:v]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+                            f"pad={target_w}:{target_h}:-1:-1:color=black,setsar=1,fps={target_fps}[v{i}]"
+                        )
+                    for i in range(4):
+                        filter_parts.append(f"[{i}:a]aresample=48000:async=1[a{i}]")
+                    concat_pins = ''.join(f"[v{i}][a{i}]" for i in range(4))
+                    filter_parts.append(f"{concat_pins}concat=n=4:v=1:a=1[v][a]")
+                    filter_complex = ';'.join(filter_parts)
+
+                    cmd = [self.ffmpeg_path]
+                    for folder, fname in entries:
+                        cmd += ['-i', os.path.join(folder, fname)]
+                    cmd += [
+                        '-filter_complex', filter_complex,
+                        '-map', '[v]', '-map', '[a]',
                         '-c:v', 'libx264', '-preset', 'medium', '-crf', '20',
                         '-pix_fmt', 'yuv420p',
                         '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '48000',
                         '-progress', 'pipe:1', '-nostats',
                         output_path, '-y',
                     ]
-                    cmd = self._swap_to_gpu(cmd)
-                    gpu_used = self._detect_gpu()
-                    encoder_tag = f"GPU {gpu_used}" if gpu_used else "CPU libx264"
                     self._log(
-                        f"  [{idx + 1}/{total}] {goc_filename}: re-encode {encoder_tag} (khac spec: {diff_summary})",
+                        f"  [{idx + 1}/{total}] {goc_filename}: re-encode CPU libx264 (khac spec: {diff_summary})",
                         'info'
                     )
 
