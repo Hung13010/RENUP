@@ -1,0 +1,7 @@
+{
+    "name": "Convert MP3 → WAV",
+    "type": "convert_audio",
+    "description": "Convert tất cả file MP3 trong Input sang WAV (PCM 16-bit)",
+    "from_ext": [".mp3"],
+    "to_ext": ".wav"
+}

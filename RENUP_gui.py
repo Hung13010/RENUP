@@ -1331,15 +1331,33 @@ class Api:
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang convert... {d}/{total} file')")
 
+        # Encoder args keyed by output extension.
+        # Fallback (unknown ext): pass only -vn and let FFmpeg infer the codec
+        # from the output filename — safer than guessing or failing silently.
+        _AUDIO_ENCODER_ARGS = {
+            '.mp3': ['-vn', '-acodec', 'libmp3lame', '-q:a', '2'],
+            '.wav': ['-vn', '-acodec', 'pcm_s16le'],
+        }
+        encoder_args = _AUDIO_ENCODER_ARGS.get(
+            to_ext.lower(),
+            ['-vn'],
+        )
+        if to_ext.lower() not in _AUDIO_ENCODER_ARGS:
+            self._log(
+                f"Canh bao: khong co encoder mapping cho '{to_ext}', "
+                "de FFmpeg tu suy ra codec tu extension.",
+                'info',
+            )
+
         def convert_one(idx, filename):
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
             inp = os.path.join(input_dir, filename)
             new_name = os.path.splitext(filename)[0] + to_ext
             out = os.path.join(output_dir, new_name)
             dur = self._get_duration(inp)
-            cmd = [self.ffmpeg_path, '-i', inp, '-vn',
-                   '-acodec', 'libmp3lame', '-q:a', '2',
-                   '-progress', 'pipe:1', '-nostats', out, '-y']
+            cmd = [self.ffmpeg_path, '-i', inp] + encoder_args + [
+                '-progress', 'pipe:1', '-nostats', out, '-y',
+            ]
             return self._run_ffmpeg_with_table(cmd, idx, dur, new_name)
 
         futures = {}
