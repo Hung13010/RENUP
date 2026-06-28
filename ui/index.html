@@ -366,6 +366,21 @@ button {
           <button class="browse-btn" onclick="pyApi.browseEditFolder()">📂</button>
         </div>
       </div>
+
+      <div id="claimSection" style="display:none;">
+        <div class="field-label">🎵 Bảng Claim TikTok (Tab: Tên Final | Bài Nhạc Claim | Voice ID)</div>
+        <textarea id="claimTable" style="min-height:120px;" placeholder="Dán bảng từ Excel vào đây (Tab-separated).&#10;Ví dụ:&#10;FII_UPPOW_AMBIENT_001_6724079089164094214	UPPOW_AMBIENT_001	6724079089164094214&#10;&#10;Cột 1: Tên Final (tên file output .wav)&#10;Cột 2: Bài Nhạc Claim (tên file .wav trên Drive)&#10;Cột 3: Voice ID (số TikTok Sound ID)" spellcheck="false"></textarea>
+        <div class="field-label" style="margin-top:6px;">🔗 Link Google Drive folder công khai</div>
+        <input type="text" id="driveUrl" placeholder="https://drive.google.com/drive/folders/...">
+        <div class="field-label" style="margin-top:6px;">📁 Folder Voice (cache)</div>
+        <div class="input-row">
+          <input type="text" id="voiceDir" placeholder="Chọn thư mục lưu cache voice..." readonly>
+          <button class="browse-btn" onclick="pyApi.browseVoiceDir()">📂</button>
+        </div>
+        <div style="margin-top:8px;">
+          <button class="btn-sm btn-muted" onclick="pyApi.updateYtDlp()">⟳ Cập nhật yt-dlp</button>
+        </div>
+      </div>
     </div>
 
     <!-- BOTTOM: Controls (cố định) -->
@@ -543,6 +558,14 @@ window.uiApi = {
     if (id) document.getElementById(id).value = path;
   },
 
+  showClaimSection(show) {
+    document.getElementById('claimSection').style.display = show ? 'block' : 'none';
+  },
+
+  setVoiceDir(path) {
+    document.getElementById('voiceDir').value = path;
+  },
+
   setDevMode(isDev) {
     document.getElementById('reloadBtn').hidden = !isDev;
   },
@@ -717,6 +740,9 @@ const pyApi = new Proxy({}, {
             art: document.getElementById('artDir').value,
             edit: document.getElementById('editDir').value,
           },
+          claimTable: document.getElementById('claimTable').value,
+          driveUrl: document.getElementById('driveUrl').value,
+          voiceDir: document.getElementById('voiceDir').value,
         }];
       }
       if (method === 'saveNoiTxt') args = [document.getElementById('editor').value];

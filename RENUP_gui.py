@@ -60,6 +60,7 @@ class Api:
         self.ffmpeg_path = os.path.join(self.bin_dir, 'ffmpeg.exe')
         self.ffprobe_path = os.path.join(self.bin_dir, 'ffprobe.exe')
         self.noi_txt_path = os.path.join(self.bin_dir, 'Noi.txt')
+        self.ytdlp_path = os.path.join(self.bin_dir, 'yt-dlp.exe')
         self.is_running = False
         self._paused = False
         self._stopped = False
@@ -302,6 +303,7 @@ class Api:
         self._js(f"uiApi.showConvertSection({str(code_type == 'convert_video').lower()})")
         self._js(f"uiApi.showOverlaySection({str(code_type == 'overlay_corner').lower()})")
         self._js(f"uiApi.showMultiFolderSection({str(code_type == 'concat_multi_folder').lower()})")
+        self._js(f"uiApi.showClaimSection({str(code_type == 'claim_tiktok').lower()})")
 
     def addSeparator(self):
         self._js("document.getElementById('editor').value += '#\\n'; updateLineCount();")
@@ -353,6 +355,11 @@ class Api:
         if result and len(result) > 0:
             path = result[0]
             self._js(f"uiApi.setMultiFolder('edit', {json.dumps(path)})")
+
+    def browseVoiceDir(self):
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            self._js(f"uiApi.setVoiceDir({json.dumps(result[0])})")
 
     def refreshVideos(self):
         input_dir = self._window.evaluate_js("document.getElementById('inputDir').value")
@@ -421,6 +428,8 @@ class Api:
                     self._run_overlay_corner(params, code)
                 elif code_type == 'concat_multi_folder':
                     self._run_concat_multi_folder(params, code)
+                elif code_type == 'claim_tiktok':
+                    self._run_claim_tiktok(params, code)
                 else:
                     self._log(f"Khong ho tro type: {code_type}", 'err')
             except Exception as e:
@@ -2004,6 +2013,321 @@ class Api:
             return float(json.loads(r.stdout)['format']['duration'])
         except Exception:
             return 0.0
+
+    # ── yt-dlp self-update ──
+
+    def updateYtDlp(self):
+        threading.Thread(target=self._do_update_ytdlp, daemon=True).start()
+
+    def _do_update_ytdlp(self):
+        url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+        new_path = self.ytdlp_path + ".new"
+        self._log("Dang tai yt-dlp moi nhat...", 'info')
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "RENUP-Updater"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                total = int(resp.headers.get('Content-Length', 0))
+                downloaded = 0
+                with open(new_path, 'wb') as f:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            pct = int(downloaded / total * 100)
+                            self._log(f"  Tai yt-dlp: {pct}% ({downloaded // 1024 // 1024}MB / {total // 1024 // 1024}MB)", 'info')
+            os.replace(new_path, self.ytdlp_path)
+            self._log("Da cap nhat yt-dlp.", 'ok')
+        except Exception as e:
+            self._log(f"Loi cap nhat yt-dlp: {e}", 'err')
+            try:
+                if os.path.exists(new_path):
+                    os.remove(new_path)
+            except Exception:
+                pass
+
+    # ── Claim Tiktok ──
+
+    def _parse_claim_table(self, text):
+        rows = []
+        for raw_line in text.split('\n'):
+            line = raw_line.rstrip('\r').strip()
+            if not line:
+                continue
+            parts = line.split('\t')
+            if len(parts) < 3:
+                continue
+            fn = parts[0].strip()
+            mn = parts[1].strip()
+            vi = parts[2].strip()
+            if not fn or not mn or not vi:
+                continue
+            if not vi.isdigit():
+                self._log(f"Bo qua dong tieu de: {line[:80]}", 'info')
+                continue
+            rows.append({'final_name': fn, 'music_name': mn, 'voice_id': vi})
+        return rows
+
+    def _safe_filename(self, name):
+        import re
+        return re.sub(r'[\\/:*?"<>|]', '_', name)
+
+    def _ci_lookup(self, index, fname):
+        fname_lower = fname.lower()
+        for k, v in index.items():
+            if k.lower() == fname_lower:
+                return v
+        return None
+
+    def _list_drive_folder(self, drive_url):
+        try:
+            import gdown
+            result = gdown.download_folder(
+                url=drive_url,
+                skip_download=True,
+                quiet=True,
+                use_cookies=False,
+            )
+            if not result:
+                return None
+            index = {}
+            for item in result:
+                filename = os.path.basename(item.path)
+                index[filename] = item.id
+            if len(index) >= 50:
+                self._log("Drive folder >= 50 file: gdown co the bo sot. Chia nho folder.", 'info')
+            return index
+        except Exception as e:
+            self._log(f"Loi liet ke Drive: {e}", 'err')
+            return None
+
+    def _download_voice_tiktok(self, voice_id, voice_dir, device_id):
+        if self._stopped:
+            return False
+        voice_path = os.path.join(voice_dir, f"{voice_id}.mp3")
+        url = f"https://www.tiktok.com/music/original-sound-{voice_id}"
+        cmd = [
+            self.ytdlp_path,
+            "--extractor-args", f"tiktok:device_id={device_id}",
+            "--playlist-end", "1",
+            "-x", "--audio-format", "mp3",
+            "--ffmpeg-location", self.ffmpeg_path,
+            "-o", os.path.join(voice_dir, f"{voice_id}.%(ext)s"),
+            "--no-playlist",
+            url,
+        ]
+        stderr_lines = []
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+            )
+            self._current_procs.append(proc)
+            try:
+                def drain():
+                    for line in proc.stderr:
+                        stderr_lines.append(line)
+                t = threading.Thread(target=drain, daemon=True)
+                t.start()
+                proc.stdout.read()
+                proc.wait()
+                t.join()
+            finally:
+                if proc in self._current_procs:
+                    self._current_procs.remove(proc)
+        except Exception as e:
+            self._log(f"Loi spawn yt-dlp: {e}", 'err')
+            return False
+
+        if self._stopped:
+            return False
+
+        if proc.returncode == 0 and os.path.exists(voice_path):
+            return True
+
+        last_err = stderr_lines[-1].strip() if stderr_lines else 'Unknown error'
+        self._log(f"yt-dlp loi (voice {voice_id}): {last_err}", 'err')
+        return False
+
+    def _download_music_drive(self, file_id, dest_path):
+        try:
+            import gdown
+            url = f"https://drive.google.com/uc?id={file_id}"
+            gdown.download(url, dest_path, quiet=True, fuzzy=True)
+            return os.path.exists(dest_path)
+        except Exception as e:
+            self._log(f"Loi tai nhac Drive (id={file_id}): {e}", 'err')
+            return False
+
+    def _concat_voice_music(self, voice_path, music_path, out_path, sr, ch, idx):
+        layout = 'stereo' if ch == 2 else 'mono'
+        fc = (
+            f"[0:a]aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout}[a0];"
+            f"[1:a]aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout}[a1];"
+            f"[a0][a1]concat=n=2:v=0:a=1[a]"
+        )
+        cmd = [
+            self.ffmpeg_path,
+            "-i", voice_path,
+            "-i", music_path,
+            "-filter_complex", fc,
+            "-map", "[a]",
+            "-c:a", "pcm_s16le",
+            "-progress", "pipe:1", "-nostats",
+            out_path, "-y",
+        ]
+        duration = self._get_duration(voice_path) + self._get_duration(music_path)
+        success, _ = self._run_ffmpeg_with_table(cmd, idx, duration, os.path.basename(out_path))
+        return success
+
+    def _run_claim_tiktok(self, params, code):
+        self._js("uiApi.setStatus('Dang chuan bi Claim Tiktok...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau Claim Tiktok ===", 'info')
+
+        claim_table = params.get('claimTable', '').strip()
+        drive_url = params.get('driveUrl', '').strip()
+        voice_dir = params.get('voiceDir', '').strip()
+        output_dir = params.get('outputDir', '').strip()
+        workers = max(1, params.get('workers', 2))
+
+        device_id = code.get('device_id', '7300000000000000000')
+        music_ext = code.get('music_ext', '.wav')
+        sample_rate = int(code.get('sample_rate', 44100))
+        channels = int(code.get('channels', 2))
+
+        if not claim_table:
+            self._log("Bang rong.", 'err')
+            return
+        if not drive_url:
+            self._log("Chua nhap link Drive.", 'err')
+            return
+        if not voice_dir:
+            self._log("Chua chon folder Voice.", 'err')
+            return
+        if not output_dir:
+            self._log("Chua chon folder Output.", 'err')
+            return
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+        if not os.path.exists(self.ytdlp_path):
+            self._log("Khong tim thay yt-dlp.exe (vao Cap nhat yt-dlp).", 'err')
+            return
+
+        os.makedirs(voice_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        rows = self._parse_claim_table(claim_table)
+        if not rows:
+            self._log("Khong co dong hop le trong bang.", 'err')
+            return
+
+        music_tmp = os.path.join(self.bin_dir, f'_claim_music_{uuid.uuid4().hex}')
+        os.makedirs(music_tmp)
+
+        try:
+            self._log("Dang liet ke folder Drive...", 'info')
+            drive_index = self._list_drive_folder(drive_url)
+            if not drive_index:
+                self._log("Khong liet ke duoc folder Drive (cong khai? qua 50 file?).", 'err')
+                return
+            self._log(f"Drive: {len(drive_index)} file.", 'info')
+
+            total = len(rows)
+            labels = [r['final_name'] for r in rows]
+            self._js(f"uiApi.initProcessTable({json.dumps(labels)})")
+
+            ok_count = [0]
+            done_count = [0]
+
+            def update(idx, success):
+                with self._lock:
+                    if success:
+                        ok_count[0] += 1
+                    done_count[0] += 1
+                    d = done_count[0]
+                status = 'done' if success else 'error'
+                if self._stopped:
+                    status = 'stopped'
+                self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+                self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
+                self._js(f"uiApi.setStatus('Dang xu ly... {d}/{total} dong')")
+
+            def process_one(idx, row):
+                self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+                final_name = row['final_name']
+                music_name = row['music_name']
+                voice_id = row['voice_id']
+                music_path = None
+                try:
+                    if self._stopped:
+                        return False
+
+                    voice_path = os.path.join(voice_dir, f"{voice_id}.mp3")
+                    if not os.path.exists(voice_path):
+                        ok = self._download_voice_tiktok(voice_id, voice_dir, device_id)
+                        if not ok or not os.path.exists(voice_path):
+                            self._log(f"[{idx + 1}] Voice fail: {voice_id}", 'err')
+                            return False
+                    self._js(f"uiApi.updateProcessItem({idx}, 33, 'running')")
+
+                    drive_fname = f"{music_name}{music_ext}"
+                    file_id = drive_index.get(drive_fname)
+                    if not file_id:
+                        file_id = self._ci_lookup(drive_index, drive_fname)
+                    if not file_id:
+                        self._log(f"[{idx + 1}] Thieu nhac tren Drive: {drive_fname}", 'err')
+                        return False
+
+                    music_path = os.path.join(music_tmp, f"{idx}_{drive_fname}")
+                    ok = self._download_music_drive(file_id, music_path)
+                    if not ok or not os.path.exists(music_path):
+                        self._log(f"[{idx + 1}] Tai nhac fail: {drive_fname}", 'err')
+                        return False
+                    self._js(f"uiApi.updateProcessItem({idx}, 66, 'running')")
+
+                    out_path = os.path.join(output_dir, self._safe_filename(final_name) + '.wav')
+                    ok = self._concat_voice_music(voice_path, music_path, out_path, sample_rate, channels, idx)
+                    return ok
+
+                except Exception as e:
+                    self._log(f"[{idx + 1}] LOI: {e}", 'err')
+                    return False
+                finally:
+                    if music_path and os.path.exists(music_path):
+                        try:
+                            os.remove(music_path)
+                        except Exception:
+                            pass
+
+            self._log(f"Tim thay {total} dong | {workers} luong.", 'info')
+
+            futures = {}
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for i, row in enumerate(rows):
+                    if self._stopped:
+                        break
+                    futures[ex.submit(process_one, i, row)] = i
+                for fut in as_completed(futures):
+                    idx = futures[fut]
+                    try:
+                        success = fut.result()
+                    except Exception as e:
+                        self._log(f"LOI: {e}", 'err')
+                        success = False
+                    update(idx, success)
+
+        finally:
+            shutil.rmtree(music_tmp, ignore_errors=True)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} dong ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} dong.')")
 
     # ── Auto Update ──
 

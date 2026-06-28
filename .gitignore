@@ -10,6 +10,7 @@ __pycache__/
 bin/ffmpeg.exe
 bin/ffplay.exe
 bin/ffprobe.exe
+bin/yt-dlp.exe
 
 # Video files
 bin/Input/*.mp4
@@ -20,6 +21,8 @@ bin/output_videos/
 
 # Temp files
 bin/_temp_list_*.txt
+bin/_claim_music_*/
+bin/yt-dlp.exe.new
 *.pyc
 
 # FFmpeg docs & presets (not needed in repo)
