@@ -368,10 +368,8 @@ button {
       </div>
 
       <div id="claimSection" style="display:none;">
-        <div class="field-label">🎵 Bảng Claim TikTok (Tab: Tên Final | Bài Nhạc Claim | Voice ID)</div>
-        <textarea id="claimTable" style="min-height:120px;" placeholder="Dán bảng từ Excel vào đây (Tab-separated).&#10;Ví dụ:&#10;FII_UPPOW_AMBIENT_001_6724079089164094214	UPPOW_AMBIENT_001	6724079089164094214&#10;&#10;Cột 1: Tên Final (tên file output .wav)&#10;Cột 2: Bài Nhạc Claim (tên file .wav trên Drive)&#10;Cột 3: Voice ID (số TikTok Sound ID)" spellcheck="false"></textarea>
-        <div class="field-label" style="margin-top:6px;">🔗 Link Google Drive folder công khai</div>
-        <input type="text" id="driveUrl" placeholder="https://drive.google.com/drive/folders/...">
+        <div class="field-label">🎵 Bảng Claim TikTok (Tab: Tên Final | Bài Nhạc Claim | Voice ID | Link Drive nhạc)</div>
+        <textarea id="claimTable" style="min-height:120px;" placeholder="Dán bảng (Tab): Tên Final | Bài Nhạc Claim | Link_Voice gốc | Link nhạc (Drive)" spellcheck="false"></textarea>
         <div class="field-label" style="margin-top:6px;">📁 Folder Voice (cache)</div>
         <div class="input-row">
           <input type="text" id="voiceDir" placeholder="Chọn thư mục lưu cache voice..." readonly>
@@ -741,7 +739,6 @@ const pyApi = new Proxy({}, {
             edit: document.getElementById('editDir').value,
           },
           claimTable: document.getElementById('claimTable').value,
-          driveUrl: document.getElementById('driveUrl').value,
           voiceDir: document.getElementById('voiceDir').value,
         }];
       }

@@ -2067,41 +2067,14 @@ class Api:
             if not vi.isdigit():
                 self._log(f"Bo qua dong tieu de: {line[:80]}", 'info')
                 continue
-            rows.append({'final_name': fn, 'music_name': mn, 'voice_id': vi})
+            mu = parts[3].strip() if len(parts) >= 4 else ''
+            rows.append({'final_name': fn, 'music_name': mn, 'voice_id': vi, 'music_url': mu})
         return rows
 
     def _safe_filename(self, name):
         import re
         return re.sub(r'[\\/:*?"<>|]', '_', name)
 
-    def _ci_lookup(self, index, fname):
-        fname_lower = fname.lower()
-        for k, v in index.items():
-            if k.lower() == fname_lower:
-                return v
-        return None
-
-    def _list_drive_folder(self, drive_url):
-        try:
-            import gdown
-            result = gdown.download_folder(
-                url=drive_url,
-                skip_download=True,
-                quiet=True,
-                use_cookies=False,
-            )
-            if not result:
-                return None
-            index = {}
-            for item in result:
-                filename = os.path.basename(item.path)
-                index[filename] = item.id
-            if len(index) >= 50:
-                self._log("Drive folder >= 50 file: gdown co the bo sot. Chia nho folder.", 'info')
-            return index
-        except Exception as e:
-            self._log(f"Loi liet ke Drive: {e}", 'err')
-            return None
 
     def _download_voice_tiktok(self, voice_id, voice_dir, device_id):
         if self._stopped:
@@ -2154,14 +2127,13 @@ class Api:
         self._log(f"yt-dlp loi (voice {voice_id}): {last_err}", 'err')
         return False
 
-    def _download_music_drive(self, file_id, dest_path):
+    def _download_music_drive(self, url, dest_path):
         try:
             import gdown
-            url = f"https://drive.google.com/uc?id={file_id}"
             gdown.download(url, dest_path, quiet=True, fuzzy=True)
             return os.path.exists(dest_path)
         except Exception as e:
-            self._log(f"Loi tai nhac Drive (id={file_id}): {e}", 'err')
+            self._log(f"Loi tai nhac Drive: {e}", 'err')
             return False
 
     def _concat_voice_music(self, voice_path, music_path, out_path, sr, ch, idx):
@@ -2191,21 +2163,16 @@ class Api:
         self._log("=== Bat dau Claim Tiktok ===", 'info')
 
         claim_table = params.get('claimTable', '').strip()
-        drive_url = params.get('driveUrl', '').strip()
         voice_dir = params.get('voiceDir', '').strip()
         output_dir = params.get('outputDir', '').strip()
         workers = max(1, params.get('workers', 2))
 
         device_id = code.get('device_id', '7300000000000000000')
-        music_ext = code.get('music_ext', '.wav')
         sample_rate = int(code.get('sample_rate', 44100))
         channels = int(code.get('channels', 2))
 
         if not claim_table:
             self._log("Bang rong.", 'err')
-            return
-        if not drive_url:
-            self._log("Chua nhap link Drive.", 'err')
             return
         if not voice_dir:
             self._log("Chua chon folder Voice.", 'err')
@@ -2232,13 +2199,6 @@ class Api:
         os.makedirs(music_tmp)
 
         try:
-            self._log("Dang liet ke folder Drive...", 'info')
-            drive_index = self._list_drive_folder(drive_url)
-            if not drive_index:
-                self._log("Khong liet ke duoc folder Drive (cong khai? qua 50 file?).", 'err')
-                return
-            self._log(f"Drive: {len(drive_index)} file.", 'info')
-
             total = len(rows)
             labels = [r['final_name'] for r in rows]
             self._js(f"uiApi.initProcessTable({json.dumps(labels)})")
@@ -2264,6 +2224,7 @@ class Api:
                 final_name = row['final_name']
                 music_name = row['music_name']
                 voice_id = row['voice_id']
+                music_url = row['music_url']
                 music_path = None
                 try:
                     if self._stopped:
@@ -2277,18 +2238,19 @@ class Api:
                             return False
                     self._js(f"uiApi.updateProcessItem({idx}, 33, 'running')")
 
-                    drive_fname = f"{music_name}{music_ext}"
-                    file_id = drive_index.get(drive_fname)
-                    if not file_id:
-                        file_id = self._ci_lookup(drive_index, drive_fname)
-                    if not file_id:
-                        self._log(f"[{idx + 1}] Thieu nhac tren Drive: {drive_fname}", 'err')
+                    if not music_url:
+                        self._log(f"[{idx + 1}] Thieu link nhac dong: {final_name}", 'err')
                         return False
 
-                    music_path = os.path.join(music_tmp, f"{idx}_{drive_fname}")
-                    ok = self._download_music_drive(file_id, music_path)
+                    music_path = os.path.join(
+                        music_tmp,
+                        f"{idx}_{self._safe_filename(music_name)}.wav",
+                    )
+                    if self._stopped:
+                        return False
+                    ok = self._download_music_drive(music_url, music_path)
                     if not ok or not os.path.exists(music_path):
-                        self._log(f"[{idx + 1}] Tai nhac fail: {drive_fname}", 'err')
+                        self._log(f"[{idx + 1}] Tai nhac fail: {final_name}", 'err')
                         return False
                     self._js(f"uiApi.updateProcessItem({idx}, 66, 'running')")
 

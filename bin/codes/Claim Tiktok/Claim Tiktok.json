@@ -1,9 +1,8 @@
 {
   "name": "Claim Tiktok (voice TikTok + nhac Drive -> WAV)",
   "type": "claim_tiktok",
-  "description": "Dan bang (Tab): Ten Final | Bai Nhac Claim | Voice ID. Tai voice tu TikTok + nhac tu Google Drive, ghep voice->nhac, xuat WAV.",
+  "description": "Dan bang (Tab): Ten Final | Bai Nhac Claim | Voice ID | Link nhac (link Drive tung file). Tai voice tu TikTok + nhac tu link Drive rieng tung dong, ghep voice->nhac, xuat WAV.",
   "device_id": "7300000000000000000",
-  "music_ext": ".wav",
   "sample_rate": 44100,
   "channels": 2
 }
