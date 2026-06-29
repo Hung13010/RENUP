@@ -23,6 +23,7 @@ bin/output_videos/
 bin/_temp_list_*.txt
 bin/_claim_music_*/
 bin/yt-dlp.exe.new
+bin/claim_state.json
 *.pyc
 
 # FFmpeg docs & presets (not needed in repo)

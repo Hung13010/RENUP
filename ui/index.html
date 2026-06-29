@@ -372,7 +372,7 @@ button {
         <textarea id="claimTable" style="min-height:120px;" placeholder="Dán bảng (Tab): Tên Final | Bài Nhạc Claim | Link_Voice gốc | Link nhạc (Drive)" spellcheck="false"></textarea>
         <div class="field-label" style="margin-top:6px;">📁 Folder Voice (cache)</div>
         <div class="input-row">
-          <input type="text" id="voiceDir" placeholder="Chọn thư mục lưu cache voice..." readonly>
+          <input type="text" id="voiceDir" placeholder="Chọn thư mục lưu cache voice...">
           <button class="browse-btn" onclick="pyApi.browseVoiceDir()">📂</button>
         </div>
         <div style="margin-top:8px;">
@@ -562,6 +562,7 @@ window.uiApi = {
 
   setVoiceDir(path) {
     document.getElementById('voiceDir').value = path;
+    saveClaimState();
   },
 
   setDevMode(isDev) {
@@ -617,7 +618,10 @@ window.uiApi = {
     }
   },
   setInputDir(path) { document.getElementById('inputDir').value = path; },
-  setOutputDir(path) { document.getElementById('outputDir').value = path; },
+  setOutputDir(path) {
+    document.getElementById('outputDir').value = path;
+    saveClaimState();
+  },
 
   // ── Process Table ──
   initProcessTable(files) {
@@ -686,6 +690,17 @@ function updateLineCount() {
   document.getElementById('lineCount').textContent = lines + ' dòng';
 }
 document.getElementById('editor')?.addEventListener('input', updateLineCount);
+
+function saveClaimState() {
+  pyApi.saveClaimState({
+    voiceDir:  document.getElementById('voiceDir').value,
+    outputDir: document.getElementById('outputDir').value,
+    workers:   document.getElementById('workers').value,
+  });
+}
+document.getElementById('voiceDir').addEventListener('change', saveClaimState);
+document.getElementById('outputDir').addEventListener('change', saveClaimState);
+document.getElementById('workers').addEventListener('change', saveClaimState);
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 

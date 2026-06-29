@@ -60,6 +60,7 @@ class Api:
         self.ffmpeg_path = os.path.join(self.bin_dir, 'ffmpeg.exe')
         self.ffprobe_path = os.path.join(self.bin_dir, 'ffprobe.exe')
         self.noi_txt_path = os.path.join(self.bin_dir, 'Noi.txt')
+        self.claim_state_path = os.path.join(self.bin_dir, 'claim_state.json')
         self.ytdlp_path = os.path.join(self.bin_dir, 'yt-dlp.exe')
         self.is_running = False
         self._paused = False
@@ -223,6 +224,7 @@ class Api:
         # Trigger UI update for the initially selected function
         self._js("onFuncChanged()")
         self._load_noi_txt()
+        self._load_claim_state()
         threading.Thread(target=self._check_update, daemon=True).start()
 
     def restart(self):
@@ -292,6 +294,42 @@ class Api:
             safe = content.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n')
             self._js(f"uiApi.setEditor('{safe}')")
             self._log("Da tai Noi.txt.", 'info')
+
+    def saveClaimState(self, state):
+        """Save Claim Tiktok UI state (voiceDir, outputDir, workers) to claim_state.json.
+
+        Called by the frontend whenever any of the three fields changes.
+        Does not log on success to avoid noise (frontend calls this frequently).
+        """
+        try:
+            data = {
+                'voiceDir': state.get('voiceDir', '') if isinstance(state, dict) else '',
+                'outputDir': state.get('outputDir', '') if isinstance(state, dict) else '',
+                'workers': state.get('workers', '') if isinstance(state, dict) else '',
+            }
+            with open(self.claim_state_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception as e:
+            self._log(f"Loi luu claim state: {e}", 'err')
+
+    def _load_claim_state(self):
+        """Restore Claim Tiktok state (voiceDir, outputDir, workers) from claim_state.json."""
+        try:
+            if not os.path.exists(self.claim_state_path):
+                return
+            with open(self.claim_state_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            voice = data.get('voiceDir', '')
+            output = data.get('outputDir', '')
+            workers = data.get('workers', '')
+            if voice:
+                self._js(f"document.getElementById('voiceDir').value = {json.dumps(voice)}")
+            if output:
+                self._js(f"document.getElementById('outputDir').value = {json.dumps(output)}")
+            if workers:
+                self._js(f"document.getElementById('workers').value = {json.dumps(str(workers))}")
+        except Exception as e:
+            self._log(f"Loi tai claim state: {e}", 'err')
 
     # ── UI actions ──
 
