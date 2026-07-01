@@ -1,13 +1,12 @@
 # RENUP build environment dependencies
 # Install with: pip install -r requirements.txt
 #
-# gdown>=5 is required for download_folder(skip_download=True) — verified with 5.2.2.
 # yt-dlp is NOT listed here because it is shipped as a standalone exe (bin/yt-dlp.exe),
 # not a Python package. Download the latest release from:
 #   https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
 # and place it at RENUP_build/bin/yt-dlp.exe before building.
+# Google Drive music download uses direct HTTP (urllib, stdlib) — no gdown dependency.
 
 pywebview>=5.0
 Pillow>=10.0
-gdown>=5.2.2
 pyinstaller
