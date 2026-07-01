@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import subprocess
 import threading
 import json
@@ -2165,11 +2166,90 @@ class Api:
         self._log(f"yt-dlp loi (voice {voice_id}): {last_err}", 'err')
         return False
 
+    @staticmethod
+    def _extract_drive_file_id(url):
+        """Extract a Google Drive file ID from various URL shapes, or a bare ID."""
+        if not url:
+            return None
+        url = url.strip()
+        m = re.search(r"/file/d/([A-Za-z0-9_-]+)", url)
+        if m:
+            return m.group(1)
+        m = re.search(r"[?&]id=([A-Za-z0-9_-]+)", url)
+        if m:
+            return m.group(1)
+        if re.match(r"^[A-Za-z0-9_-]{20,}$", url):
+            return url
+        return None
+
     def _download_music_drive(self, url, dest_path):
+        """Download a public Google Drive file directly over HTTP (no gdown).
+
+        Google Drive's public-download flow redirects to
+        https://drive.usercontent.google.com/download . For small files this
+        returns the raw bytes immediately. For large files it first returns an
+        HTML "can't scan for viruses" confirmation page containing a form with
+        hidden inputs (confirm/uuid/id/export) that must be resubmitted to get
+        the actual file bytes.
+        """
         try:
-            import gdown
-            gdown.download(url, dest_path, quiet=True, fuzzy=True)
-            return os.path.exists(dest_path)
+            if self._stopped:
+                return False
+
+            file_id = self._extract_drive_file_id(url)
+            if not file_id:
+                self._log(f"Loi tai nhac Drive: khong doc duoc file ID tu link: {url}", 'err')
+                return False
+
+            cookie_jar = urllib.request.HTTPCookieProcessor()
+            opener = urllib.request.build_opener(cookie_jar)
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RENUP"}
+
+            base = "https://drive.usercontent.google.com/download"
+            download_url = f"{base}?id={file_id}&export=download&confirm=t"
+
+            def _fetch(u):
+                req = urllib.request.Request(u, headers=headers)
+                return opener.open(req, timeout=60)
+
+            resp = _fetch(download_url)
+            content_type = resp.headers.get('Content-Type', '')
+
+            if content_type.startswith('text/html'):
+                # Confirmation page for large files: parse hidden form inputs and resubmit.
+                html = resp.read().decode('utf-8', errors='ignore')
+                params = {}
+                for name in ("id", "export", "confirm", "uuid"):
+                    m = re.search(
+                        rf'<input[^>]+name="{name}"[^>]+value="([^"]*)"', html
+                    )
+                    if m:
+                        params[name] = m.group(1)
+                params.setdefault("id", file_id)
+                params.setdefault("export", "download")
+                params.setdefault("confirm", "t")
+
+                if not params.get("uuid"):
+                    self._log("Loi tai nhac Drive: khong parse duoc trang xac nhan (file lon).", 'err')
+                    return False
+
+                query = "&".join(f"{k}={v}" for k, v in params.items())
+                resp = _fetch(f"{base}?{query}")
+                content_type = resp.headers.get('Content-Type', '')
+                if content_type.startswith('text/html'):
+                    self._log("Loi tai nhac Drive: van nhan HTML sau khi xac nhan (file co the private).", 'err')
+                    return False
+
+            with open(dest_path, 'wb') as f:
+                while True:
+                    if self._stopped:
+                        return False
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+            return os.path.exists(dest_path) and os.path.getsize(dest_path) > 0
         except Exception as e:
             self._log(f"Loi tai nhac Drive: {e}", 'err')
             return False
