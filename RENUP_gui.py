@@ -2273,59 +2273,45 @@ class Api:
             return False
 
     def _concat_voice_music(self, voice_path, music_path, out_path, sr, ch, idx, max_seconds=60):
-        """Concat voice (full) + music (trimmed from start to fill remaining time).
+        """Concat voice (full) + music (full), hard-capped at max_seconds via -t.
 
-        Output is hard-capped at max_seconds total duration:
-        - If voice_dur >= max_seconds (or duration probe fails at 0 and voice alone
-          already reaches the cap): output = voice trimmed to max_seconds, no music.
-        - Else: output = voice (full) + music trimmed to (max_seconds - voice_dur).
-          If music is shorter than the needed amount, the whole music is used
-          (final output shorter than max_seconds is acceptable).
-        - If the remaining time for music is negligible (< 0.1s), fall back to
-          voice-only to avoid ffmpeg errors from an empty/near-empty atrim segment.
+        Previous implementation trimmed music by an estimated
+        `max_seconds - voice_dur` (atrim), where voice_dur came from ffprobe.
+        For MP3 voice files, ffprobe's reported duration does not always match
+        the actual decoded sample count (MP3 frame/encoder-delay slack), so the
+        trimmed music length was estimated from a slightly-off voice duration,
+        producing outputs ~40ms short (e.g. 59.96s instead of 60.000s).
+
+        Fix: concat voice (full) + music (full) unfiltered, then let `-t
+        {max_seconds}` cut the final PCM stream. On pcm_s16le, `-t` is
+        sample-accurate, so the output is exactly max_seconds seconds whenever
+        voice+music together reach that mark, regardless of voice_dur precision.
+        If voice alone already exceeds max_seconds, `-t` cuts within the voice
+        portion. If voice+music together are shorter than max_seconds, the
+        output is simply shorter (music genuinely ran out) — same behavior as
+        before.
         """
         layout = 'stereo' if ch == 2 else 'mono'
-        voice_dur = self._get_duration(voice_path)
-        music_needed = max_seconds - voice_dur
+        fc = (
+            f"[0:a]aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout},"
+            f"asetpts=PTS-STARTPTS[a0];"
+            f"[1:a]aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout},"
+            f"asetpts=PTS-STARTPTS[a1];"
+            f"[a0][a1]concat=n=2:v=0:a=1[a]"
+        )
+        cmd = [
+            self.ffmpeg_path,
+            "-i", voice_path,
+            "-i", music_path,
+            "-filter_complex", fc,
+            "-map", "[a]",
+            "-c:a", "pcm_s16le",
+            "-t", str(max_seconds),
+            "-progress", "pipe:1", "-nostats",
+            out_path, "-y",
+        ]
 
-        if voice_dur >= max_seconds or music_needed < 0.1:
-            fc = (
-                f"[0:a]atrim=0:{max_seconds},asetpts=PTS-STARTPTS,"
-                f"aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout}[a]"
-            )
-            cmd = [
-                self.ffmpeg_path,
-                "-i", voice_path,
-                "-filter_complex", fc,
-                "-map", "[a]",
-                "-c:a", "pcm_s16le",
-                "-t", str(max_seconds),
-                "-progress", "pipe:1", "-nostats",
-                out_path, "-y",
-            ]
-            duration = min(voice_dur, max_seconds) if voice_dur > 0 else max_seconds
-        else:
-            fc = (
-                f"[0:a]aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout},"
-                f"asetpts=PTS-STARTPTS[a0];"
-                f"[1:a]atrim=0:{music_needed:.3f},asetpts=PTS-STARTPTS,"
-                f"aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout}[a1];"
-                f"[a0][a1]concat=n=2:v=0:a=1[a]"
-            )
-            cmd = [
-                self.ffmpeg_path,
-                "-i", voice_path,
-                "-i", music_path,
-                "-filter_complex", fc,
-                "-map", "[a]",
-                "-c:a", "pcm_s16le",
-                "-t", str(max_seconds),
-                "-progress", "pipe:1", "-nostats",
-                out_path, "-y",
-            ]
-            duration = min(voice_dur + music_needed, max_seconds)
-
-        success, _ = self._run_ffmpeg_with_table(cmd, idx, duration, os.path.basename(out_path))
+        success, _ = self._run_ffmpeg_with_table(cmd, idx, max_seconds, os.path.basename(out_path))
         return success
 
     def _run_claim_tiktok(self, params, code):
