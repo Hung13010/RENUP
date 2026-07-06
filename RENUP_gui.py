@@ -2272,24 +2272,59 @@ class Api:
             self._log(f"Loi tai nhac Drive: {e}", 'err')
             return False
 
-    def _concat_voice_music(self, voice_path, music_path, out_path, sr, ch, idx):
+    def _concat_voice_music(self, voice_path, music_path, out_path, sr, ch, idx, max_seconds=60):
+        """Concat voice (full) + music (trimmed from start to fill remaining time).
+
+        Output is hard-capped at max_seconds total duration:
+        - If voice_dur >= max_seconds (or duration probe fails at 0 and voice alone
+          already reaches the cap): output = voice trimmed to max_seconds, no music.
+        - Else: output = voice (full) + music trimmed to (max_seconds - voice_dur).
+          If music is shorter than the needed amount, the whole music is used
+          (final output shorter than max_seconds is acceptable).
+        - If the remaining time for music is negligible (< 0.1s), fall back to
+          voice-only to avoid ffmpeg errors from an empty/near-empty atrim segment.
+        """
         layout = 'stereo' if ch == 2 else 'mono'
-        fc = (
-            f"[0:a]aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout}[a0];"
-            f"[1:a]aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout}[a1];"
-            f"[a0][a1]concat=n=2:v=0:a=1[a]"
-        )
-        cmd = [
-            self.ffmpeg_path,
-            "-i", voice_path,
-            "-i", music_path,
-            "-filter_complex", fc,
-            "-map", "[a]",
-            "-c:a", "pcm_s16le",
-            "-progress", "pipe:1", "-nostats",
-            out_path, "-y",
-        ]
-        duration = self._get_duration(voice_path) + self._get_duration(music_path)
+        voice_dur = self._get_duration(voice_path)
+        music_needed = max_seconds - voice_dur
+
+        if voice_dur >= max_seconds or music_needed < 0.1:
+            fc = (
+                f"[0:a]atrim=0:{max_seconds},asetpts=PTS-STARTPTS,"
+                f"aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout}[a]"
+            )
+            cmd = [
+                self.ffmpeg_path,
+                "-i", voice_path,
+                "-filter_complex", fc,
+                "-map", "[a]",
+                "-c:a", "pcm_s16le",
+                "-t", str(max_seconds),
+                "-progress", "pipe:1", "-nostats",
+                out_path, "-y",
+            ]
+            duration = min(voice_dur, max_seconds) if voice_dur > 0 else max_seconds
+        else:
+            fc = (
+                f"[0:a]aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout},"
+                f"asetpts=PTS-STARTPTS[a0];"
+                f"[1:a]atrim=0:{music_needed:.3f},asetpts=PTS-STARTPTS,"
+                f"aresample={sr},aformat=sample_fmts=fltp:channel_layouts={layout}[a1];"
+                f"[a0][a1]concat=n=2:v=0:a=1[a]"
+            )
+            cmd = [
+                self.ffmpeg_path,
+                "-i", voice_path,
+                "-i", music_path,
+                "-filter_complex", fc,
+                "-map", "[a]",
+                "-c:a", "pcm_s16le",
+                "-t", str(max_seconds),
+                "-progress", "pipe:1", "-nostats",
+                out_path, "-y",
+            ]
+            duration = min(voice_dur + music_needed, max_seconds)
+
         success, _ = self._run_ffmpeg_with_table(cmd, idx, duration, os.path.basename(out_path))
         return success
 
@@ -2306,6 +2341,7 @@ class Api:
         device_id = code.get('device_id', '7300000000000000000')
         sample_rate = int(code.get('sample_rate', 44100))
         channels = int(code.get('channels', 2))
+        max_seconds = int(code.get('max_seconds', 60))
 
         if not claim_table:
             self._log("Bang rong.", 'err')
@@ -2391,7 +2427,7 @@ class Api:
                     self._js(f"uiApi.updateProcessItem({idx}, 66, 'running')")
 
                     out_path = os.path.join(output_dir, self._safe_filename(final_name) + '.wav')
-                    ok = self._concat_voice_music(voice_path, music_path, out_path, sample_rate, channels, idx)
+                    ok = self._concat_voice_music(voice_path, music_path, out_path, sample_rate, channels, idx, max_seconds)
                     return ok
 
                 except Exception as e:
