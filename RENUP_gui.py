@@ -8,7 +8,6 @@ import random
 import urllib.request
 import urllib.error
 import webbrowser
-import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
@@ -297,14 +296,15 @@ class Api:
             self._log("Da tai Noi.txt.", 'info')
 
     def saveClaimState(self, state):
-        """Save Claim Tiktok UI state (voiceDir, outputDir, workers) to claim_state.json.
+        """Save Claim Tiktok UI state (voiceDir, musicDir, outputDir, workers) to claim_state.json.
 
-        Called by the frontend whenever any of the three fields changes.
+        Called by the frontend whenever any of the fields changes.
         Does not log on success to avoid noise (frontend calls this frequently).
         """
         try:
             data = {
                 'voiceDir': state.get('voiceDir', '') if isinstance(state, dict) else '',
+                'musicDir': state.get('musicDir', '') if isinstance(state, dict) else '',
                 'outputDir': state.get('outputDir', '') if isinstance(state, dict) else '',
                 'workers': state.get('workers', '') if isinstance(state, dict) else '',
             }
@@ -314,17 +314,20 @@ class Api:
             self._log(f"Loi luu claim state: {e}", 'err')
 
     def _load_claim_state(self):
-        """Restore Claim Tiktok state (voiceDir, outputDir, workers) from claim_state.json."""
+        """Restore Claim Tiktok state (voiceDir, musicDir, outputDir, workers) from claim_state.json."""
         try:
             if not os.path.exists(self.claim_state_path):
                 return
             with open(self.claim_state_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             voice = data.get('voiceDir', '')
+            music = data.get('musicDir', '')
             output = data.get('outputDir', '')
             workers = data.get('workers', '')
             if voice:
                 self._js(f"document.getElementById('voiceDir').value = {json.dumps(voice)}")
+            if music:
+                self._js(f"document.getElementById('musicDir').value = {json.dumps(music)}")
             if output:
                 self._js(f"document.getElementById('outputDir').value = {json.dumps(output)}")
             if workers:
@@ -399,6 +402,11 @@ class Api:
         result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if result and len(result) > 0:
             self._js(f"uiApi.setVoiceDir({json.dumps(result[0])})")
+
+    def browseMusicDir(self):
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            self._js(f"uiApi.setMusicDir({json.dumps(result[0])})")
 
     def refreshVideos(self):
         input_dir = self._window.evaluate_js("document.getElementById('inputDir').value")
@@ -2209,7 +2217,15 @@ class Api:
         HTML "can't scan for viruses" confirmation page containing a form with
         hidden inputs (confirm/uuid/id/export) that must be resubmitted to get
         the actual file bytes.
+
+        Writes to a unique `.part` temp file first, then atomically replaces
+        `dest_path` once the download is verified complete. This keeps the
+        (cached, reused-across-runs) `dest_path` free of partial/corrupt data
+        if the download fails or is stopped mid-way, and is safe even if two
+        workers download the same cached filename concurrently (each uses its
+        own `.part`, last `os.replace()` wins, `dest_path` is always valid).
         """
+        part_path = f"{dest_path}.{uuid.uuid4().hex}.part"
         try:
             if self._stopped:
                 return False
@@ -2258,7 +2274,7 @@ class Api:
                     self._log("Loi tai nhac Drive: van nhan HTML sau khi xac nhan (file co the private).", 'err')
                     return False
 
-            with open(dest_path, 'wb') as f:
+            with open(part_path, 'wb') as f:
                 while True:
                     if self._stopped:
                         return False
@@ -2267,10 +2283,20 @@ class Api:
                         break
                     f.write(chunk)
 
-            return os.path.exists(dest_path) and os.path.getsize(dest_path) > 0
+            if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
+                return False
+
+            os.replace(part_path, dest_path)
+            return True
         except Exception as e:
             self._log(f"Loi tai nhac Drive: {e}", 'err')
             return False
+        finally:
+            if os.path.exists(part_path):
+                try:
+                    os.remove(part_path)
+                except Exception:
+                    pass
 
     def _concat_voice_music(self, voice_path, music_path, out_path, sr, ch, idx, max_seconds=60):
         """Concat voice (full) + music (full), hard-capped at max_seconds via -t.
@@ -2321,6 +2347,7 @@ class Api:
 
         claim_table = params.get('claimTable', '').strip()
         voice_dir = params.get('voiceDir', '').strip()
+        music_dir = params.get('musicDir', '').strip()
         output_dir = params.get('outputDir', '').strip()
         workers = max(1, params.get('workers', 2))
 
@@ -2335,6 +2362,9 @@ class Api:
         if not voice_dir:
             self._log("Chua chon folder Voice.", 'err')
             return
+        if not music_dir:
+            self._log("Chua chon folder Music.", 'err')
+            return
         if not output_dir:
             self._log("Chua chon folder Output.", 'err')
             return
@@ -2346,6 +2376,7 @@ class Api:
             return
 
         os.makedirs(voice_dir, exist_ok=True)
+        os.makedirs(music_dir, exist_ok=True)
         os.makedirs(output_dir, exist_ok=True)
 
         rows = self._parse_claim_table(claim_table)
@@ -2353,98 +2384,81 @@ class Api:
             self._log("Khong co dong hop le trong bang.", 'err')
             return
 
-        music_tmp = os.path.join(self.bin_dir, f'_claim_music_{uuid.uuid4().hex}')
-        os.makedirs(music_tmp)
+        total = len(rows)
+        labels = [r['final_name'] for r in rows]
+        self._js(f"uiApi.initProcessTable({json.dumps(labels)})")
 
-        try:
-            total = len(rows)
-            labels = [r['final_name'] for r in rows]
-            self._js(f"uiApi.initProcessTable({json.dumps(labels)})")
+        ok_count = [0]
+        done_count = [0]
 
-            ok_count = [0]
-            done_count = [0]
+        def update(idx, success):
+            with self._lock:
+                if success:
+                    ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            status = 'done' if success else 'error'
+            if self._stopped:
+                status = 'stopped'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang xu ly... {d}/{total} dong')")
 
-            def update(idx, success):
-                with self._lock:
-                    if success:
-                        ok_count[0] += 1
-                    done_count[0] += 1
-                    d = done_count[0]
-                status = 'done' if success else 'error'
+        def process_one(idx, row):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            final_name = row['final_name']
+            music_name = row['music_name']
+            voice_id = row['voice_id']
+            music_url = row['music_url']
+            try:
                 if self._stopped:
-                    status = 'stopped'
-                self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
-                self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
-                self._js(f"uiApi.setStatus('Dang xu ly... {d}/{total} dong')")
+                    return False
 
-            def process_one(idx, row):
-                self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
-                final_name = row['final_name']
-                music_name = row['music_name']
-                voice_id = row['voice_id']
-                music_url = row['music_url']
-                music_path = None
-                try:
-                    if self._stopped:
+                voice_path = os.path.join(voice_dir, f"{voice_id}.mp3")
+                if not os.path.exists(voice_path):
+                    ok = self._download_voice_tiktok(voice_id, voice_dir, device_id)
+                    if not ok or not os.path.exists(voice_path):
+                        self._log(f"[{idx + 1}] Voice fail: {voice_id}", 'err')
                         return False
+                self._js(f"uiApi.updateProcessItem({idx}, 33, 'running')")
 
-                    voice_path = os.path.join(voice_dir, f"{voice_id}.mp3")
-                    if not os.path.exists(voice_path):
-                        ok = self._download_voice_tiktok(voice_id, voice_dir, device_id)
-                        if not ok or not os.path.exists(voice_path):
-                            self._log(f"[{idx + 1}] Voice fail: {voice_id}", 'err')
-                            return False
-                    self._js(f"uiApi.updateProcessItem({idx}, 33, 'running')")
-
+                music_path = os.path.join(music_dir, self._safe_filename(music_name) + '.wav')
+                if not os.path.exists(music_path):
                     if not music_url:
                         self._log(f"[{idx + 1}] Thieu link nhac dong: {final_name}", 'err')
                         return False
-
-                    music_path = os.path.join(
-                        music_tmp,
-                        f"{idx}_{self._safe_filename(music_name)}.wav",
-                    )
                     if self._stopped:
                         return False
                     ok = self._download_music_drive(music_url, music_path)
                     if not ok or not os.path.exists(music_path):
                         self._log(f"[{idx + 1}] Tai nhac fail: {final_name}", 'err')
                         return False
-                    self._js(f"uiApi.updateProcessItem({idx}, 66, 'running')")
+                self._js(f"uiApi.updateProcessItem({idx}, 66, 'running')")
 
-                    out_path = os.path.join(output_dir, self._safe_filename(final_name) + '.wav')
-                    ok = self._concat_voice_music(voice_path, music_path, out_path, sample_rate, channels, idx, max_seconds)
-                    return ok
+                out_path = os.path.join(output_dir, self._safe_filename(final_name) + '.wav')
+                ok = self._concat_voice_music(voice_path, music_path, out_path, sample_rate, channels, idx, max_seconds)
+                return ok
 
+            except Exception as e:
+                self._log(f"[{idx + 1}] LOI: {e}", 'err')
+                return False
+
+        self._log(f"Tim thay {total} dong | {workers} luong.", 'info')
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, row in enumerate(rows):
+                if self._stopped:
+                    break
+                futures[ex.submit(process_one, i, row)] = i
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success = fut.result()
                 except Exception as e:
-                    self._log(f"[{idx + 1}] LOI: {e}", 'err')
-                    return False
-                finally:
-                    if music_path and os.path.exists(music_path):
-                        try:
-                            os.remove(music_path)
-                        except Exception:
-                            pass
-
-            self._log(f"Tim thay {total} dong | {workers} luong.", 'info')
-
-            futures = {}
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                for i, row in enumerate(rows):
-                    if self._stopped:
-                        break
-                    futures[ex.submit(process_one, i, row)] = i
-                for fut in as_completed(futures):
-                    idx = futures[fut]
-                    try:
-                        success = fut.result()
-                    except Exception as e:
-                        self._log(f"LOI: {e}", 'err')
-                        success = False
-                    update(idx, success)
-
-        finally:
-            shutil.rmtree(music_tmp, ignore_errors=True)
+                    self._log(f"LOI: {e}", 'err')
+                    success = False
+                update(idx, success)
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} dong ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} dong.')")

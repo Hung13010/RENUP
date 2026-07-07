@@ -376,6 +376,11 @@ button[hidden] { display: none !important; }
           <input type="text" id="voiceDir" placeholder="Chọn thư mục lưu cache voice...">
           <button class="browse-btn" onclick="pyApi.browseVoiceDir()">📂</button>
         </div>
+        <div class="field-label" style="margin-top:6px;">🎵 Folder Music (cache)</div>
+        <div class="input-row">
+          <input type="text" id="musicDir" placeholder="Folder luu nhac tai ve (cache)...">
+          <button class="browse-btn" onclick="pyApi.browseMusicDir()">📂</button>
+        </div>
         <div style="margin-top:8px;">
           <button class="btn-sm btn-muted" onclick="pyApi.updateYtDlp()">⟳ Cập nhật yt-dlp</button>
         </div>
@@ -387,10 +392,12 @@ button[hidden] { display: none !important; }
       <div class="field-label">⚙ Chọn chức năng</div>
       <select id="funcSelect" onchange="onFuncChanged()"></select>
 
-      <div class="field-label">📁 Folder Input</div>
-      <div class="input-row">
-        <input type="text" id="inputDir" placeholder="Chọn thư mục chứa video...">
-        <button class="browse-btn" onclick="pyApi.browseInput()">📂</button>
+      <div id="inputDirRow">
+        <div class="field-label">📁 Folder Input</div>
+        <div class="input-row">
+          <input type="text" id="inputDir" placeholder="Chọn thư mục chứa video...">
+          <button class="browse-btn" onclick="pyApi.browseInput()">📂</button>
+        </div>
       </div>
 
       <div class="field-label">📁 Folder Output</div>
@@ -559,10 +566,16 @@ window.uiApi = {
 
   showClaimSection(show) {
     document.getElementById('claimSection').style.display = show ? 'block' : 'none';
+    document.getElementById('inputDirRow').style.display = show ? 'none' : '';
   },
 
   setVoiceDir(path) {
     document.getElementById('voiceDir').value = path;
+    saveClaimState();
+  },
+
+  setMusicDir(path) {
+    document.getElementById('musicDir').value = path;
     saveClaimState();
   },
 
@@ -695,11 +708,13 @@ document.getElementById('editor')?.addEventListener('input', updateLineCount);
 function saveClaimState() {
   pyApi.saveClaimState({
     voiceDir:  document.getElementById('voiceDir').value,
+    musicDir:  document.getElementById('musicDir').value,
     outputDir: document.getElementById('outputDir').value,
     workers:   document.getElementById('workers').value,
   });
 }
 document.getElementById('voiceDir').addEventListener('change', saveClaimState);
+document.getElementById('musicDir').addEventListener('change', saveClaimState);
 document.getElementById('outputDir').addEventListener('change', saveClaimState);
 document.getElementById('workers').addEventListener('change', saveClaimState);
 
@@ -756,6 +771,7 @@ const pyApi = new Proxy({}, {
           },
           claimTable: document.getElementById('claimTable').value,
           voiceDir: document.getElementById('voiceDir').value,
+          musicDir: document.getElementById('musicDir').value,
         }];
       }
       if (method === 'saveNoiTxt') args = [document.getElementById('editor').value];
