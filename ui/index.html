@@ -329,6 +329,16 @@ button[hidden] { display: none !important; }
         </div>
       </div>
 
+      <div id="resizeSection" style="display:none;">
+        <div class="field-label">📐 Kích thước resize (px)</div>
+        <div class="settings-row">
+          <input type="text" id="resizeWidth" value="1080" style="width:80px;">
+          <span style="font-size:11px; color:var(--text-muted);">rộng ×</span>
+          <input type="text" id="resizeHeight" value="1080" style="width:80px;">
+          <span style="font-size:11px; color:var(--text-muted);">cao</span>
+        </div>
+      </div>
+
       <div id="convertSection" style="display:none;">
         <div class="field-label">🔄 Convert sang</div>
         <div class="settings-row">
@@ -540,6 +550,10 @@ window.uiApi = {
 
   showSplitSection(show) {
     document.getElementById('splitSection').style.display = show ? 'block' : 'none';
+  },
+
+  showResizeSection(show) {
+    document.getElementById('resizeSection').style.display = show ? 'block' : 'none';
   },
 
   showConvertSection(show) {
@@ -772,6 +786,8 @@ const pyApi = new Proxy({}, {
           claimTable: document.getElementById('claimTable').value,
           voiceDir: document.getElementById('voiceDir').value,
           musicDir: document.getElementById('musicDir').value,
+          resizeWidth: document.getElementById('resizeWidth').value,
+          resizeHeight: document.getElementById('resizeHeight').value,
         }];
       }
       if (method === 'saveNoiTxt') args = [document.getElementById('editor').value];

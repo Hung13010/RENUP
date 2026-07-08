@@ -346,6 +346,7 @@ class Api:
         self._js(f"uiApi.showOverlaySection({str(code_type == 'overlay_corner').lower()})")
         self._js(f"uiApi.showMultiFolderSection({str(code_type == 'concat_multi_folder').lower()})")
         self._js(f"uiApi.showClaimSection({str(code_type == 'claim_tiktok').lower()})")
+        self._js(f"uiApi.showResizeSection({str(code_type == 'resize_image').lower()})")
 
     def addSeparator(self):
         self._js("document.getElementById('editor').value += '#\\n'; updateLineCount();")
@@ -477,6 +478,8 @@ class Api:
                     self._run_concat_multi_folder(params, code)
                 elif code_type == 'claim_tiktok':
                     self._run_claim_tiktok(params, code)
+                elif code_type == 'resize_image':
+                    self._run_resize_image(params, code)
                 else:
                     self._log(f"Khong ho tro type: {code_type}", 'err')
             except Exception as e:
@@ -912,6 +915,108 @@ class Api:
                 try:
                     success, _ = f.result()
                 except:
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} anh ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} anh.')")
+
+    # ── Resize Image ──
+
+    def _run_resize_image(self, params, code):
+        self._js("uiApi.setStatus('Dang resize anh...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log(f"=== Bat dau: {code.get('name', 'Resize Image')} ===", 'info')
+
+        input_dir = params.get('inputDir', '')
+        output_dir = params.get('outputDir', '')
+        workers = max(1, params.get('workers', 2))
+        from_exts = [e.lower() for e in code.get('from_ext', ['.jpg', '.jpeg', '.png', '.webp'])]
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder.", 'err')
+            return
+
+        try:
+            width = int(params.get('resizeWidth') or 0)
+            height = int(params.get('resizeHeight') or 0)
+        except (ValueError, TypeError):
+            width, height = 0, 0
+
+        if width <= 0 or height <= 0:
+            self._log("Kich thuoc W x H khong hop le.", 'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        files = sorted(
+            f for f in os.listdir(input_dir)
+            if os.path.splitext(f)[1].lower() in from_exts
+        )
+        if not files:
+            self._log(f"Khong tim thay file {', '.join(from_exts)} trong Input.", 'err')
+            return
+
+        total = len(files)
+        self._log(f"Tim thay {total} anh | {workers} luong | resize {width}x{height}.", 'info')
+        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success: ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang resize... {d}/{total} anh')")
+
+        def resize_one(idx, filename):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            inp = os.path.join(input_dir, filename)
+            ext = os.path.splitext(filename)[1].lower()
+            out = os.path.join(output_dir, filename)
+            try:
+                img = Image.open(inp)
+                if ext in ('.jpg', '.jpeg') and img.mode in ('RGBA', 'P'):
+                    bg = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    bg.paste(img, mask=img.split()[3])
+                    img = bg
+                elif img.mode == 'P':
+                    img = img.convert('RGBA' if ext == '.png' else 'RGB')
+
+                img = img.resize((width, height), Image.LANCZOS)
+
+                save_kwargs = {}
+                if ext in ('.jpg', '.jpeg'):
+                    save_kwargs = {'quality': 95, 'optimize': True}
+                elif ext == '.webp':
+                    save_kwargs = {'quality': 95, 'method': 4}
+                elif ext == '.png':
+                    save_kwargs = {'optimize': True}
+
+                img.save(out, **save_kwargs)
+                self._log(f"  OK: {filename}", 'ok')
+                return (True, filename)
+            except Exception as e:
+                self._log(f"  LOI: {e}", 'err')
+                return (False, filename)
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in enumerate(files):
+                if self._stopped: break
+                futures[ex.submit(resize_one, i, f)] = i
+            for f in as_completed(futures):
+                idx = futures[f]
+                try:
+                    success, _ = f.result()
+                except Exception:
                     success = False
                 update(idx, success)
 
