@@ -2225,6 +2225,11 @@ class Api:
         #      | [5] Ten Bai Nhac Goc (bo qua) | [6] Anh Bia Album (bo qua) | [7] Doi tac (bo qua)
         #      | [8] Ten Folder Nhac (optional, dung de route output vao thu muc con)
         rows = []
+        # Fill-forward state cho cot [8] (Ten Folder Nhac): mo phong hanh vi merged-cell
+        # cua Google Sheets — khi copy ra text, chi dong dau cua vung merge co chu, cac
+        # dong con lai trong vung do ra cot trong. Dong trong ke thua gia tri cua dong
+        # gan nhat phia tren co chu, cho toi khi gap dong co chu moi.
+        last_folder_name = ''
         for raw_line in text.split('\n'):
             line = raw_line.rstrip('\r').strip()
             if not line:
@@ -2243,6 +2248,10 @@ class Api:
             mu = parts[3].strip() if len(parts) >= 4 else ''
             # parts[4], parts[5], parts[6] (Ten Bai Nhac Goc / Anh Bia Album / Doi tac) bi bo qua
             folder_name = parts[7].strip() if len(parts) >= 8 else ''
+            if folder_name:
+                last_folder_name = folder_name
+            else:
+                folder_name = last_folder_name
             rows.append({
                 'final_name': fn,
                 'music_name': mn,
