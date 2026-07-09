@@ -1,7 +1,7 @@
 {
   "name": "Claim Tiktok (voice TikTok + nhac Drive -> WAV)",
   "type": "claim_tiktok",
-  "description": "Dan bang (Tab): Ten Final | Bai Nhac Claim | Voice ID | Link nhac (link Drive tung file). Tai voice tu TikTok + nhac tu link Drive rieng tung dong, ghep voice->nhac, xuat WAV. Output toi da 60s (voice phat day du, nhac cat lap phan con lai).",
+  "description": "Dan bang (Tab, co the copy 8 cot B->I tu Google Sheet): [1] Ten Final | [2] Bai Nhac Claim | [3] Voice ID | [4] Link nhac (link Drive tung file) | [5] Ten Bai Nhac Goc (bo qua) | [6] Anh Bia Album (bo qua) | [7] Doi tac (bo qua) | [8] Ten Folder Nhac (TUY CHON). Tai voice tu TikTok + nhac tu link Drive rieng tung dong, ghep voice->nhac, xuat WAV. Neu cot 8 co gia tri, file .wav cua dong do se duoc luu vao Output/<Ten Folder Nhac>/<Ten Final>.wav (tu tao thu muc con neu chua co); neu cot 8 trong hoac bang chi co 4 cot (bang cu), luu thang vao Output/<Ten Final>.wav nhu truoc. Output toi da 60s (voice phat day du, nhac cat lap phan con lai).",
   "device_id": "7300000000000000000",
   "sample_rate": 44100,
   "channels": 2,

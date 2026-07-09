@@ -2221,6 +2221,9 @@ class Api:
     # ── Claim Tiktok ──
 
     def _parse_claim_table(self, text):
+        # Cot: [1] Ten Final | [2] Bai Nhac Claim | [3] Link_Voice goc | [4] Link Bai Nhac
+        #      | [5] Ten Bai Nhac Goc (bo qua) | [6] Anh Bia Album (bo qua) | [7] Doi tac (bo qua)
+        #      | [8] Ten Folder Nhac (optional, dung de route output vao thu muc con)
         rows = []
         for raw_line in text.split('\n'):
             line = raw_line.rstrip('\r').strip()
@@ -2238,7 +2241,15 @@ class Api:
                 self._log(f"Bo qua dong tieu de: {line[:80]}", 'info')
                 continue
             mu = parts[3].strip() if len(parts) >= 4 else ''
-            rows.append({'final_name': fn, 'music_name': mn, 'voice_id': vi, 'music_url': mu})
+            # parts[4], parts[5], parts[6] (Ten Bai Nhac Goc / Anh Bia Album / Doi tac) bi bo qua
+            folder_name = parts[7].strip() if len(parts) >= 8 else ''
+            rows.append({
+                'final_name': fn,
+                'music_name': mn,
+                'voice_id': vi,
+                'music_url': mu,
+                'folder_name': folder_name,
+            })
         return rows
 
     def _safe_filename(self, name):
@@ -2515,6 +2526,7 @@ class Api:
             music_name = row['music_name']
             voice_id = row['voice_id']
             music_url = row['music_url']
+            folder_name = row.get('folder_name', '').strip()
             try:
                 if self._stopped:
                     return False
@@ -2540,7 +2552,12 @@ class Api:
                         return False
                 self._js(f"uiApi.updateProcessItem({idx}, 66, 'running')")
 
-                out_path = os.path.join(output_dir, self._safe_filename(final_name) + '.wav')
+                if folder_name:
+                    row_output_dir = os.path.join(output_dir, self._safe_filename(folder_name))
+                    os.makedirs(row_output_dir, exist_ok=True)
+                else:
+                    row_output_dir = output_dir
+                out_path = os.path.join(row_output_dir, self._safe_filename(final_name) + '.wav')
                 ok = self._concat_voice_music(voice_path, music_path, out_path, sample_rate, channels, idx, max_seconds)
                 return ok
 
