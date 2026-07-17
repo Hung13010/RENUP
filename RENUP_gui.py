@@ -2265,6 +2265,13 @@ class Api:
         import re
         return re.sub(r'[\\/:*?"<>|]', '_', name)
 
+    @staticmethod
+    def _with_short_suffix(name):
+        stripped = name.rstrip()
+        if re.search(r'shorts?\s*$', stripped, re.IGNORECASE):
+            return stripped
+        return stripped + ' short'
+
 
     def _download_voice_tiktok(self, voice_id, voice_dir, device_id):
         if self._stopped:
@@ -2562,7 +2569,8 @@ class Api:
                 self._js(f"uiApi.updateProcessItem({idx}, 66, 'running')")
 
                 if folder_name:
-                    row_output_dir = os.path.join(output_dir, self._safe_filename(folder_name))
+                    dir_name = self._with_short_suffix(folder_name)
+                    row_output_dir = os.path.join(output_dir, self._safe_filename(dir_name))
                     os.makedirs(row_output_dir, exist_ok=True)
                 else:
                     row_output_dir = output_dir
