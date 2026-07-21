@@ -958,8 +958,9 @@ class Api:
             return
 
         total = len(files)
-        self._log(f"Tim thay {total} anh | {workers} luong | resize {width}x{height}.", 'info')
-        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+        self._log(f"Tim thay {total} anh | {workers} luong | resize {width}x{height} -> JPG 300 DPI.", 'info')
+        new_names = [os.path.splitext(f)[0] + '.jpg' for f in files]
+        self._js(f"uiApi.initProcessTable({json.dumps(new_names)})")
 
         ok_count = [0]
         done_count = [0]
@@ -977,35 +978,28 @@ class Api:
         def resize_one(idx, filename):
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
             inp = os.path.join(input_dir, filename)
-            ext = os.path.splitext(filename)[1].lower()
-            out = os.path.join(output_dir, filename)
+            new_name = os.path.splitext(filename)[0] + '.jpg'
+            out = os.path.join(output_dir, new_name)
             try:
                 img = Image.open(inp)
-                if ext in ('.jpg', '.jpeg') and img.mode in ('RGBA', 'P'):
-                    bg = Image.new('RGB', img.size, (255, 255, 255))
-                    if img.mode == 'P':
+                # Output is always JPEG now -> flatten any alpha/palette onto white bg
+                if img.mode in ('RGBA', 'P', 'LA'):
+                    if img.mode != 'RGBA':
                         img = img.convert('RGBA')
-                    bg.paste(img, mask=img.split()[3])
+                    bg = Image.new('RGB', img.size, (255, 255, 255))
+                    bg.paste(img, mask=img.split()[-1])
                     img = bg
-                elif img.mode == 'P':
-                    img = img.convert('RGBA' if ext == '.png' else 'RGB')
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
 
                 img = img.resize((width, height), Image.LANCZOS)
 
-                save_kwargs = {}
-                if ext in ('.jpg', '.jpeg'):
-                    save_kwargs = {'quality': 95, 'optimize': True}
-                elif ext == '.webp':
-                    save_kwargs = {'quality': 95, 'method': 4}
-                elif ext == '.png':
-                    save_kwargs = {'optimize': True}
-
-                img.save(out, **save_kwargs)
-                self._log(f"  OK: {filename}", 'ok')
-                return (True, filename)
+                img.save(out, 'JPEG', quality=95, optimize=True, dpi=(300, 300))
+                self._log(f"  OK: {new_name}", 'ok')
+                return (True, new_name)
             except Exception as e:
                 self._log(f"  LOI: {e}", 'err')
-                return (False, filename)
+                return (False, new_name)
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:

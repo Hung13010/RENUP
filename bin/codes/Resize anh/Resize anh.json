@@ -1,6 +1,6 @@
 {
   "name": "Resize ảnh (đúng W×H)",
   "type": "resize_image",
-  "description": "Resize tất cả ảnh trong Input về đúng kích thước W×H (có thể méo nếu khác tỷ lệ gốc)",
+  "description": "Resize tất cả ảnh trong Input về đúng kích thước W×H (có thể méo nếu khác tỷ lệ gốc). Đầu ra LUÔN là JPG (300 DPI), bất kể định dạng gốc (JPG/PNG/WEBP)",
   "from_ext": [".jpg", ".jpeg", ".png", ".webp"]
 }
