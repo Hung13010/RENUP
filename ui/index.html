@@ -287,6 +287,10 @@ button[hidden] { display: none !important; }
 .update-new { font-size: 14px; font-weight: 700; color: var(--accent); }
 .update-btns { display: flex; gap: 8px; justify-content: center; }
 .update-btns button { width: 140px; }
+
+/* ── RETRY FAILED ROWS DIALOG (ADR-007) — reuses .update-overlay/.update-box, only stacks buttons full-width because label text is longer ("Chay lai N dong loi") than the 140px default ── */
+.retry-btns { flex-direction: column; }
+.retry-btns button { width: 100%; }
 </style>
 </head>
 <body>
@@ -391,6 +395,39 @@ button[hidden] { display: none !important; }
           <input type="text" id="musicDir" placeholder="Folder luu nhac tai ve (cache)...">
           <button class="browse-btn" onclick="pyApi.browseMusicDir()">📂</button>
         </div>
+        <div style="margin-top:8px;">
+          <button class="btn-sm btn-muted" onclick="pyApi.updateYtDlp()">⟳ Cập nhật yt-dlp</button>
+        </div>
+      </div>
+
+      <div id="youtubeSection" style="display:none;">
+        <div class="field-label">▶ Link Youtube (mỗi dòng 1 link)</div>
+        <textarea id="ytLinks" style="min-height:120px;"
+                  placeholder="https://www.youtube.com/watch?v=..." spellcheck="false"></textarea>
+
+        <div class="field-label" style="margin-top:6px;">🎬 Định dạng</div>
+        <div class="settings-row">
+          <select id="ytFormat" style="width:160px;" onchange="onYtFormatChanged()">
+            <option value="MP4">MP4 (video)</option>
+            <option value="MP3">MP3 (chỉ âm thanh)</option>
+          </select>
+        </div>
+
+        <div id="ytQualityRow">
+          <div class="field-label" style="margin-top:6px;">⚙ Chất lượng</div>
+          <div class="settings-row">
+            <select id="ytQuality" style="width:160px;">
+              <option value="Best">Best (cao nhất có sẵn)</option>
+              <option value="2160p">2160p (4K)</option>
+              <option value="1440p">1440p (2K)</option>
+              <option value="1080p">1080p (Full HD)</option>
+              <option value="720p">720p (HD)</option>
+              <option value="480p">480p</option>
+              <option value="360p">360p</option>
+            </select>
+          </div>
+        </div>
+
         <div style="margin-top:8px;">
           <button class="btn-sm btn-muted" onclick="pyApi.updateYtDlp()">⟳ Cập nhật yt-dlp</button>
         </div>
@@ -506,6 +543,23 @@ button[hidden] { display: none !important; }
   </div>
 </div>
 
+<!-- RETRY FAILED ROWS DIALOG (ADR-007) -->
+<div class="update-overlay" id="retryOverlay">
+  <div class="update-box">
+    <div class="update-icon">↻</div>
+    <div class="update-title">Lần chạy trước có dòng lỗi</div>
+    <div class="update-versions">
+      Có <strong id="retryFailCount">0</strong> dòng lỗi trong tổng số <strong id="retryTotalCount">0</strong> dòng.<br>
+      Bạn muốn làm gì?
+    </div>
+    <div class="update-btns retry-btns">
+      <button class="btn-accent" id="retryFailedBtn">↻ Chạy lại dòng lỗi</button>
+      <button class="btn-muted" id="retryAllBtn">▶ Chạy lại tất cả</button>
+      <button class="btn-danger" id="retryCancelBtn">✕ Hủy</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Globals ──
 let selectedRows = new Set();
@@ -520,6 +574,11 @@ function onFuncChanged() {
   const sel = document.getElementById('funcSelect');
   const val = sel.value;
   pyApi.onFuncChanged(val);
+}
+
+function onYtFormatChanged() {
+  const isMp3 = document.getElementById('ytFormat').value === 'MP3';
+  document.getElementById('ytQualityRow').style.display = isMp3 ? 'none' : '';
 }
 
 // ── Called from Python ──
@@ -581,6 +640,12 @@ window.uiApi = {
   showClaimSection(show) {
     document.getElementById('claimSection').style.display = show ? 'block' : 'none';
     document.getElementById('inputDirRow').style.display = show ? 'none' : '';
+  },
+
+  showYoutubeSection(show) {
+    document.getElementById('youtubeSection').style.display = show ? 'block' : 'none';
+    document.getElementById('inputDirRow').style.display = show ? 'none' : '';
+    if (show) onYtFormatChanged();
   },
 
   setVoiceDir(path) {
@@ -758,39 +823,98 @@ function showUpdateDialog(current, latest, downloadUrl) {
   document.getElementById('updateOverlay').classList.add('show');
 }
 
+// ── Retry failed rows dialog (ADR-007) ──
+// Python calls showRetryDialog(nFail, nAll) directly (not via uiApi, same as
+// showUpdateDialog) when run() detects the previous batch had >=1 failed row
+// with the same input signature. Python then blocks (threading.Event, 120s
+// timeout) waiting for exactly one pywebview.api.retryChoice(choice) call.
+// Every exit path from this dialog — button click, Esc, click on the dimmed
+// backdrop — MUST call choose() exactly once, or the Python worker thread
+// stalls until the timeout. The `answered` guard (local to each
+// showRetryDialog() invocation) protects against a double-click on a button
+// firing retryChoice twice for the same dialog instance.
+function showRetryDialog(nFail, nAll) {
+  document.getElementById('retryFailCount').textContent = nFail;
+  document.getElementById('retryTotalCount').textContent = nAll;
+  document.getElementById('retryFailedBtn').textContent = '↻ Chạy lại ' + nFail + ' dòng lỗi';
+  document.getElementById('retryAllBtn').textContent = '▶ Chạy lại tất cả (' + nAll + ')';
+
+  const overlay = document.getElementById('retryOverlay');
+  let answered = false;
+  function choose(v) {
+    if (answered) return;      // exactly-once guard (double-click / dupe events)
+    answered = true;
+    overlay.classList.remove('show');
+    document.onkeydown = null;
+    overlay.onclick = null;
+    if (window.pywebview && window.pywebview.api) window.pywebview.api.retryChoice(v);
+  }
+  document.getElementById('retryFailedBtn').onclick = function () { choose('failed'); };
+  document.getElementById('retryAllBtn').onclick    = function () { choose('all'); };
+  document.getElementById('retryCancelBtn').onclick = function () { choose('cancel'); };
+  document.onkeydown = function (e) { if (e.key === 'Escape') choose('cancel'); };
+  // Click on the dimmed backdrop (not the dialog box itself) = Hủy
+  overlay.onclick = function (e) { if (e.target === overlay) choose('cancel'); };
+
+  overlay.classList.add('show');
+  document.getElementById('retryFailedBtn').focus();   // default action = cheapest one (retry failed only)
+}
+
+function hideRetryDialog() {
+  // Python calls this when its wait times out (120s) or the app is stopped.
+  // Python has already resolved its own wait to 'cancel' at that point, so
+  // this only tears down the UI — it must NOT call retryChoice (Python is no
+  // longer listening for it).
+  document.getElementById('retryOverlay').classList.remove('show');
+  document.onkeydown = null;
+  document.getElementById('retryOverlay').onclick = null;
+}
+
 function toggleLog() {
   document.getElementById('logArea').classList.toggle('collapsed');
   document.getElementById('logToggle').classList.toggle('collapsed');
 }
 
 // ── pyApi proxy (pywebview exposes this) ──
+// getFieldValue: null-safe .value read. Every field read while building `run` params
+// goes through this helper so that a missing/renamed DOM element degrades to '' instead
+// of throwing a TypeError that would disable the RUN button for every function, not just
+// the one whose section happens to be hidden at the time.
+function getFieldValue(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : '';
+}
+
 const pyApi = new Proxy({}, {
   get(_, method) {
     return (...args) => {
       if (method === 'addSelectedToEditor') args = [Array.from(selectedRows)];
       if (method === 'run') {
         args = [{
-          func: document.getElementById('funcSelect').value,
-          inputDir: document.getElementById('inputDir').value,
-          outputDir: document.getElementById('outputDir').value,
-          workers: parseInt(document.getElementById('workers').value) || 2,
-          splitSeconds: parseInt(document.getElementById('splitSeconds').value) || 300,
-          convertTarget: document.getElementById('convertTarget').value,
-          editorText: document.getElementById('editor').value,
-          overlayPath: document.getElementById('overlayPath').value,
+          func: getFieldValue('funcSelect'),
+          inputDir: getFieldValue('inputDir'),
+          outputDir: getFieldValue('outputDir'),
+          workers: parseInt(getFieldValue('workers')) || 2,
+          splitSeconds: parseInt(getFieldValue('splitSeconds')) || 300,
+          convertTarget: getFieldValue('convertTarget'),
+          editorText: getFieldValue('editor'),
+          overlayPath: getFieldValue('overlayPath'),
           folders: {
-            kichban: document.getElementById('kichBanDir').value,
-            art: document.getElementById('artDir').value,
-            edit: document.getElementById('editDir').value,
+            kichban: getFieldValue('kichBanDir'),
+            art: getFieldValue('artDir'),
+            edit: getFieldValue('editDir'),
           },
-          claimTable: document.getElementById('claimTable').value,
-          voiceDir: document.getElementById('voiceDir').value,
-          musicDir: document.getElementById('musicDir').value,
-          resizeWidth: document.getElementById('resizeWidth').value,
-          resizeHeight: document.getElementById('resizeHeight').value,
+          claimTable: getFieldValue('claimTable'),
+          voiceDir: getFieldValue('voiceDir'),
+          musicDir: getFieldValue('musicDir'),
+          resizeWidth: getFieldValue('resizeWidth'),
+          resizeHeight: getFieldValue('resizeHeight'),
+          ytLinks: getFieldValue('ytLinks'),
+          ytFormat: getFieldValue('ytFormat'),
+          ytQuality: getFieldValue('ytQuality'),
         }];
       }
-      if (method === 'saveNoiTxt') args = [document.getElementById('editor').value];
+      if (method === 'saveNoiTxt') args = [getFieldValue('editor')];
       if (window.pywebview && window.pywebview.api && window.pywebview.api[method]) {
         return window.pywebview.api[method](...args);
       }

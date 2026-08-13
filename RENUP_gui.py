@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import json
+import hashlib
 import random
 import urllib.request
 import urllib.error
@@ -39,6 +40,20 @@ GITHUB_REPO = "Hung13010/RENUP"
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
+# ── Youtube Download: regex constants (module-level so they compile once) ──
+YT_ID_PATTERNS = [
+    re.compile(r'youtu\.be/([A-Za-z0-9_-]{11})'),
+    re.compile(r'youtube\.com/watch\?(?:.*&)?v=([A-Za-z0-9_-]{11})'),
+    re.compile(r'youtube\.com/shorts/([A-Za-z0-9_-]{11})'),
+    re.compile(r'youtube\.com/live/([A-Za-z0-9_-]{11})'),
+    re.compile(r'youtube\.com/embed/([A-Za-z0-9_-]{11})'),
+]
+YT_ID_BARE = re.compile(r'^[A-Za-z0-9_-]{11}$')
+YT_QUALITIES = ('Best', '2160p', '1440p', '1080p', '720p', '480p', '360p')
+RE_YT_DL = re.compile(r'^\[download\]\s+(\d{1,3}(?:\.\d+)?)%')
+RE_YT_POST = re.compile(r'^\[(Merger|ExtractAudio|VideoRemuxer|ThumbnailsConvertor|FixupM3u8|Fixup\w*)\]')
+
+
 def get_version():
     for d in [get_bundle_dir(), get_app_dir()]:
         vf = os.path.join(d, 'version.txt')
@@ -53,6 +68,8 @@ def get_version():
 # ══════════════════════════════════════════════════════════════
 
 class Api:
+    RETRY_SIG_IGNORE = {'workers'}   # ADR-007: cac khoa loai khoi chu ky dau vao
+
     def __init__(self):
         app_dir = get_app_dir()
         self.bin_dir = os.path.join(app_dir, 'bin')
@@ -73,6 +90,17 @@ class Api:
         self._task_results = {}     # {idx: True/False}
         self._current_executor = None
         self._run_params = None
+
+        # ── ADR-007: retry failed rows ──
+        self._retry_sig = None          # str|None - chu ky dau vao cua lan chay truoc
+        self._retry_failed = []         # list[str] - nhan cac dong loi lan truoc, giu thu tu
+        self._retry_total = 0           # int - tong so dong lan truoc (chi de hien thi trong popup)
+        self._retry_mode = 'all'        # 'all' | 'failed' - che do cua lan chay HIEN TAI
+        self._retry_targets = None      # set[str]|None - None = chay tat ca
+        self._batch_outcomes = {}       # dict[str,bool] - nhan -> thanh cong, cua lan chay hien tai
+        self._batch_labels = None       # list[str]|None - toan bo nhan cua lan chay hien tai
+        self._retry_choice = ''         # '' | 'failed' | 'all' | 'cancel'
+        self._retry_event = threading.Event()
 
     def set_window(self, window):
         self._window = window
@@ -198,8 +226,7 @@ class Api:
 
     def _update_task_progress(self, idx, success):
         """Update process table and progress bar for completed task."""
-        status = 'done' if success else 'error'
-        self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+        self._mark_row(idx, success)
         with self._lock:
             done = sum(1 for v in self._task_results.values())
             ok = sum(1 for v in self._task_results.values() if v)
@@ -347,6 +374,7 @@ class Api:
         self._js(f"uiApi.showMultiFolderSection({str(code_type == 'concat_multi_folder').lower()})")
         self._js(f"uiApi.showClaimSection({str(code_type == 'claim_tiktok').lower()})")
         self._js(f"uiApi.showResizeSection({str(code_type == 'resize_image').lower()})")
+        self._js(f"uiApi.showYoutubeSection({str(code_type == 'youtube_download').lower()})")
 
     def addSeparator(self):
         self._js("document.getElementById('editor').value += '#\\n'; updateLineCount();")
@@ -437,6 +465,138 @@ class Api:
         text = '\\n'.join(names) + '\\n'
         self._js(f"document.getElementById('editor').value += '{text}'; updateLineCount();")
 
+    # ── ADR-007: retry failed rows ──
+
+    def _input_signature(self, params):
+        """Chu ky dau vao: hash moi khoa trong params TRU RETRY_SIG_IGNORE.
+
+        Dung chung cho moi function, ke ca function them sau nay - khong co
+        bang anh xa nao phai bao tri (ADR-007, Nhom 4).
+        'workers' bi loai: tang so luong roi chay lai phan loi la thao tac hop le.
+        """
+        try:
+            data = {k: v for k, v in (params or {}).items()
+                    if k not in self.RETRY_SIG_IGNORE}
+            blob = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:
+            blob = repr(params)
+        return hashlib.sha1(blob.encode('utf-8', 'replace')).hexdigest()
+
+    def _ask_retry_mode(self, params):
+        """Tra ve 'all' | 'failed' | 'cancel'. Chay trong thread nen cua run().
+
+        Khong hien popup (tra 'all' luon) khi:
+          - chua co lan chay nao truoc do, HOAC
+          - lan truoc khong co dong loi nao, HOAC
+          - chu ky dau vao khac lan truoc (user da sua dau vao -> coi nhu chay moi)
+        """
+        sig = self._input_signature(params)
+
+        if not self._retry_failed or self._retry_sig != sig:
+            # Dau vao doi hoac khong co gi de chay lai -> bo trang thai cu
+            self._retry_sig = sig
+            self._retry_failed = []
+            self._retry_total = 0
+            return 'all'
+
+        n_fail = len(self._retry_failed)
+        n_all = self._retry_total or n_fail
+
+        self._retry_choice = ''
+        self._retry_event.clear()
+        self._js(f"showRetryDialog({n_fail}, {n_all})")
+
+        # Cho user chon. Khong dung sleep co dinh nhu tien le _check_already_encoded
+        # vi dialog 3 nut khong chan luong JS nhu confirm().
+        waited = 0.0
+        while not self._retry_event.wait(0.2):
+            waited += 0.2
+            if self._stopped or waited >= 120.0:
+                self._js("hideRetryDialog()")
+                return 'cancel'
+        return self._retry_choice or 'cancel'
+
+    def retryChoice(self, choice):
+        """Nhan lua chon tu popup. Goi tu JS: pywebview.api.retryChoice('failed').
+
+        choice: 'failed' | 'all' | 'cancel'
+        """
+        self._retry_choice = choice if choice in ('failed', 'all', 'cancel') else 'cancel'
+        self._retry_event.set()
+
+    def _begin_run(self, mode, sig):
+        """Chuan bi trang thai retry cho mot lan chay. Goi 1 lan tu run()."""
+        self._retry_mode = mode
+        self._retry_sig = sig
+        self._retry_targets = set(self._retry_failed) if mode == 'failed' else None
+        self._batch_outcomes = {}
+
+    def _begin_batch(self, labels):
+        """Dung process table va tra ve danh sach dong can chay lan nay.
+
+        labels: list[str] - TOAN BO nhan (giong het tham so dang truyen cho
+                uiApi.initProcessTable hien tai)
+        return: list[(idx_goc, label)] - chi nhung dong can chay.
+                idx_goc la index trong `labels`, dung cho updateProcessItem.
+
+        Hop dong uiApi.initProcessTable KHONG doi: bang luon dung day du moi dong.
+        Dong khong chay lai duoc to 'done' ngay (ADR-007, Quyet dinh 6).
+        """
+        labels = [str(x) for x in labels]
+        self._batch_labels = labels
+        self._batch_outcomes = {}
+        self._js(f"uiApi.initProcessTable({json.dumps(labels)})")
+
+        if self._retry_mode != 'failed' or self._retry_targets is None:
+            return list(enumerate(labels))
+
+        run_items, skipped = [], 0
+        for i, lb in enumerate(labels):
+            if lb in self._retry_targets:
+                run_items.append((i, lb))
+            else:
+                skipped += 1
+                self._batch_outcomes[lb] = True          # giu nguyen ket qua cu
+                self._js(f"uiApi.updateProcessItem({i}, 100, 'done')")
+
+        if not run_items:
+            self._log("Khong con dong loi nao khop, chay lai tat ca.", 'info')
+            self._batch_outcomes = {}
+            return list(enumerate(labels))
+
+        self._log(f"Chay lai {len(run_items)} dong loi (bo qua {skipped} dong da xong).", 'info')
+        return run_items
+
+    def _mark_row(self, idx, success):
+        """Phat status cuoi cung cua mot dong + ghi ket qua theo nhan.
+
+        Thay cho cap dong dang lap 12 lan:
+            status = 'done' if success else 'error'
+            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+        Da gop luon nhanh 'stopped' von dang lap o _run_claim_tiktok + _run_youtube_download.
+        """
+        status = 'done' if success else 'error'
+        if self._stopped:
+            status = 'stopped'
+        self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+        try:
+            lb = self._batch_labels[idx]
+        except (IndexError, AttributeError, TypeError):
+            return                                   # khong co bang -> khong ghi gi
+        if not self._stopped:
+            self._batch_outcomes[lb] = bool(success)
+
+    def _end_run(self):
+        """Chot danh sach dong loi cho lan chay sau."""
+        labels = self._batch_labels
+        if not labels:
+            return                       # handler khong co process table (hoac loi som) -> giu nguyen
+        failed = [lb for lb in labels if self._batch_outcomes.get(lb) is False]
+        # Dong chua co phan quyet (bi Stop / chua submit) coi nhu chua loi -> khong dua vao
+        self._retry_failed = failed
+        self._retry_total = len(labels)
+        self._batch_labels = None
+
     # ── RUN ──
 
     def run(self, params):
@@ -454,6 +614,13 @@ class Api:
 
         def _work():
             try:
+                mode = self._ask_retry_mode(params)
+                if mode == 'cancel':
+                    self._log("Da huy.", 'info')
+                    self._js("uiApi.setStatus('Da huy.')")
+                    return
+                self._begin_run(mode, self._input_signature(params))
+
                 if code_type == 'concat':
                     self._run_concat(params)
                 elif code_type == 'convert_mp3':
@@ -480,11 +647,14 @@ class Api:
                     self._run_claim_tiktok(params, code)
                 elif code_type == 'resize_image':
                     self._run_resize_image(params, code)
+                elif code_type == 'youtube_download':
+                    self._run_youtube_download(params, code)
                 else:
                     self._log(f"Khong ho tro type: {code_type}", 'err')
             except Exception as e:
                 self._log(f"LOI: {e}", 'err')
             finally:
+                self._end_run()
                 self.is_running = False
                 self._js("uiApi.setRunning(false)")
 
@@ -599,9 +769,9 @@ class Api:
             self._log("Khong tim thay file .mp4.", 'err')
             return
 
-        total = len(mp4s)
-        self._log(f"Tim thay {total} file | {workers} luong.", 'info')
-        self._js(f"uiApi.initProcessTable({json.dumps(mp4s)})")
+        run_items = self._begin_batch(mp4s)
+        total = len(run_items)
+        self._log(f"Tim thay {len(mp4s)} file | {workers} luong.", 'info')
 
         ok_count = [0]
         done_count = [0]
@@ -611,8 +781,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang convert... {d}/{total} file')")
 
@@ -628,13 +797,13 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, mp4 in enumerate(mp4s):
+            for i, mp4 in run_items:
                 futures[ex.submit(convert_one, i, mp4)] = i
             for f in as_completed(futures):
                 idx = futures[f]
                 try: success, _ = f.result()
                 except: success = False
-                update(success)
+                update(idx, success)
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} file ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} file.')")
@@ -793,13 +962,11 @@ class Api:
             if self._stopped:
                 return
 
-        total = len(files)
+        run_items = self._begin_batch(files)
+        total = len(run_items)
         self._total_tasks = total
         self._task_results = {}
-        self._log(f"Tim thay {total} video | {workers} luong.", 'info')
-
-        files_json = json.dumps(files)
-        self._js(f"uiApi.initProcessTable({files_json})")
+        self._log(f"Tim thay {len(files)} video | {workers} luong.", 'info')
 
         # Build task functions for each file
         def make_task(idx, vf):
@@ -815,7 +982,7 @@ class Api:
                 return self._run_ffmpeg_with_table(cmd, idx, dur, vf)
             return task_fn
 
-        all_tasks = [(i, make_task(i, vf)) for i, vf in enumerate(files)]
+        all_tasks = [(i, make_task(i, vf)) for i, vf in run_items]
         self._pending_tasks = list(all_tasks)
 
         # Run batch
@@ -858,9 +1025,9 @@ class Api:
             self._log(f"Khong tim thay file {', '.join(from_exts)} trong Input.", 'err')
             return
 
-        total = len(files)
-        self._log(f"Tim thay {total} anh | {workers} luong.", 'info')
-        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        self._log(f"Tim thay {len(files)} anh | {workers} luong.", 'info')
 
         ok_count = [0]
         done_count = [0]
@@ -870,8 +1037,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang convert... {d}/{total} anh')")
 
@@ -908,7 +1074,7 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in enumerate(files):
+            for i, f in run_items:
                 futures[ex.submit(convert_one, i, f)] = i
             for f in as_completed(futures):
                 idx = futures[f]
@@ -957,10 +1123,10 @@ class Api:
             self._log(f"Khong tim thay file {', '.join(from_exts)} trong Input.", 'err')
             return
 
-        total = len(files)
-        self._log(f"Tim thay {total} anh | {workers} luong | resize {width}x{height} -> JPG 300 DPI.", 'info')
         new_names = [os.path.splitext(f)[0] + '.jpg' for f in files]
-        self._js(f"uiApi.initProcessTable({json.dumps(new_names)})")
+        run_items = self._begin_batch(new_names)
+        total = len(run_items)
+        self._log(f"Tim thay {len(files)} anh | {workers} luong | resize {width}x{height} -> JPG 300 DPI.", 'info')
 
         ok_count = [0]
         done_count = [0]
@@ -970,8 +1136,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang resize... {d}/{total} anh')")
 
@@ -1003,9 +1168,9 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in enumerate(files):
+            for i, _lb in run_items:
                 if self._stopped: break
-                futures[ex.submit(resize_one, i, f)] = i
+                futures[ex.submit(resize_one, i, files[i])] = i
             for f in as_completed(futures):
                 idx = futures[f]
                 try:
@@ -1063,9 +1228,9 @@ class Api:
             self._log(f"Khong mo duoc file overlay: {e}", 'err')
             return
 
-        total = len(files)
-        self._log(f"Tim thay {total} anh | overlay: {os.path.basename(overlay_path)} | {workers} luong.", 'info')
-        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        self._log(f"Tim thay {len(files)} anh | overlay: {os.path.basename(overlay_path)} | {workers} luong.", 'info')
 
         ok_count = [0]
         done_count = [0]
@@ -1075,8 +1240,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang ghep overlay... {d}/{total} anh')")
 
@@ -1133,7 +1297,7 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in enumerate(files):
+            for i, f in run_items:
                 if self._stopped:
                     break
                 futures[ex.submit(composite_one, i, f)] = i
@@ -1212,14 +1376,14 @@ class Api:
                 self._log(f"Folder {label} rong, dung.", 'err')
                 return
 
-        total = len(goc_list)
+        run_items = self._begin_batch(goc_list)
+        total = len(run_items)
         self._log(
-            f"Tim thay {total} video goc | "
+            f"Tim thay {len(goc_list)} video goc | "
             f"Kich Ban: {len(kichban_list)} | Art: {len(art_list)} | Edit: {len(edit_list)} | "
             f"{workers} luong.",
             'info'
         )
-        self._js(f"uiApi.initProcessTable({json.dumps(goc_list)})")
 
         ok_count = [0]
         done_count = [0]
@@ -1229,8 +1393,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang ghep... {d}/{total} video')")
 
@@ -1379,7 +1542,7 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, goc_filename in enumerate(goc_list):
+            for i, goc_filename in run_items:
                 if self._stopped:
                     break
                 futures[ex.submit(process_one, i, goc_filename)] = i
@@ -1421,9 +1584,9 @@ class Api:
             self._log(f"Khong tim thay file {', '.join(from_exts)} trong Input.", 'err')
             return
 
-        total = len(files)
-        self._log(f"Tim thay {total} file | {workers} luong.", 'info')
-        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        self._log(f"Tim thay {len(files)} file | {workers} luong.", 'info')
 
         ok_count = [0]
         done_count = [0]
@@ -1433,8 +1596,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang convert... {d}/{total} file')")
 
@@ -1469,7 +1631,7 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in enumerate(files):
+            for i, f in run_items:
                 futures[ex.submit(convert_one, i, f)] = i
             for f in as_completed(futures):
                 idx = futures[f]
@@ -1523,9 +1685,9 @@ class Api:
             self._log(f"Khong tim thay file {', '.join(from_exts)} trong Input.", 'err')
             return
 
-        total = len(files)
-        self._log(f"Tim thay {total} file | {workers} luong.", 'info')
-        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        self._log(f"Tim thay {len(files)} file | {workers} luong.", 'info')
 
         ok_count = [0]
         done_count = [0]
@@ -1535,8 +1697,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang xoa metadata... {d}/{total}')")
 
@@ -1582,7 +1743,7 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in enumerate(files):
+            for i, f in run_items:
                 if self._stopped: break
                 futures[ex.submit(worker_fn, i, f)] = i
             for fut in as_completed(futures):
@@ -1654,9 +1815,9 @@ class Api:
             self._log(f"Khong tim thay video nguon (bo qua *{to_ext}).", 'err')
             return
 
-        total = len(files)
-        self._log(f"Tim thay {total} video | {workers} luong | -> {target}.", 'info')
-        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        self._log(f"Tim thay {len(files)} video | {workers} luong | -> {target}.", 'info')
 
         ok_count = [0]
         done_count = [0]
@@ -1666,8 +1827,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang convert sang {target}... {d}/{total}')")
 
@@ -1686,7 +1846,7 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in enumerate(files):
+            for i, f in run_items:
                 if self._stopped: break
                 futures[ex.submit(convert_one, i, f)] = i
             for fut in as_completed(futures):
@@ -1757,9 +1917,9 @@ class Api:
             self._log("Khong tim thay video.", 'err')
             return
 
-        total = len(files)
-        self._log(f"Tim thay {total} video | {workers} luong | target: {target}s (~{target/3600:.1f}h).", 'info')
-        self._js(f"uiApi.initProcessTable({json.dumps(files)})")
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        self._log(f"Tim thay {len(files)} video | {workers} luong | target: {target}s (~{target/3600:.1f}h).", 'info')
 
         ok_count = [0]
         done_count = [0]
@@ -1769,8 +1929,7 @@ class Api:
                 if success: ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang keo dai... {d}/{total}')")
 
@@ -1824,7 +1983,7 @@ class Api:
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, f in enumerate(files):
+            for i, f in run_items:
                 if self._stopped: break
                 futures[ex.submit(pad_one, i, f)] = i
             for fut in as_completed(futures):
@@ -2274,6 +2433,7 @@ class Api:
         url = f"https://www.tiktok.com/music/original-sound-{voice_id}"
         cmd = [
             self.ytdlp_path,
+            "--encoding", "utf-8",
             "--extractor-args", f"tiktok:device_id={device_id}",
             "--playlist-end", "1",
             "-x", "--audio-format", "mp3",
@@ -2289,6 +2449,8 @@ class Api:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
             )
             self._current_procs.append(proc)
@@ -2510,9 +2672,9 @@ class Api:
             self._log("Khong co dong hop le trong bang.", 'err')
             return
 
-        total = len(rows)
         labels = [r['final_name'] for r in rows]
-        self._js(f"uiApi.initProcessTable({json.dumps(labels)})")
+        run_items = self._begin_batch(labels)
+        total = len(run_items)
 
         ok_count = [0]
         done_count = [0]
@@ -2523,10 +2685,7 @@ class Api:
                     ok_count[0] += 1
                 done_count[0] += 1
                 d = done_count[0]
-            status = 'done' if success else 'error'
-            if self._stopped:
-                status = 'stopped'
-            self._js(f"uiApi.updateProcessItem({idx}, 100, '{status}')")
+            self._mark_row(idx, success)
             self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang xu ly... {d}/{total} dong')")
 
@@ -2576,14 +2735,14 @@ class Api:
                 self._log(f"[{idx + 1}] LOI: {e}", 'err')
                 return False
 
-        self._log(f"Tim thay {total} dong | {workers} luong.", 'info')
+        self._log(f"Tim thay {len(rows)} dong | {workers} luong.", 'info')
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for i, row in enumerate(rows):
+            for i, _lb in run_items:
                 if self._stopped:
                     break
-                futures[ex.submit(process_one, i, row)] = i
+                futures[ex.submit(process_one, i, rows[i])] = i
             for fut in as_completed(futures):
                 idx = futures[fut]
                 try:
@@ -2595,6 +2754,502 @@ class Api:
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} dong ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} dong.')")
+
+    # ── Youtube Download ──
+
+    @staticmethod
+    def _yt_extract_video_id(line):
+        """Extract an 11-char Youtube video ID from a URL/line, or a bare ID. None if no match."""
+        line = line.strip()
+        if not line:
+            return None
+        for pat in YT_ID_PATTERNS:
+            m = pat.search(line)
+            if m:
+                return m.group(1)
+        if YT_ID_BARE.match(line):
+            return line
+        return None
+
+    @staticmethod
+    def _yt_build_format(quality, fmt):
+        """Build the yt-dlp -f format selector string for a given quality + format.
+
+        fmt: 'MP4' or 'MP3' (case-insensitive). quality is ignored for MP3.
+
+        AV1 video is excluded on EVERY branch (both 'Best' and the per-height
+        ladders): the bundled ffmpeg (2018, N-91314) cannot mux av01 into MP4
+        (verified experimentally: exit 1 on postprocessing/copy for an AV1+AAC
+        source, while a VP9+AAC source muxes fine). 'Best' deliberately does
+        NOT prefer avc1 first (H.264 on Youtube tops out at 1080p) so it still
+        picks the highest resolution available among non-AV1 codecs (usually
+        VP9 at 1440p/2160p).
+
+        Invariant (covered by a unit test): every quality-capped selector still
+        ends on a height-constrained final branch (`b[height<={h}][...]`) with
+        NO bare `b` fallback — a video with no stream <= the requested height
+        must fail loudly instead of silently downloading a higher resolution.
+        """
+        fmt = (fmt or '').strip().upper()
+        if fmt == 'MP3':
+            return 'ba/b'
+        quality = (quality or '').strip()
+        if quality == 'Best':
+            return (
+                'bv*[vcodec!*=av01]+ba[ext=m4a]/'
+                'bv*[vcodec!*=av01]+ba/'
+                'b[vcodec!*=av01]'
+            )
+        h = quality.rstrip('p')
+        return (
+            f'bv*[height<={h}][vcodec^=avc1]+ba[ext=m4a]/'
+            f'bv*[height<={h}][vcodec^=vp9]+ba[ext=m4a]/'
+            f'bv*[height<={h}][vcodec!*=av01]+ba[ext=m4a]/'
+            f'bv*[height<={h}][vcodec!*=av01]+ba/'
+            f'b[height<={h}][vcodec!*=av01]'
+        )
+
+    def _yt_fetch_title(self, video_id, socket_timeout, player_client=None):
+        """Fetch a video's title via `yt-dlp --skip-download --print`. Returns title string or None.
+
+        player_client: value for `--extractor-args youtube:player_client=<value>`
+        (e.g. 'android_vr'). Verified experimentally that yt-dlp's default player
+        client rotation (web/web_safari/mweb/tv_simply/android/ios) triggers
+        Youtube's "Sign in to confirm you're not a bot" error on every video,
+        while 'android_vr' (and 'web_embedded') do not require a PO Token and
+        succeed without any extra JS runtime. Falsy/empty value omits the flag
+        entirely (lets the caller disable it via the preset JSON).
+        """
+        if self._stopped:
+            return None
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        cmd = [
+            self.ytdlp_path,
+            "--no-playlist",
+            "--skip-download",
+            "--no-warnings",
+            # BAT BUOC: yt-dlp mac dinh ghi stdout bang preferredencoding() cua Windows
+            # (may VN thuong la CP1252) voi error handler 'ignore'. Hau qua do duoc:
+            #   'We’re ... Hunt!☃️ Bear Hunt' -> bytes 'We\x92re ... Hunt! Bear Hunt'
+            #   - dau nhay cong U+2019 -> 1 byte 0x92 (CP1252) -> doc lai bang UTF-8 la
+            #     byte le khong hop le -> errors='replace' bien thanh U+FFFD ('?')
+            #   - emoji U+2603 U+FE0F khong co trong CP1252 -> bi XOA THANG
+            # Ten file tren dia da xac nhan chua dung U+FFFD, dung nhu chuoi tren.
+            # PYTHONIOENCODING KHONG sua duoc (da thu: byte y het) vi yt-dlp tu ma hoa
+            # bang preferredencoding(); chi co co --encoding cua chinh no moi doi duoc.
+            "--encoding", "utf-8",
+            "--socket-timeout", str(socket_timeout),
+            "--retries", "2",
+            "--print", "%(id)s",
+            "--print", "%(title)s",
+        ]
+        if player_client:
+            cmd += ["--extractor-args", f"youtube:player_client={player_client}"]
+        cmd.append(url)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+            )
+            self._current_procs.append(proc)
+            try:
+                stdout_data, stderr_data = proc.communicate()
+            finally:
+                if proc in self._current_procs:
+                    self._current_procs.remove(proc)
+        except Exception:
+            return None
+
+        if proc.returncode != 0:
+            # Surface the real yt-dlp reason (e.g. geo-block, video removed,
+            # sign-in required) instead of swallowing it — the caller only
+            # gets None and would otherwise log a generic "khong lay duoc
+            # tieu de" with no diagnosable cause. Truncate hard: youtube's
+            # geo-block error message appends a 200+ country list that would
+            # otherwise flood the log window and push everything else out.
+            err_lines = [l.strip() for l in (stderr_data or '').splitlines() if l.strip()]
+            last_err = err_lines[-1] if err_lines else 'Unknown error'
+            if len(last_err) > 200:
+                last_err = last_err[:200] + '...'
+            self._log(f"yt-dlp loi ({video_id}): {last_err}", 'err')
+            return None
+
+        lines = [l.strip() for l in stdout_data.split('\n') if l.strip()]
+        if len(lines) < 2:
+            return None
+        return lines[1]
+
+    def _yt_cleanup_partial(self, output_dir, title_safe):
+        """Remove leftover yt-dlp intermediate files after a failed download/mux
+        (observed in practice: `<title>.f397.mp4`, `<title>.f140.m4a`,
+        `<title>.temp.mp4`). Only removes files whose name is exactly
+        `<title_safe>.` followed by a yt-dlp fragment tag (`f<digits>.<ext>`) or
+        `temp.<ext>` — never the final output file, and never the `.jpg`
+        thumbnail (kept even when the video itself failed).
+
+        Uses os.listdir() + a plain string/regex match instead of glob() on
+        purpose: title_safe is not glob-escaped and Youtube titles routinely
+        contain `[`, `]`, `*`, `?` (glob metacharacters) that `_safe_filename()`
+        does not strip, which would make glob.glob() match incorrectly or miss
+        files entirely.
+        """
+        try:
+            entries = os.listdir(output_dir)
+        except OSError:
+            return
+        prefix = title_safe + '.'
+        for name in entries:
+            if not name.startswith(prefix):
+                continue
+            rest = name[len(prefix):]
+            if rest.lower().endswith('.jpg'):
+                continue
+            if not (re.match(r'^f\d+\.', rest) or rest.lower().startswith('temp.')):
+                continue
+            full_path = os.path.join(output_dir, name)
+            try:
+                os.remove(full_path)
+                self._log(f"Da xoa file rac: {name}", 'info')
+            except OSError:
+                pass
+
+    def _yt_download_one(self, idx, item, settings):
+        """Download one Youtube video/audio (§5.5/§5.6) and parse its progress (§7).
+
+        item: {'video_id', 'url', 'title', 'title_safe'}
+        settings: dict with output_dir, yt_format, fmt_selector, write_thumbnail,
+                  concurrent_fragments, retries, fragment_retries, socket_timeout,
+                  mp3_quality, player_client
+        Returns True/False. Logs its own errors (returncode != 0, missing output file).
+        Thumbnail missing is logged as 'info' and does NOT fail the row.
+        On failure (bad returncode or missing output file), cleans up any
+        leftover partial/fragment files left behind by yt-dlp/ffmpeg.
+        """
+        title = item['title']
+        title_safe = item['title_safe']
+        output_dir = settings['output_dir']
+        yt_format = settings['yt_format']
+        write_thumbnail = settings['write_thumbnail']
+        player_client = settings.get('player_client')
+        ext = 'mp4' if yt_format == 'MP4' else 'mp3'
+        out_path = os.path.join(output_dir, f"{title_safe}.{ext}")
+        out_template = os.path.join(output_dir, f"{title_safe}.%(ext)s")
+
+        # --encoding utf-8: khop voi encoding='utf-8' khi doc stdout/stderr ben duoi.
+        # Thieu no thi moi dong log/loi co ky tu ngoai ASCII deu bi bop meo (xem
+        # ghi chu day du o _yt_fetch_title).
+        cmd = [self.ytdlp_path, "--no-playlist", "--newline", "--no-warnings",
+               "--encoding", "utf-8"]
+        if yt_format == 'MP3':
+            cmd += [
+                "-f", "ba/b",
+                "-x", "--audio-format", "mp3",
+                "--audio-quality", str(settings['mp3_quality']),
+            ]
+        else:
+            cmd += [
+                "-f", settings['fmt_selector'],
+                "--merge-output-format", "mp4",
+                "--remux-video", "mp4",
+            ]
+        if player_client:
+            cmd += ["--extractor-args", f"youtube:player_client={player_client}"]
+        cmd += [
+            "--ffmpeg-location", self.ffmpeg_path,
+            "--concurrent-fragments", str(settings['concurrent_fragments']),
+            "--retries", str(settings['retries']),
+            "--fragment-retries", str(settings['fragment_retries']),
+            "--socket-timeout", str(settings['socket_timeout']),
+        ]
+        if write_thumbnail:
+            cmd += ["--write-thumbnail", "--convert-thumbnails", "jpg"]
+        cmd += ["-o", out_template, item['url']]
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+            )
+        except Exception as e:
+            self._log(f"Loi spawn yt-dlp: {e}", 'err')
+            return False
+
+        self._current_procs.append(proc)
+
+        stderr_lines = []
+
+        def drain():
+            for line in proc.stderr:
+                stderr_lines.append(line)
+        t = threading.Thread(target=drain, daemon=True)
+        t.start()
+
+        # §7: two-download-pass progress mapping (video pass 0-70%, audio pass 70-88%),
+        # post-processing (merge/remux/extract-audio/thumbnail-convert) bumps to 92%.
+        # 100% is never pushed from here — only by the caller once the row is fully done.
+        pass_idx = 0
+        raw_prev = -1.0
+        last_pct = -1
+        bands = [(0, 70), (70, 88)]
+
+        try:
+            for line in proc.stdout:
+                if self._stopped:
+                    break
+                line = line.strip()
+                m = RE_YT_DL.match(line)
+                if m:
+                    raw = float(m.group(1))
+                    if raw < raw_prev - 5:
+                        pass_idx += 1
+                    raw_prev = raw
+                    lo, hi = bands[min(pass_idx, len(bands) - 1)]
+                    pct = int(lo + raw / 100.0 * (hi - lo))
+                    if pct > last_pct:
+                        self._js(f"uiApi.updateProcessItem({idx}, {pct}, 'running')")
+                        last_pct = pct
+                    continue
+                if RE_YT_POST.match(line):
+                    if last_pct < 92:
+                        self._js(f"uiApi.updateProcessItem({idx}, 92, 'running')")
+                        last_pct = 92
+            proc.wait()
+        finally:
+            t.join()
+            if proc in self._current_procs:
+                self._current_procs.remove(proc)
+
+        if self._stopped:
+            self._js(f"uiApi.updateProcessItem({idx}, {max(last_pct, 0)}, 'stopped')")
+            # User hitting Stop mid-download is a routine, frequent action (not
+            # an edge case) and can leave multi-hundred-MB `.fNNN.mp4`/`.fNNN.m4a`
+            # fragments behind — clean them up so they don't silently pile up
+            # across repeated run/stop cycles. Guard: only clean up if the final
+            # output is NOT already sitting there complete (yt-dlp could have
+            # finished writing it a moment before the stop flag was observed) —
+            # never delete a valid finished file.
+            if not os.path.exists(out_path):
+                self._yt_cleanup_partial(output_dir, title_safe)
+            return False
+
+        if proc.returncode != 0:
+            err = ''.join(stderr_lines).strip()
+            last_err = err.splitlines()[-1] if err else 'Unknown error'
+            self._log(f"yt-dlp loi ({title}): {last_err}", 'err')
+            self._log(f"[{idx + 1}] Tai fail: {title}", 'err')
+            self._yt_cleanup_partial(output_dir, title_safe)
+            return False
+
+        if not os.path.exists(out_path):
+            self._log(f"[{idx + 1}] Khong tim thay file sau khi tai: {title}", 'err')
+            self._yt_cleanup_partial(output_dir, title_safe)
+            return False
+
+        if write_thumbnail:
+            thumb_path = os.path.join(output_dir, f"{title_safe}.jpg")
+            if not os.path.exists(thumb_path):
+                self._log(f"[{idx + 1}] Khong co thumbnail .jpg: {title}", 'info')
+
+        return True
+
+    def _run_youtube_download(self, params, code):
+        self._js("uiApi.setStatus('Dang chuan bi tai Youtube...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau tai video Youtube ===", 'info')
+
+        yt_links = params.get('ytLinks', '').strip()
+        output_dir = params.get('outputDir', '').strip()
+        workers = max(1, params.get('workers', 2))
+        yt_format = (params.get('ytFormat') or code.get('default_format', 'MP4')).strip().upper()
+        yt_quality = (params.get('ytQuality') or code.get('default_quality', 'Best')).strip()
+
+        write_thumbnail = code.get('write_thumbnail', True)
+        skip_existing = code.get('skip_existing', True)
+        concurrent_fragments = int(code.get('concurrent_fragments', 4))
+        retries = int(code.get('retries', 3))
+        fragment_retries = int(code.get('fragment_retries', 10))
+        socket_timeout = int(code.get('socket_timeout', 30))
+        mp3_quality = str(code.get('mp3_quality', '0'))
+        max_filename_len = int(code.get('max_filename_len', 150))
+        # §Loi 1: Youtube's default player-client rotation (web/web_safari/mweb/
+        # tv_simply/android/ios) demands a PO Token and fails every video with
+        # "Sign in to confirm you're not a bot". 'android_vr' (and
+        # 'web_embedded') do not require one. Kept in the preset JSON (not
+        # hardcoded) so it can be swapped to 'web_embedded' the moment Youtube
+        # breaks android_vr too, with zero rebuild.
+        player_client = str(code.get('player_client', 'android_vr') or '').strip()
+
+        if not yt_links:
+            self._log("Chua nhap link Youtube.", 'err')
+            return
+        if not output_dir:
+            self._log("Chua chon folder Output.", 'err')
+            return
+        if not os.path.exists(self.ytdlp_path):
+            self._log("Khong tim thay yt-dlp.exe (vao Cap nhat yt-dlp).", 'err')
+            return
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+        if yt_format not in ('MP4', 'MP3'):
+            self._log(f"Dinh dang khong hop le: {yt_format}", 'err')
+            return
+        if yt_format == 'MP4' and yt_quality not in YT_QUALITIES:
+            self._log(f"Chat luong khong hop le: {yt_quality}", 'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # §5.1: parse + dedupe by video_id, always rebuild the canonical URL
+        items = []
+        seen_ids = set()
+        for raw_line in yt_links.split('\n'):
+            line = raw_line.strip()
+            if not line:
+                continue
+            vid = self._yt_extract_video_id(line)
+            if not vid:
+                self._log(f"Bo qua dong khong phai link Youtube: {line}", 'info')
+                continue
+            canonical_url = f"https://www.youtube.com/watch?v={vid}"
+            if vid in seen_ids:
+                self._log(f"Bo qua link trung: {canonical_url}", 'info')
+                continue
+            seen_ids.add(vid)
+            items.append({'video_id': vid, 'url': canonical_url})
+
+        if not items:
+            self._log("Khong co link hop le.", 'err')
+            return
+
+        total = len(items)
+        self._log(f"Tim thay {total} link | {workers} luong | {yt_format} {yt_quality}", 'info')
+
+        # §5.2/§9(a): pre-pass fetch titles in parallel, before initProcessTable
+        self._js("uiApi.setStatus('Dang lay tieu de video...')")
+        title_count = [0]
+
+        def fetch_one(i, it):
+            if self._stopped:
+                return i, it['video_id']
+            title = self._yt_fetch_title(it['video_id'], socket_timeout, player_client)
+            if not title:
+                title = it['video_id']
+                self._log(f"[{i + 1}] Khong lay duoc tieu de, dung ID: {it['video_id']}", 'info')
+            with self._lock:
+                title_count[0] += 1
+                k = title_count[0]
+            self._log(f"Lay tieu de: {k}/{total}", 'info')
+            return i, title
+
+        titles = [None] * total
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {}
+            for i, it in enumerate(items):
+                if self._stopped:
+                    break
+                futures[ex.submit(fetch_one, i, it)] = i
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    i, title = fut.result()
+                except Exception:
+                    title = items[i]['video_id']
+                titles[i] = title
+
+        # §5.3: sanitize filenames, dedupe title collisions within this batch
+        used_names = set()
+        for i, it in enumerate(items):
+            title = titles[i] if titles[i] is not None else it['video_id']
+            it['title'] = title
+            safe = self._safe_filename(title)
+            safe = safe.replace('%', '_')
+            safe = safe.strip().rstrip('. ')
+            safe = safe[:max_filename_len]
+            if not safe:
+                safe = it['video_id']
+            if safe in used_names:
+                new_name = f"{safe}_{it['video_id']}"
+                self._log(f"Trung ten, doi thanh: {new_name}", 'info')
+                safe = new_name
+            used_names.add(safe)
+            it['title_safe'] = safe
+
+        run_items = self._begin_batch([it['title'] for it in items])
+        total = len(run_items)
+        if self._retry_mode == 'all' and skip_existing:
+            self._log("Luu y: file da co van bi bo qua. Xoa file cu neu muon tai lai.", 'info')
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success:
+                    ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            self._mark_row(idx, success)
+            self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang tai... {d}/{total} video')")
+
+        settings = {
+            'output_dir': output_dir,
+            'yt_format': yt_format,
+            'fmt_selector': self._yt_build_format(yt_quality, yt_format),
+            'write_thumbnail': write_thumbnail,
+            'concurrent_fragments': concurrent_fragments,
+            'retries': retries,
+            'fragment_retries': fragment_retries,
+            'socket_timeout': socket_timeout,
+            'mp3_quality': mp3_quality,
+            'player_client': player_client,
+        }
+
+        def process_one(idx, it):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            if self._stopped:
+                return False
+            ext = 'mp4' if yt_format == 'MP4' else 'mp3'
+            out_path = os.path.join(output_dir, f"{it['title_safe']}.{ext}")
+
+            if skip_existing and os.path.exists(out_path):
+                self._log(f"[{idx + 1}] Da co, bo qua: {it['title']}", 'info')
+                return True
+
+            try:
+                return self._yt_download_one(idx, it, settings)
+            except Exception as e:
+                self._log(f"[{idx + 1}] LOI: {e}", 'err')
+                return False
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {}
+            for idx, _lb in run_items:
+                if self._stopped:
+                    break
+                futures[ex.submit(process_one, idx, items[idx])] = idx
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception as e:
+                    self._log(f"[{idx + 1}] LOI: {e}", 'err')
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
 
     # ── Auto Update ──
 
