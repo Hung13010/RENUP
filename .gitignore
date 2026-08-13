@@ -26,6 +26,11 @@ bin/yt-dlp.exe.new
 bin/claim_state.json
 *.pyc
 
+# File tam cua build.bat (tao va xoa moi lan build)
+changelog.tmp
+release_notes.tmp
+version.txt.bak
+
 # FFmpeg docs & presets (not needed in repo)
 doc/
 presets/
