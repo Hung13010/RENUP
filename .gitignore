@@ -6,6 +6,10 @@ build/
 dist/
 __pycache__/
 
+# Build artifacts - luong dong goi bo cai dat (build_installer.bat)
+dist_installer/
+build_installer_tmp/
+
 # FFmpeg binaries (too large for git)
 bin/ffmpeg.exe
 bin/ffplay.exe

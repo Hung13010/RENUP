@@ -99,6 +99,19 @@ REM tuyet doi, gon gang (khong con doan "..\" trong duong dan).
 for %%I in ("%~dp0..\RENUP") do set "RELEASE_DIR=%%~fI"
 if not exist "%RELEASE_DIR%" mkdir "%RELEASE_DIR%"
 
+REM ----------------------------------------------------------------------
+REM Fix #024 - LOP PHONG VE 1: xoa RENUP.exe CU truoc khi goi PyInstaller.
+REM Bug da xay ra that: neu PyInstaller hong SOM (vi du thieu module, loi
+REM cu phap) va lan build TRUOC do da tung thanh cong, file RENUP.exe cu
+REM van con nguyen trong RELEASE_DIR. Buoc kiem tra "if not exist" ben
+REM duoi khi do van thay file "co ton tai" -> bao [OK] Build thanh cong
+REM va script tiep tuc dem chinh file CU do di phat hanh len GitHub voi
+REM version MOI. Nguoi dung tai ban cu ve, app khong chay duoc dung nhu
+REM da xay ra. Xoa truoc dam bao "con file la con build that", khong con
+REM sot lai tu lan chay khac.
+REM ----------------------------------------------------------------------
+if exist "%RELEASE_DIR%\RENUP.exe" del /f /q "%RELEASE_DIR%\RENUP.exe"
+
 echo [BUILD] Dang build RENUP.exe...
 echo [INFO] Release dir: %RELEASE_DIR%
 echo.
@@ -120,9 +133,30 @@ REM script nay de tim package (pywebview, PIL, v.v.) nen khong can hardcode
 REM duong dan site-packages theo tung phien ban Python - tranh vo script
 REM lan nua khi nang cap Python trong tuong lai.
 pyinstaller --onefile --windowed --name "RENUP" --distpath "%RELEASE_DIR%" --add-data "version.txt;." --add-data "icon.ico;." --add-data "ui;ui" --icon "icon.ico" --additional-hooks-dir "." --hidden-import PIL RENUP_gui.py
+
+REM ----------------------------------------------------------------------
+REM Fix #024 - LOP PHONG VE 2: kiem tra MA LOI cua chinh PyInstaller ngay
+REM sau khi no chay ("if errorlevel 1" doc exit code THAT SU cua lenh vua
+REM chay, danh gia tai thoi diem chay - khong phai %errorlevel% bi bay
+REM delayed-expansion trong khoi ( ... )). Truoc day script CHI dua vao
+REM "if not exist ...RENUP.exe" o duoi - mot minh no khong du (xem Lop
+REM phong ve 1 o tren de biet vi sao "file ton tai" khong dong nghia voi
+REM "build nay thanh cong"). Hai lop bo sung cho nhau:
+REM   - Lop 1 (xoa truoc) dam bao khong con file CU de gay nham lan.
+REM   - Lop 2 (ma loi) bat duoc truong hop PyInstaller that bai NGAY LAP
+REM     TUC (kem theo "if not exist" o duoi bat them truong hop hiem:
+REM     PyInstaller bao exit code 0 nhung vi ly do nao do van khong sinh
+REM     ra file, vi du bi ngat giua chung ma khong tra ve loi).
+REM ----------------------------------------------------------------------
+if errorlevel 1 (
+    echo %CURRENT_VER%> version.txt
+    echo [LOI] PyInstaller bao loi ^(exit code != 0^). Da khoi phuc version.txt ve v%CURRENT_VER% ^(version moi v%NEW_VER% CHUA duoc su dung^).
+    pause
+    exit /b 1
+)
 if not exist "%RELEASE_DIR%\RENUP.exe" (
     echo %CURRENT_VER%> version.txt
-    echo [LOI] Build that bai! Da khoi phuc version.txt ve v%CURRENT_VER% ^(version moi v%NEW_VER% CHUA duoc su dung^).
+    echo [LOI] Build that bai! Khong thay "%RELEASE_DIR%\RENUP.exe" sau khi PyInstaller chay xong. Da khoi phuc version.txt ve v%CURRENT_VER% ^(version moi v%NEW_VER% CHUA duoc su dung^).
     pause
     exit /b 1
 )

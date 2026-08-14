@@ -12,6 +12,7 @@ import webbrowser
 import uuid
 import io
 import base64
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 
@@ -40,6 +41,13 @@ def format_size(size_bytes):
 
 GITHUB_REPO = "Hung13010/RENUP"
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+# Chi nhan asset dung dinh dang bo cai dat Inno Setup (installer\RENUP.iss,
+# OutputBaseFilename=RENUP_Setup_v<version>.exe). File .exe dau tien gap
+# duoc trong release gio la BO CAI DAT, khong con la ban than app nua - lay
+# nham se pha huong tu cap nhat (shortcut cua nguoi dung mo ra cua so cai
+# dat thay vi ung dung, hoac te hon: file chay goc bi xoa mat).
+UPDATE_ASSET_RE = re.compile(r'^RENUP_Setup_v\d+(?:\.\d+)*\.exe$', re.IGNORECASE)
 
 
 # ── Youtube Download: regex constants (module-level so they compile once) ──
@@ -122,6 +130,9 @@ class Api:
         self._batch_labels = None       # list[str]|None - toan bo nhan cua lan chay hien tai
         self._retry_choice = ''         # '' | 'failed' | 'all' | 'cancel'
         self._retry_event = threading.Event()
+
+        # ── Auto-update (Inno Setup installer) ──
+        self._update_in_progress = False
 
     def set_window(self, window):
         self._window = window
@@ -3971,9 +3982,22 @@ class Api:
             if cmp > 0:
                 download_url = ""
                 for asset in data.get("assets", []):
-                    if asset["name"].lower().endswith(".exe"):
-                        download_url = asset["browser_download_url"]
+                    name = asset.get("name", "")
+                    if UPDATE_ASSET_RE.match(name):
+                        download_url = asset.get("browser_download_url", "")
                         break
+
+                if not download_url:
+                    # Khong tim thay dung file cai dat -> thoi khong moi cap
+                    # nhat. Tha im lang con hon tai nham thu gi do va pha
+                    # app cua nguoi dung.
+                    self._log(
+                        f"Co ban cap nhat v{latest} nhung khong tim thay file cai dat "
+                        f"phu hop (RENUP_Setup_v*.exe) trong release. Bo qua.",
+                        'info'
+                    )
+                    return
+
                 self._log(f"Co ban cap nhat moi v{latest}!", 'ok')
                 safe_url = download_url.replace("'", "\\'")
                 self._js(f"showUpdateDialog('{current}', '{latest}', '{safe_url}')")
@@ -3990,24 +4014,57 @@ class Api:
             self._log(f"Loi kiem tra update: {e}", 'err')
 
     def downloadUpdate(self, url):
+        """Tai bo cai dat Inno Setup (RENUP_Setup_v<version>.exe) va tu chay
+        no o che do hoan toan im lang - nguoi dung chi nhan 1 nut bam,
+        khong phai thao tac gi them (khong Next, khong xac nhan).
+
+        Luong: tai vao thu muc tam he thong (khong phai thu muc cai dat cua
+        app - bo cai sap ghi de dung cho o do) -> kiem tra toan ven (kich
+        thuoc khop Content-Length + header MZ hop le) -> viet 1 watcher .bat
+        (chay bo cai bang "start /wait" de bat duoc ma loi THAT SU cua bo
+        cai, roi bao loi bang MessageBox neu ma loi khac 0) -> chi sau khi
+        watcher da khoi chay thanh cong moi tu dong (kill ffmpeg dang chay
+        + dong cua so) de giai phong khoa file cho bo cai ghi de. Neu bat
+        ky buoc nao truoc do that bai, app KHONG dong, khong o trang thai
+        nua voi.
+        """
         if not url:
             webbrowser.open(f"https://github.com/{GITHUB_REPO}/releases/latest")
             return
+        if self.is_running:
+            self._log("Dang co tac vu chay. Doi xong hoac nhan Dung truoc khi cap nhat.", 'err')
+            return
+        if self._update_in_progress:
+            self._log("Dang cap nhat, vui long doi.", 'info')
+            return
+
+        self._update_in_progress = True
         self._log("=== Dang tai ban cap nhat... ===", 'info')
         self._js("uiApi.setStatus('Dang tai ban cap nhat...')")
         self._js("uiApi.setProgress(0, 'Dang tai...')")
 
         def _dl():
             import time
-            app_dir = get_app_dir()
-            new_exe = os.path.join(app_dir, "RENUP_new.exe")
+
+            update_dir = os.path.join(tempfile.gettempdir(), 'RENUP_Update')
+            asset_name = url.rsplit('/', 1)[-1]
+            installer_path = os.path.join(update_dir, asset_name)
+            bat_path = None
+
+            # ── Buoc 1: tai bo cai vao thu muc tam + kiem tra toan ven ──
+            # KHONG tai vao thu muc cai dat cua app: bo cai sap ghi de
+            # chinh thu muc do, tai chong len se tu pha du lieu dang tai.
             try:
-                # Download with progress
+                if not UPDATE_ASSET_RE.match(asset_name):
+                    raise Exception(f"Ten file tai ve khong hop le: {asset_name}")
+
+                os.makedirs(update_dir, exist_ok=True)
+
                 req = urllib.request.Request(url, headers={"User-Agent": "RENUP-Updater"})
                 with urllib.request.urlopen(req, timeout=600) as resp:
                     total_size = int(resp.headers.get('Content-Length', 0))
                     downloaded = 0
-                    with open(new_exe, 'wb') as f:
+                    with open(installer_path, 'wb') as f:
                         while True:
                             chunk = resp.read(65536)
                             if not chunk:
@@ -4023,77 +4080,108 @@ class Api:
                                 mb_dl = downloaded // (1024 * 1024)
                                 self._js(f"uiApi.setProgress(50, 'Tai: {mb_dl}MB...')")
 
-                # Verify downloaded file
-                if not os.path.exists(new_exe):
+                # Kiem tra toan ven: file ton tai, kich thuoc hop ly, kich
+                # thuoc khop Content-Length, va la file thuc thi Windows
+                # hop le (header "MZ") - phong truong hop tai nham trang
+                # loi (vd HTML) duoi long .exe.
+                if not os.path.exists(installer_path):
                     raise Exception("File khong ton tai sau khi tai")
-                file_size = os.path.getsize(new_exe)
-                if file_size < 1024 * 1024:  # Less than 1MB = corrupted
+                file_size = os.path.getsize(installer_path)
+                if file_size < 1024 * 1024:  # Nho hon 1MB = chac chan loi
                     raise Exception(f"File qua nho ({file_size} bytes), co the bi loi")
                 if total_size > 0 and file_size != total_size:
                     raise Exception(f"Kich thuoc file khong khop: {file_size} vs {total_size}")
+                with open(installer_path, 'rb') as f:
+                    header = f.read(2)
+                if header != b'MZ':
+                    raise Exception("File tai ve khong phai file thuc thi hop le")
 
-                self._log(f"Da tai xong ({file_size // (1024*1024)}MB). Dang cap nhat...", 'info')
+                self._log(f"Da tai xong ({file_size // (1024 * 1024)}MB). Dang chuan bi cai dat...", 'info')
 
-                # Create update batch script
-                bat_path = os.path.join(app_dir, "_update.bat")
-                cur_exe = os.path.join(app_dir, "RENUP.exe")
-                new_name = os.path.basename(new_exe)
-                with open(bat_path, 'w') as f:
-                    f.write(f"""@echo off
-cd /d "{app_dir}"
-timeout /t 3 /nobreak >nul
-REM Try to kill and replace up to 10 times
-for /l %%a in (1,1,10) do (
-    taskkill /F /IM "RENUP.exe" >nul 2>&1
-    timeout /t 1 /nobreak >nul
-    del "RENUP.exe" >nul 2>&1
-    if not exist "RENUP.exe" goto do_rename
-)
-echo [LOI] Khong the xoa file cu. Thu lai sau.
-del "{new_name}" >nul 2>&1
-pause
-exit /b 1
+            except Exception as e:
+                self._log(f"LOI tai ban cap nhat: {e}", 'err')
+                self._js("uiApi.setStatus('Tai that bai. Thu lai sau.')")
+                self._js("uiApi.setProgress(0, '')")
+                for _ in range(3):
+                    try:
+                        if os.path.exists(installer_path):
+                            os.remove(installer_path)
+                        break
+                    except Exception:
+                        time.sleep(0.5)
+                self._update_in_progress = False
+                return
 
-:do_rename
-rename "{new_name}" "RENUP.exe"
-if not exist "RENUP.exe" (
-    echo [LOI] Cap nhat that bai.
-    pause
-    exit /b 1
-)
-REM Cleanup old files
-del "RENUP.exe.old" >nul 2>&1
-del ".update_cache" >nul 2>&1
-start "" "RENUP.exe"
-del "%~f0"
-""")
+            # ── Buoc 2: viet + khoi chay watcher .bat, watcher moi la noi
+            # thuc su goi bo cai (bang "start /wait") ──
+            # Ly do dung watcher rieng thay vi Python goi thang bo cai roi
+            # cho (wait) tai cho: bo cai chay voi /FORCECLOSEAPPLICATIONS
+            # co the buoc dong chinh tien trinh RENUP nay bat cu luc nao no
+            # con giu khoa file - neu Python dang wait() trong luc bi dong
+            # nhu vay, wait() se khong bao gio tra ve va ta mat luon kha
+            # nang doc ma loi that su cua bo cai. Watcher (mot tien trinh
+            # cmd doc lap) khong bi anh huong boi viec RENUP.exe bi dong,
+            # nen no van doc duoc ma loi va bao cho nguoi dung neu that bai.
+            try:
+                bat_path = os.path.join(update_dir, f"_update_watch_{uuid.uuid4().hex}.bat")
+                fail_msg = (
+                    f"RENUP cap nhat that bai (ma loi %RC%). "
+                    f"Vui long tai va cai lai thu cong tai: "
+                    f"https://github.com/{GITHUB_REPO}/releases/latest"
+                )
+                lines = [
+                    "@echo off",
+                    (
+                        f'start "" /wait "{installer_path}" '
+                        "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART "
+                        "/FORCECLOSEAPPLICATIONS /RESTARTAPPLICATIONS"
+                    ),
+                    'set "RC=%ERRORLEVEL%"',
+                    (
+                        'if not "%RC%"=="0" powershell -NoProfile -WindowStyle Hidden -Command '
+                        '"Add-Type -AssemblyName System.Windows.Forms; '
+                        f"[System.Windows.Forms.MessageBox]::Show('{fail_msg}',"
+                        "'RENUP - Loi cap nhat',[System.Windows.Forms.MessageBoxButtons]::OK,"
+                        '[System.Windows.Forms.MessageBoxIcon]::Error)"'
+                    ),
+                    f'del "{installer_path}" >nul 2>&1',
+                    'del "%~f0" >nul 2>&1',
+                    '',
+                ]
+                with open(bat_path, 'w', encoding='utf-8') as f:
+                    f.write("\r\n".join(lines))
 
-                self._log("=== Cap nhat thanh cong! Dang khoi dong lai... ===", 'ok')
-                self._js("uiApi.setStatus('Cap nhat xong! Dang khoi dong lai...')")
-                self._js("uiApi.setProgress(100, 'Hoan tat')")
-
-                time.sleep(1)
                 subprocess.Popen(
                     ['cmd', '/c', bat_path],
                     creationflags=subprocess.CREATE_NO_WINDOW
                 )
-                # Close app
-                if self._window:
-                    self._window.destroy()
-
             except Exception as e:
-                self._log(f"LOI cap nhat: {e}", 'err')
-                self._js("uiApi.setStatus('Cap nhat that bai. Thu lai sau.')")
+                self._log(f"LOI khoi chay bo cai dat: {e}", 'err')
+                self._js("uiApi.setStatus('Khong the khoi chay bo cai. Thu lai sau.')")
                 self._js("uiApi.setProgress(0, '')")
-                # Cleanup
-                for _ in range(3):
+                for p in (installer_path, bat_path):
+                    if not p:
+                        continue
                     try:
-                        if os.path.exists(new_exe):
-                            os.remove(new_exe)
-                        break
+                        if os.path.exists(p):
+                            os.remove(p)
                     except Exception:
-                        import time
-                        time.sleep(0.5)
+                        pass
+                self._update_in_progress = False
+                return
+
+            # ── Buoc 3: watcher da chay bo cai o nen - gio tu dong (kill
+            # ffmpeg dang chay + dong cua so) de giai phong khoa file cho
+            # bo cai ghi de. Chu dong tu dong TRUOC thay vi dua hoan toan
+            # vao /FORCECLOSEAPPLICATIONS - dong sach se hon (kill dung
+            # cach cac tien trinh con ffmpeg/yt-dlp) va nhanh hon la de bo
+            # cai tu buoc dong ep. ──
+            self._log("=== Da khoi chay bo cai dat. RENUP se tu dong dong de cap nhat... ===", 'ok')
+            self._js("uiApi.setStatus('Dang cai dat, RENUP se tu khoi dong lai...')")
+            self._js("uiApi.setProgress(100, 'Dang cai dat...')")
+
+            time.sleep(0.6)
+            self._teardown_for_restart()
 
         threading.Thread(target=_dl, daemon=True).start()
 
