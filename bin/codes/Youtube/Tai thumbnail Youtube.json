@@ -1,0 +1,18 @@
+{
+  "name": "Tai thumbnail Youtube (luoi xem truoc -> JPG/PNG/WEBP)",
+  "type": "youtube_thumbnail",
+  "description": "Dan link kenh hoac link video (moi dong 1 link). Nhan Load de liet ke video va tai anh xem truoc, sau do tick chon anh nao muon luu roi nhan DOWNLOAD. Moi video 1 anh; chon co chung cho ca luoi, video nao khong co co do thi tu lui xuong co gan nhat ben duoi. Ten file = tieu de video. Co anh duoc chot ngay luc Load: doi dropdown co sau khi Load thi phai nhan Load lai. Neu luoi hien trong (khong thay anh nao) thi doi preview_mode tu 'file' sang 'data' trong file JSON nay, khong can build lai app.",
+  "player_client": "android_vr",
+  "default_size": "maxresdefault",
+  "default_format": "JPG",
+  "default_channel_limit": 50,
+  "max_channel_limit": 200,
+  "size_ladder": ["maxresdefault", "sddefault", "hqdefault", "mqdefault", "default"],
+  "preview_mode": "data",
+  "preview_max_width": 320,
+  "jpg_quality": 95,
+  "webp_quality": 95,
+  "socket_timeout": 30,
+  "http_retries": 2,
+  "max_filename_len": 150
+}

@@ -269,6 +269,47 @@ button[hidden] { display: none !important; }
 #tableSection { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
 #tableSection.hidden { display: none; }
 #ghepSection.hidden { display: none; }
+#processSection.hidden { display: none; }
+
+/* ── YOUTUBE THUMBNAIL GRID (ADR-008) ── */
+#ytThumbGridSection { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+#ytThumbGridSection.hidden { display: none; }
+.thumb-grid-wrap { flex: 1; overflow: auto; padding: 10px; }
+.thumb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.thumb-card { border: 2px solid var(--border); border-radius: 8px; overflow: hidden; cursor: pointer;
+              background: var(--surface); transition: border-color .15s, box-shadow .15s; }
+.thumb-card:hover { border-color: var(--accent2); }
+.thumb-card.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(46,125,106,.2); }
+.thumb-card img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: #000; }
+.thumb-meta { padding: 5px 7px; font-size: 10px; line-height: 1.35; }
+.thumb-title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+               overflow: hidden; }
+.thumb-dims { font-family: monospace; color: var(--text-dim); }
+.thumb-tag { font-family: monospace; font-size: 9px; padding: 1px 5px; border-radius: 3px;
+             border: 1px solid var(--border); background: var(--surface2); color: var(--text-muted); }
+.thumb-tag.down { background: #FFF3E0; color: #E67E22; border-color: #FDEBD0; }
+/* Dau tich "da chon" — chi hien khi co .sel (kenh thi giac rieng cho lua chon, doc lap voi border-color) */
+.thumb-check { display: none; position: absolute; top: 6px; right: 6px; margin: 0;
+               width: 18px; height: 18px; border-radius: 4px;
+               background: var(--accent); color: #fff; font-size: 12px; font-weight: 700;
+               align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
+.thumb-card.sel .thumb-check { display: flex; }
+.thumb-img-wrap { position: relative; }
+.thumb-card.saving { opacity: .6; }
+.thumb-card.done   { border-color: var(--accent); }
+.thumb-card.error  { border-color: var(--danger); border-style: dashed; }
+.thumb-card.error img { filter: grayscale(1); }
+/* Dau canh bao "loi" — kenh thi giac rieng cho error, doc lap voi border-color, khong bi che khi vua chon vua loi */
+.thumb-error-badge { display: none; position: absolute; top: 6px; left: 6px; margin: 0;
+               width: 18px; height: 18px; border-radius: 4px;
+               background: var(--danger); color: #fff; font-size: 11px; font-weight: 700;
+               align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
+.thumb-card.error .thumb-error-badge { display: flex; }
+/* Vua chon (.sel) vua loi (.error): border-color ưu tiên xanh (nguoi dung phai luon thay lua chon cua minh
+   con hieu luc), nhung border-style van la dashed (hinh dang khac biet, khong chi dua vao mau) va badge
+   loi + anh grayscale o tren van giu nguyen — tin hieu loi khong bi xoa dau vet. */
+.thumb-card.sel.error { border-color: var(--accent); border-style: dashed;
+                         box-shadow: 0 0 0 2px rgba(46,125,106,.2); }
 
 /* ── UPDATE DIALOG ── */
 .update-overlay {
@@ -432,6 +473,46 @@ button[hidden] { display: none !important; }
           <button class="btn-sm btn-muted" onclick="pyApi.updateYtDlp()">⟳ Cập nhật yt-dlp</button>
         </div>
       </div>
+
+      <div id="ytThumbSection" style="display:none;">
+        <div class="field-label">▶ Link kênh hoặc link video (mỗi dòng 1 link)</div>
+        <textarea id="ytThumbLinks" style="min-height:100px;"
+                  placeholder="https://www.youtube.com/@tenkenh&#10;https://www.youtube.com/watch?v=..." spellcheck="false"></textarea>
+
+        <div class="field-label" style="margin-top:6px;">🔢 Số video mới nhất (cho link kênh)</div>
+        <div class="settings-row">
+          <input type="text" id="ytThumbCount" value="50" style="width:80px;">
+          <span style="font-size:11px; color:var(--text-muted);">video / kênh</span>
+        </div>
+
+        <div class="field-label" style="margin-top:6px;">🖼 Cỡ ảnh (chốt khi nhấn Load)</div>
+        <div class="settings-row">
+          <select id="ytThumbSize" style="width:190px;">
+            <option value="maxresdefault">Max — 1280×720</option>
+            <option value="sddefault">SD — 640×480</option>
+            <option value="hqdefault">HQ — 480×360</option>
+            <option value="mqdefault">MQ — 320×180</option>
+            <option value="default">Nhỏ — 120×90</option>
+          </select>
+        </div>
+
+        <div class="field-label" style="margin-top:6px;">💾 Định dạng tải về</div>
+        <div class="settings-row">
+          <select id="ytThumbFormat" style="width:190px;">
+            <option value="JPG">JPG</option>
+            <option value="PNG">PNG</option>
+            <option value="WEBP">WEBP</option>
+          </select>
+        </div>
+
+        <div style="margin-top:8px; display:flex; gap:6px;">
+          <button class="btn-sm btn-accent" onclick="pyApi.ytThumbLoad()">⟱ Load</button>
+          <button class="btn-sm btn-muted" onclick="pyApi.updateYtDlp()">⟳ Cập nhật yt-dlp</button>
+        </div>
+
+        <!-- Gia tri do luoi ghi vao; pyApi proxy doc bang getFieldValue. KHONG BAO GIO remove. -->
+        <input type="hidden" id="ytThumbSelected" value="">
+      </div>
     </div>
 
     <!-- BOTTOM: Controls (cố định) -->
@@ -512,6 +593,19 @@ button[hidden] { display: none !important; }
       </div>
     </div>
 
+    <!-- YOUTUBE THUMBNAIL GRID (ADR-008) -->
+    <div id="ytThumbGridSection" class="hidden">
+      <div class="table-toolbar">
+        <span class="toolbar-title">Thumbnail</span>
+        <span class="toolbar-count" id="ytThumbLoadedCount">0 / 0 ảnh</span>
+        <span class="toolbar-count" id="ytThumbSelCount">đã chọn 0</span>
+        <div class="toolbar-spacer"></div>
+        <button class="btn-sm btn-muted" onclick="ytThumbSelectAll(true)">Chọn tất cả</button>
+        <button class="btn-sm btn-muted" onclick="ytThumbSelectAll(false)">Bỏ chọn</button>
+      </div>
+      <div class="thumb-grid-wrap"><div class="thumb-grid" id="ytThumbGrid"></div></div>
+    </div>
+
     <!-- LOG (compact, collapsible) -->
     <div class="log-header" onclick="toggleLog()"><span class="toggle" id="logToggle">▼</span> Log</div>
     <div class="log-wrap" id="logArea"></div>
@@ -563,6 +657,15 @@ button[hidden] { display: none !important; }
 <script>
 // ── Globals ──
 let selectedRows = new Set();
+let ytThumbSelectedIds = new Set();   // tap chon thumbnail (JS la chu, xem F2/I5 trong spec)
+
+// Cac function khong co Folder Input. Moi show*Section chi set co cua rieng no
+// roi goi _syncInputDirRow(); khong callback nao duoc ghi thang vao #inputDirRow.
+const NO_INPUT_DIR = { claim: false, youtube: false, ytthumb: false };
+function _syncInputDirRow() {
+  const hide = NO_INPUT_DIR.claim || NO_INPUT_DIR.youtube || NO_INPUT_DIR.ytthumb;
+  document.getElementById('inputDirRow').style.display = hide ? 'none' : '';
+}
 
 function reloadApp() {
   const running = !document.getElementById('runBtn') || document.getElementById('runBtn').disabled;
@@ -639,13 +742,94 @@ window.uiApi = {
 
   showClaimSection(show) {
     document.getElementById('claimSection').style.display = show ? 'block' : 'none';
-    document.getElementById('inputDirRow').style.display = show ? 'none' : '';
+    NO_INPUT_DIR.claim = show;
+    _syncInputDirRow();
   },
 
   showYoutubeSection(show) {
     document.getElementById('youtubeSection').style.display = show ? 'block' : 'none';
-    document.getElementById('inputDirRow').style.display = show ? 'none' : '';
+    NO_INPUT_DIR.youtube = show;
+    _syncInputDirRow();
     if (show) onYtFormatChanged();
+  },
+
+  // ── Youtube Thumbnail grid (ADR-008) ──
+  showYtThumbSection(show) {
+    document.getElementById('ytThumbSection').style.display = show ? 'block' : 'none';
+    document.getElementById('ytThumbGridSection').classList.toggle('hidden', !show);
+    document.getElementById('processSection').classList.toggle('hidden', show);
+    NO_INPUT_DIR.ytthumb = show;
+    _syncInputDirRow();
+    const runBtn = document.getElementById('runBtn');
+    runBtn.textContent = show ? '⬇ DOWNLOAD' : '▶ RUN';
+  },
+
+  ytThumbClearGrid() {
+    document.getElementById('ytThumbGrid').innerHTML = '';
+    ytThumbSelectedIds.clear();
+    document.getElementById('ytThumbSelected').value = '';
+    document.getElementById('ytThumbLoadedCount').textContent = '0 / 0 ảnh';
+    document.getElementById('ytThumbSelCount').textContent = 'đã chọn 0';
+  },
+
+  ytThumbAddItems(items) {
+    const grid = document.getElementById('ytThumbGrid');
+    items.forEach(item => {
+      const card = document.createElement('div');
+      card.className = 'thumb-card';
+      card.dataset.id = item.id;
+      card.onclick = () => ytThumbToggle(item.id, card);
+
+      const wrap = document.createElement('div');
+      wrap.className = 'thumb-img-wrap';
+      const check = document.createElement('div');
+      check.className = 'thumb-check';
+      check.textContent = '✓';
+      const errBadge = document.createElement('div');
+      errBadge.className = 'thumb-error-badge';
+      errBadge.textContent = '!';
+      errBadge.title = 'Loi tai anh xem truoc';
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = item.title;
+      img.onerror = () => { card.classList.add('error'); };
+      img.src = item.previewUrl;
+      wrap.appendChild(img);
+      wrap.appendChild(check);
+      wrap.appendChild(errBadge);
+
+      const meta = document.createElement('div');
+      meta.className = 'thumb-meta';
+      const title = document.createElement('div');
+      title.className = 'thumb-title';
+      title.innerHTML = escHtml(item.title);
+      title.title = item.title;
+      const dims = document.createElement('div');
+      dims.className = 'thumb-dims';
+      dims.textContent = item.width + '×' + item.height;
+      const tag = document.createElement('span');
+      tag.className = 'thumb-tag' + (item.downgraded ? ' down' : '');
+      tag.textContent = item.downgraded ? item.rung + ' (lùi cỡ)' : item.rung;
+
+      meta.appendChild(title);
+      meta.appendChild(dims);
+      meta.appendChild(tag);
+
+      card.appendChild(wrap);
+      card.appendChild(meta);
+      grid.appendChild(card);
+    });
+  },
+
+  ytThumbSetCount(loaded, total) {
+    document.getElementById('ytThumbLoadedCount').textContent = loaded + ' / ' + total + ' ảnh';
+  },
+
+  ytThumbSetState(id, state) {
+    const card = document.querySelector('#ytThumbGrid .thumb-card[data-id="' + CSS.escape(id) + '"]');
+    if (!card) return;
+    card.classList.remove('saving', 'done', 'error');
+    if (state === 'saving' || state === 'done' || state === 'error') card.classList.add(state);
   },
 
   setVoiceDir(path) {
@@ -775,6 +959,32 @@ function toggleRow(tr, name, e) {
     selectedRows.add(name);
     tr.style.background = 'var(--accent-light)';
   }
+}
+
+// ── Youtube Thumbnail selection (thao tac DOM thuan, khong goi bridge — F1) ──
+function _ytThumbSyncSelected() {
+  document.getElementById('ytThumbSelected').value = Array.from(ytThumbSelectedIds).join(',');
+  document.getElementById('ytThumbSelCount').textContent = 'đã chọn ' + ytThumbSelectedIds.size;
+}
+
+function ytThumbToggle(id, card) {
+  if (ytThumbSelectedIds.has(id)) {
+    ytThumbSelectedIds.delete(id);
+    card.classList.remove('sel');
+  } else {
+    ytThumbSelectedIds.add(id);
+    card.classList.add('sel');
+  }
+  _ytThumbSyncSelected();
+}
+
+function ytThumbSelectAll(select) {
+  document.querySelectorAll('#ytThumbGrid .thumb-card').forEach(card => {
+    const id = card.dataset.id;
+    if (select) { ytThumbSelectedIds.add(id); card.classList.add('sel'); }
+    else { ytThumbSelectedIds.delete(id); card.classList.remove('sel'); }
+  });
+  _ytThumbSyncSelected();
 }
 
 function updateLineCount() {
@@ -912,6 +1122,10 @@ const pyApi = new Proxy({}, {
           ytLinks: getFieldValue('ytLinks'),
           ytFormat: getFieldValue('ytFormat'),
           ytQuality: getFieldValue('ytQuality'),
+          ytThumbLinks: getFieldValue('ytThumbLinks'),
+          ytThumbSize: getFieldValue('ytThumbSize'),
+          ytThumbFormat: getFieldValue('ytThumbFormat'),
+          ytThumbSelected: getFieldValue('ytThumbSelected'),
         }];
       }
       if (method === 'saveNoiTxt') args = [getFieldValue('editor')];

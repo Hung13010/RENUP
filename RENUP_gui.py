@@ -10,6 +10,8 @@ import urllib.request
 import urllib.error
 import webbrowser
 import uuid
+import io
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 
@@ -53,6 +55,20 @@ YT_QUALITIES = ('Best', '2160p', '1440p', '1080p', '720p', '480p', '360p')
 RE_YT_DL = re.compile(r'^\[download\]\s+(\d{1,3}(?:\.\d+)?)%')
 RE_YT_POST = re.compile(r'^\[(Merger|ExtractAudio|VideoRemuxer|ThumbnailsConvertor|FixupM3u8|Fixup\w*)\]')
 
+# ── Youtube Thumbnail (ADR-008): module-level constants ──
+YT_THUMB_LADDER = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default']
+YT_THUMB_NOMINAL = {
+    'maxresdefault': (1280, 720), 'sddefault': (640, 480),
+    'hqdefault': (480, 360), 'mqdefault': (320, 180), 'default': (120, 90),
+}
+YT_THUMB_URL = "https://i.ytimg.com/vi/{vid}/{rung}.jpg"
+YT_THUMB_FORMATS = {'JPG': '.jpg', 'PNG': '.png', 'WEBP': '.webp'}
+YT_THUMB_PUSH_CHUNK = 20
+YT_CHANNEL_TABS = ('videos', 'shorts', 'streams', 'playlists', 'featured', 'community', 'about')
+RE_YT_CHANNEL = re.compile(
+    r'youtube\.com/(?:@[^/?#\s]+|channel/[^/?#\s]+|c/[^/?#\s]+|user/[^/?#\s]+)', re.I)
+RE_YT_PLAYLIST = re.compile(r'youtube\.com/playlist\?', re.I)
+
 
 def get_version():
     for d in [get_bundle_dir(), get_app_dir()]:
@@ -90,6 +106,11 @@ class Api:
         self._task_results = {}     # {idx: True/False}
         self._current_executor = None
         self._run_params = None
+
+        # ── ADR-008: Youtube thumbnail ──
+        self._yt_thumb_items = []      # list[dict] - catalogue sau lan Load gan nhat, giu thu tu
+        self._yt_thumb_index = {}      # dict[str, dict] - video_id -> item (tra cuu O(1))
+        self._yt_thumb_dir = os.path.join(self.bin_dir, '_yt_thumb_cache')
 
         # ── ADR-007: retry failed rows ──
         self._retry_sig = None          # str|None - chu ky dau vao cua lan chay truoc
@@ -375,6 +396,7 @@ class Api:
         self._js(f"uiApi.showClaimSection({str(code_type == 'claim_tiktok').lower()})")
         self._js(f"uiApi.showResizeSection({str(code_type == 'resize_image').lower()})")
         self._js(f"uiApi.showYoutubeSection({str(code_type == 'youtube_download').lower()})")
+        self._js(f"uiApi.showYtThumbSection({str(code_type == 'youtube_thumbnail').lower()})")
 
     def addSeparator(self):
         self._js("document.getElementById('editor').value += '#\\n'; updateLineCount();")
@@ -436,6 +458,40 @@ class Api:
         result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if result and len(result) > 0:
             self._js(f"uiApi.setMusicDir({json.dumps(result[0])})")
+
+    def ytThumbLoad(self):
+        """Nut Load cua 'Tai thumbnail Youtube' (ADR-008). Khong tham so, tu
+        doc cac truong bang evaluate_js - dung tien le refreshVideos() (function
+        quet-roi-do-du-lieu-vao-panel-phai), khong mo rong pyApi proxy.
+
+        LUU Y (sai lech voi khoi code vi du trong spec §4.1): spec khong doc
+        '#workers' o day, nhung §6.8/§6.4/§6.5 deu can gia tri workers cho
+        ThreadPoolExecutor + dong log "Tim thay {n} video | {workers} luong".
+        Doc them '#workers' (giong moi function khac) va truyen xuong
+        _yt_thumb_load_work la cach duy nhat de thuat toan spec mo ta chay
+        dung - da bao lai trong report thay vi tu y bo qua workers.
+        """
+        if self.is_running:
+            return                       # dung chung co voi RUN - khong chay chong
+        links = self._window.evaluate_js("document.getElementById('ytThumbLinks').value") or ''
+        size = self._window.evaluate_js("document.getElementById('ytThumbSize').value") or ''
+        count = self._window.evaluate_js("document.getElementById('ytThumbCount').value") or ''
+        workers_raw = self._window.evaluate_js("document.getElementById('workers').value") or ''
+        func = self._window.evaluate_js("document.getElementById('funcSelect').value") or ''
+        code = self._code_map.get(func, {})
+        if code.get('type') != 'youtube_thumbnail':
+            return
+        try:
+            workers = max(1, int(workers_raw))
+        except (TypeError, ValueError):
+            workers = 2
+        self.is_running = True
+        self._stopped = False
+        self._paused = False
+        self._current_procs.clear()
+        self._js("uiApi.setRunning(true)")
+        threading.Thread(target=self._yt_thumb_load_work,
+                          args=(links, size, count, code, workers), daemon=True).start()
 
     def refreshVideos(self):
         input_dir = self._window.evaluate_js("document.getElementById('inputDir').value")
@@ -649,6 +705,8 @@ class Api:
                     self._run_resize_image(params, code)
                 elif code_type == 'youtube_download':
                     self._run_youtube_download(params, code)
+                elif code_type == 'youtube_thumbnail':
+                    self._run_yt_thumbnail(params, code)
                 else:
                     self._log(f"Khong ho tro type: {code_type}", 'err')
             except Exception as e:
@@ -3250,6 +3308,644 @@ class Api:
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
+
+    # ── Youtube Thumbnail (ADR-008) ──
+
+    @staticmethod
+    def _yt_thumb_normalize_channel(url):
+        """Normalize a Youtube channel/playlist URL before --flat-playlist listing.
+
+        Channel URLs (/@name, /channel/ID, /c/name, /user/name) get '/videos'
+        appended UNLESS the URL already ends on a recognised tab
+        (YT_CHANNEL_TABS) - this is what keeps a channel link to "N most
+        recent videos" and deliberately excludes Shorts (a separate tab).
+        Playlist URLs (RE_YT_PLAYLIST) are returned unchanged. The query
+        string is dropped when '/videos' gets appended to a bare channel URL
+        (a stray '?si=...' share param would otherwise be carried into the
+        tab path and confuse yt-dlp).
+        """
+        if RE_YT_PLAYLIST.search(url):
+            return url
+        if not RE_YT_CHANNEL.search(url):
+            return url
+        base = url.split('?', 1)[0].split('#', 1)[0].rstrip('/')
+        last_seg = base.rsplit('/', 1)[-1].lower()
+        if last_seg in YT_CHANNEL_TABS:
+            return base
+        return base + '/videos'
+
+    def _yt_thumb_list_channel(self, url, limit, socket_timeout, player_client):
+        """List up to `limit` videos of a channel/playlist URL via a single
+        `yt-dlp --flat-playlist` call (one process for the WHOLE channel -
+        cheap compared to per-video title fetches).
+
+        Returns list[(video_id, title)] in Youtube's own order (a channel's
+        '/videos' tab = newest first). On total failure (spawn error, or
+        non-zero returncode with zero parsed pairs), logs the error and
+        returns [] - the caller treats that as "this link contributed 0
+        videos" and keeps processing the rest of the batch (per-link
+        isolation, batch does not stop).
+        """
+        if self._stopped:
+            return []
+        cmd = [self.ytdlp_path,
+               "--flat-playlist", "--no-warnings", "--ignore-errors",
+               "--encoding", "utf-8",
+               "--socket-timeout", str(socket_timeout),
+               "--playlist-end", str(limit),
+               "--print", "%(id)s", "--print", "%(title)s"]
+        if player_client:
+            cmd += ["--extractor-args", f"youtube:player_client={player_client}"]
+        cmd.append(url)
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+            )
+            self._current_procs.append(proc)
+            try:
+                stdout_data, stderr_data = proc.communicate()
+            finally:
+                if proc in self._current_procs:
+                    self._current_procs.remove(proc)
+        except Exception as e:
+            self._log(f"Khong liet ke duoc kenh: {url}", 'err')
+            self._log(f"yt-dlp loi ({url}): {e}", 'err')
+            return []
+
+        # Ghep theo cap (id, title). Cap nao phan id khong khop YT_ID_BARE thi
+        # bo cap do - chong lech dong khi --ignore-errors nuot mot entry.
+        lines = [l.strip() for l in (stdout_data or '').split('\n') if l.strip()]
+        pairs = []
+        for i in range(0, len(lines) - 1, 2):
+            vid, title = lines[i], lines[i + 1]
+            if YT_ID_BARE.match(vid):
+                pairs.append((vid, title))
+
+        if proc.returncode != 0 and not pairs:
+            err_lines = [l.strip() for l in (stderr_data or '').splitlines() if l.strip()]
+            last_err = err_lines[-1] if err_lines else 'Unknown error'
+            if len(last_err) > 200:
+                last_err = last_err[:200] + '...'
+            self._log(f"Khong liet ke duoc kenh: {url}", 'err')
+            self._log(f"yt-dlp loi ({url}): {last_err}", 'err')
+
+        return pairs
+
+    @staticmethod
+    def _yt_thumb_resolve_ladder(code):
+        """Resolve + validate `code.get('size_ladder')` (ADR-008 amendment).
+
+        Preset field has REAL effect (wired into _yt_thumb_fetch): the size
+        ladder is Youtube's own naming convention, and if Youtube ever
+        changes it, editing one line of JSON can save the feature without
+        rebuilding the .exe (same spirit as `player_client` in ADR-006).
+
+        Never raises. Returns (ladder, warning):
+        - `ladder`: always a non-empty list of KNOWN rung names (members of
+          the module constant YT_THUMB_LADDER). Unknown/misspelled entries
+          are dropped one-by-one (typo-tolerant - a single bad entry does
+          not kill an otherwise-valid custom ladder); duplicates collapsed,
+          first occurrence order kept.
+        - `warning`: None when 'size_ladder' is absent/empty (normal case -
+          most presets do not override it) or fully valid; otherwise a
+          short human-readable message for the caller to log, so a typo in
+          the preset degrades LOUDLY to the safe default/partial list
+          instead of silently doing nothing.
+        Field missing, not a list, or every entry invalid -> falls back to
+        the full YT_THUMB_LADDER constant (with a warning in the last two
+        cases). Field present with SOME valid entries -> returns just the
+        valid ones (still typo-tolerant), with a warning listing what got
+        dropped.
+        """
+        raw = code.get('size_ladder')
+        if not raw:
+            return list(YT_THUMB_LADDER), None
+        if not isinstance(raw, list):
+            return (list(YT_THUMB_LADDER),
+                    "size_ladder trong preset khong phai list, dung mac dinh.")
+
+        seen = set()
+        cleaned = []
+        dropped = []
+        for entry in raw:
+            name = entry.strip() if isinstance(entry, str) else None
+            if not name:
+                dropped.append(repr(entry))
+                continue
+            if name not in YT_THUMB_LADDER:
+                dropped.append(name)
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            cleaned.append(name)
+
+        if not cleaned:
+            return (list(YT_THUMB_LADDER),
+                    "size_ladder trong preset khong co gia tri hop le nao, dung mac dinh.")
+        if dropped:
+            return cleaned, f"size_ladder co gia tri la, da bo qua: {', '.join(dropped)}."
+        return cleaned, None
+
+    def _yt_thumb_fetch(self, video_id, start_rung, cache_dir, timeout, http_retries, ladder=None):
+        """Download the best available thumbnail at-or-below `start_rung` on
+        `ladder` (defaults to the module constant YT_THUMB_LADDER when not
+        given/empty - see _yt_thumb_resolve_ladder for how a preset's
+        'size_ladder' field gets validated into this parameter), straight
+        into `cache_dir`.
+
+        Returns (rung, cache_path, width, height) on success, None on total
+        failure (every rung on the ladder 404'd/403'd, or a network error
+        exhausted all `http_retries` retries).
+
+        BAT BIEN SONG CON (ADR-008, khong duoc doi): CHI 404/403 (va anh
+        120x90 gia - Youtube's grey placeholder served instead of a real 404
+        for some missing sizes) moi lui bac trong ladder. Loi mang/timeout
+        thi thu lai CUNG mot bac toi da `http_retries` lan; het luot ma van
+        loi mang -> return None NGAY (khong lui bac). Gop hai loai loi nay se
+        khien mang chap chon am tham ha chat luong anh ma user khong biet.
+        """
+        ladder_list = ladder if ladder else YT_THUMB_LADDER
+        try:
+            start_idx = ladder_list.index(start_rung)
+        except ValueError:
+            start_idx = 0
+        ladder_slice = ladder_list[start_idx:]
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RENUP"}
+
+        for rung in ladder_slice:
+            if self._stopped:
+                return None
+            img_url = YT_THUMB_URL.format(vid=video_id, rung=rung)
+            req = urllib.request.Request(img_url, headers=headers)
+
+            data = None
+            downgrade = False
+            for attempt in range(http_retries + 1):
+                if self._stopped:
+                    return None
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        data = resp.read()
+                    break
+                except urllib.error.HTTPError as e:
+                    if e.code in (403, 404):
+                        downgrade = True
+                        break
+                    # HTTP loi khac (vd 5xx) -> coi nhu loi mang, thu lai CUNG rung
+                    if attempt >= http_retries:
+                        return None
+                except (urllib.error.URLError, OSError):
+                    if attempt >= http_retries:
+                        return None
+
+            if downgrade:
+                continue
+            if data is None:
+                return None
+
+            cache_path = os.path.join(cache_dir, f"{video_id}_{rung}.jpg")
+            part_path = f"{cache_path}.{uuid.uuid4().hex}.part"
+            try:
+                with open(part_path, 'wb') as f:
+                    f.write(data)
+                os.replace(part_path, cache_path)
+            except OSError:
+                if os.path.exists(part_path):
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+                return None
+
+            try:
+                with Image.open(cache_path) as im:
+                    w, h = im.size
+            except Exception:
+                try:
+                    os.remove(cache_path)
+                except OSError:
+                    pass
+                return None
+
+            if (w, h) == (120, 90) and rung != 'default':
+                # Youtube doi khi tra anh xam placeholder thay vi 404 that su
+                # cho mot size khong ton tai -> coi nhu 404, lui bac.
+                try:
+                    os.remove(cache_path)
+                except OSError:
+                    pass
+                continue
+
+            return (rung, cache_path, w, h)
+
+        return None
+
+    def _yt_thumb_load_work(self, links_text, size, count, code, workers=2):
+        """Than luong nen cua nut Load (§6.8). Bat buoc co finally: dat
+        self.is_running = False + uiApi.setRunning(false). KHONG goi
+        _end_run() - function nay dung ngoai co che retry cua ADR-007 (§7.4),
+        de _batch_labels tiep tuc la None thi _end_run() trong finally cua
+        run()._work() (chi ap dung cho buoc Download, khong ap dung o day vi
+        Load khong di qua run()) khong co gi de doc/xoa nham.
+        """
+        try:
+            self._js("uiApi.setStatus('Dang liet ke video...')")
+            self._js("uiApi.setProgress(0, '')")
+            self._log("=== Bat dau load thumbnail Youtube ===", 'info')
+
+            links_text = (links_text or '').strip()
+            if not links_text:
+                self._log("Chua nhap link Youtube.", 'err')
+                return
+            if not os.path.exists(self.ytdlp_path):
+                self._log("Khong tim thay yt-dlp.exe (vao Cap nhat yt-dlp).", 'err')
+                return
+
+            default_limit = int(code.get('default_channel_limit', 50))
+            max_limit = int(code.get('max_channel_limit', 200))
+            try:
+                limit = int(count)
+            except (TypeError, ValueError):
+                limit = default_limit
+            if limit < 1:
+                limit = default_limit
+            if limit > max_limit:
+                limit = max_limit
+                self._log(f"So video moi kenh vuot gioi han, dung {max_limit}.", 'info')
+
+            default_size = code.get('default_size', 'maxresdefault')
+            start_rung = size if size in YT_THUMB_LADDER else default_size
+            if start_rung not in YT_THUMB_LADDER:
+                start_rung = 'maxresdefault'
+
+            # size_ladder (preset field, ADR-008 amendment): validated once
+            # per Load, then reused for every _yt_thumb_fetch() call below.
+            # Missing/empty field -> silent fallback (normal case). Present
+            # but malformed -> logged loudly so a typo does not silently do
+            # nothing (per coordinator review).
+            ladder, ladder_warning = self._yt_thumb_resolve_ladder(code)
+            if ladder_warning:
+                self._log(ladder_warning, 'info')
+
+            player_client = str(code.get('player_client', 'android_vr') or '').strip()
+            socket_timeout = int(code.get('socket_timeout', 30))
+            http_retries = int(code.get('http_retries', 2))
+            max_filename_len = int(code.get('max_filename_len', 150))
+            preview_mode = code.get('preview_mode', 'file')
+            preview_max_width = int(code.get('preview_max_width', 320))
+            workers = max(1, int(workers or 2))
+            cache_dir = self._yt_thumb_dir
+
+            # §6.8 buoc 5: don sach luoi + cache TRUOC khi lam bat cu viec gi
+            # khac. Xoa cache khong bao gio duoc fatal (Windows co the con giu
+            # file ma webview vua hien thi) - boc try/except, bo qua loi.
+            self._js("uiApi.ytThumbClearGrid()")
+            self._yt_thumb_items = []
+            self._yt_thumb_index = {}
+            try:
+                os.makedirs(cache_dir, exist_ok=True)
+                for fname in os.listdir(cache_dir):
+                    try:
+                        os.remove(os.path.join(cache_dir, fname))
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+
+            # §6.8 buoc 6: phan loai tung dong (§6.3). Video le duoc gom lai
+            # de lay tieu de mot lan song song sau vong lap (§6.5); link
+            # kenh/playlist duoc liet ke ngay (mot lenh yt-dlp cho ca kenh).
+            entries = []          # [(video_id, title), ...] thu tu catalogue
+            seen_ids = set()
+
+            def add_entry(vid, title):
+                if vid in seen_ids:
+                    self._log(f"Bo qua link trung: {vid}", 'info')
+                    return
+                seen_ids.add(vid)
+                entries.append((vid, title))
+
+            single_video_ids = []
+
+            for raw_line in links_text.split('\n'):
+                if self._stopped:
+                    break
+                line = raw_line.strip()
+                if not line:
+                    continue
+                vid = self._yt_extract_video_id(line)
+                if vid:
+                    # Video le (kem &list= van roi vao day - khong bao gio
+                    # bung playlist tu mot link video, nhat quan ADR-005).
+                    single_video_ids.append(vid)
+                    continue
+                if RE_YT_CHANNEL.search(line) or RE_YT_PLAYLIST.search(line):
+                    normalized = self._yt_thumb_normalize_channel(line)
+                    pairs = self._yt_thumb_list_channel(normalized, limit, socket_timeout, player_client)
+                    self._log(f"Kenh: {line} -> {len(pairs)} video", 'info')
+                    for vid2, title2 in pairs:
+                        add_entry(vid2, title2)
+                    continue
+                self._log(f"Bo qua dong khong phai link Youtube: {line}", 'info')
+
+            # §6.5: lay tieu de cho video le, song song bang chinh `workers`.
+            if single_video_ids and not self._stopped:
+                self._js("uiApi.setStatus('Dang lay tieu de video...')")
+                total_single = len(single_video_ids)
+                title_count = [0]
+
+                def fetch_one(i, vid):
+                    if self._stopped:
+                        return vid, None
+                    title = self._yt_fetch_title(vid, socket_timeout, player_client)
+                    if not title:
+                        title = vid
+                        self._log(f"[{i + 1}] Khong lay duoc tieu de, dung ID: {vid}", 'info')
+                    with self._lock:
+                        title_count[0] += 1
+                        k = title_count[0]
+                    self._log(f"Lay tieu de: {k}/{total_single}", 'info')
+                    return vid, title
+
+                results_by_id = {}
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futures = []
+                    for i, vid in enumerate(single_video_ids):
+                        if self._stopped:
+                            break
+                        futures.append(ex.submit(fetch_one, i, vid))
+                    for fut in as_completed(futures):
+                        try:
+                            vid, title = fut.result()
+                        except Exception:
+                            continue
+                        if title is not None:
+                            results_by_id[vid] = title
+
+                for vid in single_video_ids:
+                    if vid in results_by_id:
+                        add_entry(vid, results_by_id[vid])
+
+            if not entries:
+                self._log("Khong co video nao de load.", 'err')
+                return
+
+            # §6.8 buoc 8: sanitize ten file - giong het ADR-005 §5.3, khong
+            # sua _safe_filename() (dung chung voi Claim Tiktok + Youtube Download).
+            used_names = set()
+            items = []
+            for vid, title in entries:
+                safe = self._safe_filename(title)
+                safe = safe.replace('%', '_')
+                safe = safe.strip().rstrip('. ')
+                safe = safe[:max_filename_len]
+                if not safe:
+                    safe = vid
+                if safe in used_names:
+                    new_name = f"{safe}_{vid}"
+                    self._log(f"Trung ten, doi thanh: {new_name}", 'info')
+                    safe = new_name
+                used_names.add(safe)
+                items.append({
+                    'video_id': vid, 'title': title, 'title_safe': safe,
+                    'requested_rung': start_rung,
+                })
+
+            n = len(items)
+            self._log(f"Tim thay {n} video | {workers} luong | co {start_rung}", 'info')
+            self._js("uiApi.setStatus('Dang tai anh xem truoc...')")
+
+            # §6.8 buoc 10-11: tai anh song song, day sang JS THEO THU TU
+            # CATALOGUE (khong phai thu tu hoan thanh) bang mot con tro, theo
+            # tung lo YT_THUMB_PUSH_CHUNK item de luoi hien dan thay vi dung
+            # im toi cuoi.
+            results = [None] * n     # None=chua xong, False=fail, dict=thanh cong
+            pending = []
+            cursor = [0]
+            done = [0]
+            ok = [0]
+
+            def flush():
+                if not pending:
+                    return
+                payload = list(pending)
+                pending.clear()
+                self._js(f"uiApi.ytThumbAddItems({json.dumps(payload, ensure_ascii=False)})")
+
+            def fetch_thumb(item):
+                if self._stopped:
+                    return None
+                return self._yt_thumb_fetch(item['video_id'], start_rung, cache_dir,
+                                             socket_timeout, http_retries, ladder)
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futures = {}
+                for i, item in enumerate(items):
+                    if self._stopped:
+                        break
+                    futures[ex.submit(fetch_thumb, item)] = i
+                for fut in as_completed(futures):
+                    i = futures[fut]
+                    item = items[i]
+                    try:
+                        r = fut.result()
+                    except Exception:
+                        r = None
+
+                    with self._lock:
+                        done[0] += 1
+                        d = done[0]
+
+                    if r is None:
+                        self._log(f"[{i + 1}] Khong tai duoc thumbnail: {item['title']}", 'err')
+                        results[i] = False
+                    else:
+                        rung, cache_path, w, h = r
+                        downgraded = (rung != start_rung)
+                        if downgraded:
+                            self._log(
+                                f"[{i + 1}] Khong co co {start_rung}, dung {rung}: {item['title']}",
+                                'info')
+                        if preview_mode == 'data':
+                            try:
+                                with Image.open(cache_path) as im:
+                                    im = im.copy()
+                                im.thumbnail((preview_max_width, preview_max_width * 10))
+                                buf = io.BytesIO()
+                                im.convert('RGB').save(buf, 'JPEG', quality=70)
+                                preview_url = ('data:image/jpeg;base64,'
+                                               + base64.b64encode(buf.getvalue()).decode('ascii'))
+                            except Exception:
+                                preview_url = ''
+                        else:
+                            preview_url = 'file:' + urllib.request.pathname2url(cache_path)
+
+                        full_item = dict(item)
+                        full_item.update({
+                            'rung': rung, 'downgraded': downgraded,
+                            'width': w, 'height': h,
+                            'cache_path': cache_path, 'preview_url': preview_url,
+                        })
+                        results[i] = full_item
+                        with self._lock:
+                            ok[0] += 1
+
+                    # Day con tro qua moi vi tri da co ket qua, gom item
+                    # thanh cong vao pending (item fail khong vao luoi).
+                    while cursor[0] < n and results[cursor[0]] is not None:
+                        r_i = results[cursor[0]]
+                        if r_i is not False:
+                            self._yt_thumb_items.append(r_i)
+                            self._yt_thumb_index[r_i['video_id']] = r_i
+                            pending.append({
+                                'id': r_i['video_id'], 'title': r_i['title'],
+                                'previewUrl': r_i['preview_url'],
+                                'width': r_i['width'], 'height': r_i['height'],
+                                'rung': r_i['rung'], 'downgraded': r_i['downgraded'],
+                            })
+                        cursor[0] += 1
+
+                    finished_all = (cursor[0] >= n)
+                    if len(pending) >= YT_THUMB_PUSH_CHUNK or (finished_all and pending):
+                        flush()
+                        self._js(f"uiApi.ytThumbSetCount({len(self._yt_thumb_items)}, {n})")
+                        self._js(f"uiApi.setProgress({int(d / n * 100)}, '{d}/{n}')")
+
+            flush()
+
+            self._log(f"=== Da load {ok[0]}/{n} anh ===", 'ok')
+            self._js(f"uiApi.setStatus('Da load {ok[0]}/{n} anh.')")
+            self._js(f"uiApi.setProgress(100, '{ok[0]}/{n}')")
+        except Exception as e:
+            self._log(f"LOI: {e}", 'err')
+        finally:
+            self.is_running = False
+            self._js("uiApi.setRunning(false)")
+
+    def _run_yt_thumbnail(self, params, code):
+        """Buoc Download (§7): 100% cuc bo, KHONG mang. Doc catalogue
+        `self._yt_thumb_items` (ghi boi lan Load gan nhat) + tap id da chon
+        (`ytThumbSelected`), convert file cache co san bang Pillow -> Output.
+        Ghi de neu trung ten (KHONG skip-existing, ADR-008 Quyet dinh 10).
+
+        Dung ngoai ADR-007 co chu y (§7.4/I7): KHONG goi _begin_batch /
+        _mark_row / initProcessTable / updateProcessItem.
+        """
+        self._log("=== Bat dau tai thumbnail ===", 'info')
+        self._js("uiApi.setProgress(0, '')")
+
+        output_dir = (params.get('outputDir') or '').strip()
+        workers = max(1, params.get('workers', 2))
+        fmt = (params.get('ytThumbFormat') or code.get('default_format', 'JPG')).strip().upper()
+        sel_raw = params.get('ytThumbSelected', '') or ''
+
+        if not output_dir:
+            self._log("Chua chon folder Output.", 'err')
+            return
+        if not self._yt_thumb_items:
+            self._log("Chua load anh nao. Nhan Load truoc.", 'err')
+            return
+        if fmt not in YT_THUMB_FORMATS:
+            self._log(f"Dinh dang khong hop le: {fmt}", 'err')
+            return
+
+        sel_ids = {s.strip() for s in sel_raw.split(',') if s.strip()}
+        # Thu tu catalogue, KHONG phai thu tu user tick. Id la nhung trong
+        # catalogue bi bo qua im lang (loc theo self._yt_thumb_items).
+        targets = [it for it in self._yt_thumb_items if it['video_id'] in sel_ids]
+        if not targets:
+            self._log("Chua chon anh nao.", 'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        ext = YT_THUMB_FORMATS[fmt]
+        jpg_quality = int(code.get('jpg_quality', 95))
+        webp_quality = int(code.get('webp_quality', 95))
+        total = len(targets)
+        done = [0]
+        ok = [0]
+
+        def save_one(idx, item):
+            vid = item['video_id']
+            title = item['title']
+            self._js(f"uiApi.ytThumbSetState('{vid}', 'saving')")
+
+            cache_path = item.get('cache_path', '')
+            if not cache_path or not os.path.exists(cache_path):
+                self._log(f"[{idx + 1}] Khong con file cache, load lai: {title}", 'err')
+                self._js(f"uiApi.ytThumbSetState('{vid}', 'error')")
+                return False
+
+            out_path = os.path.join(output_dir, f"{item['title_safe']}{ext}")
+            try:
+                img = Image.open(cache_path)
+                # Cung khoi chuyen mode voi _run_convert_image (dong ~1050).
+                if ext in ('.jpg', '.jpeg') and img.mode in ('RGBA', 'P'):
+                    bg = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    bg.paste(img, mask=img.split()[3])
+                    img = bg
+                elif img.mode == 'P':
+                    img = img.convert('RGBA' if ext == '.png' else 'RGB')
+
+                save_kwargs = {}
+                if ext in ('.jpg', '.jpeg'):
+                    save_kwargs = {'quality': jpg_quality, 'optimize': True}
+                elif ext == '.webp':
+                    save_kwargs = {'quality': webp_quality, 'method': 4}
+                elif ext == '.png':
+                    save_kwargs = {'optimize': True}
+
+                # Ghi de neu file da ton tai - KHONG skip-existing (khac
+                # youtube_download: o day chay lai chi ton ~10ms CPU, khong
+                # phai hang GB bang thong).
+                img.save(out_path, **save_kwargs)
+                self._js(f"uiApi.ytThumbSetState('{vid}', 'done')")
+                self._log(f"  OK: {os.path.basename(out_path)}", 'ok')
+                return True
+            except Exception as e:
+                self._log(f"  LOI: {e}", 'err')
+                self._js(f"uiApi.ytThumbSetState('{vid}', 'error')")
+                return False
+
+        def process_one(idx, item):
+            if self._stopped:
+                return False
+            return save_one(idx, item)
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {}
+            for idx, item in enumerate(targets):
+                if self._stopped:
+                    break
+                futures[ex.submit(process_one, idx, item)] = idx
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception as e:
+                    self._log(f"  LOI: {e}", 'err')
+                    success = False
+                with self._lock:
+                    if success:
+                        ok[0] += 1
+                    done[0] += 1
+                    d = done[0]
+                self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
+                self._js(f"uiApi.setStatus('Dang luu anh... {d}/{total}')")
+
+        self._log(f"=== Hoan thanh: {ok[0]}/{total} anh ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok[0]}/{total} anh.')")
 
     # ── Auto Update ──
 

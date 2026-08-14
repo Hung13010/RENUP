@@ -24,6 +24,7 @@ bin/_temp_list_*.txt
 bin/_claim_music_*/
 bin/yt-dlp.exe.new
 bin/claim_state.json
+bin/_yt_thumb_cache/
 *.pyc
 
 # File tam cua build.bat (tao va xoa moi lan build)
