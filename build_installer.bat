@@ -45,13 +45,33 @@ if errorlevel 1 (
     pip install pyinstaller
 )
 
-REM Duong dan ISCC.exe co the ghi de bang bien moi truong ISCC_PATH neu
-REM Inno Setup duoc cai o vi tri khac tren may khac voi may hien tai.
-if not defined ISCC_PATH set "ISCC_PATH=C:\Users\Admin\AppData\Local\Programs\InnoSetup6\ISCC.exe"
-if not exist "%ISCC_PATH%" (
-    echo [LOI] Khong tim thay ISCC.exe tai "%ISCC_PATH%".
+REM ----------------------------------------------------------------------
+REM Tim ISCC.exe (trinh bien dich Inno Setup) mà KHONG hardcode ky tu o dia
+REM hay ten tai khoan Windows. Truoc day dong nay go thang
+REM "C:\Users\Admin\AppData\Local\Programs\InnoSetup6\ISCC.exe" - chi dung
+REM tren dung mot may, dung mot user. Cung mot loai loi voi viec tung
+REM hardcode o dia du an (xem ghi chu %~dp0 trong build.bat).
+REM Thu tu uu tien, dung ngay khi tim thay:
+REM   1. Bien moi truong ISCC_PATH  (ghi de thu cong, cao nhat)
+REM   2. ISCC.exe co san trong PATH (%%~$PATH:P tra ve rong neu khong thay)
+REM   3. Cac vi tri cai dat chuan, tra qua bien moi truong cua Windows
+REM      (%LOCALAPPDATA%, %ProgramFiles(x86)%, %ProgramFiles%) - tu dong
+REM      dung o dia he thong that su, du no khong phai C:.
+REM ----------------------------------------------------------------------
+if not defined ISCC_PATH for %%P in (ISCC.exe) do if not "%%~$PATH:P"=="" set "ISCC_PATH=%%~$PATH:P"
+if not defined ISCC_PATH if exist "%LOCALAPPDATA%\Programs\InnoSetup6\ISCC.exe" set "ISCC_PATH=%LOCALAPPDATA%\Programs\InnoSetup6\ISCC.exe"
+if not defined ISCC_PATH if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC_PATH=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not defined ISCC_PATH if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC_PATH=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not defined ISCC_PATH (
+    echo [LOI] Khong tim thay ISCC.exe o bat ky vi tri quen thuoc nao.
     echo [LOI] Cai Inno Setup 6 ^(https://jrsoftware.org/isinfo.php^) hoac dat
     echo [LOI] bien moi truong ISCC_PATH tro dung noi cai dat truoc khi chay lai.
+    pause
+    exit /b 1
+)
+if not exist "%ISCC_PATH%" (
+    echo [LOI] Khong tim thay ISCC.exe tai "%ISCC_PATH%".
+    echo [LOI] Kiem tra lai bien moi truong ISCC_PATH.
     pause
     exit /b 1
 )

@@ -401,6 +401,7 @@ class Api:
         code_type = code.get('type', '')
         self._js(f"uiApi.showGhepSection({str(code_type == 'concat').lower()})")
         self._js(f"uiApi.showSplitSection({str(code_type == 'split_video').lower()})")
+        self._js(f"uiApi.showAudioSplitSection({str(code_type == 'split_audio').lower()})")
         self._js(f"uiApi.showConvertSection({str(code_type == 'convert_video').lower()})")
         self._js(f"uiApi.showOverlaySection({str(code_type == 'overlay_corner').lower()})")
         self._js(f"uiApi.showMultiFolderSection({str(code_type == 'concat_multi_folder').lower()})")
@@ -694,6 +695,8 @@ class Api:
                     self._run_convert(params)
                 elif code_type == 'split_video':
                     self._run_split(params)
+                elif code_type == 'split_audio':
+                    self._run_audio_split(params, code)
                 elif code_type == 'reencode':
                     self._run_reencode(params, code)
                 elif code_type == 'convert_image':
@@ -941,6 +944,231 @@ class Api:
                 update(success)
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
+
+    # ── Audio Split (ADR-009) ──
+
+    @staticmethod
+    def _audio_split_times(duration, n):
+        """N-1 moc cat tuyet doi, chia deu 'duration' thanh n phan bang nhau.
+        Tra list[float] tang dan, moi phan tu < duration.
+
+        Co tinh truc tiep tai dur*k/N (KHONG chia trung binh roi lam tron):
+        cach lam tron sai am tham vi du dur=100 parts=99 se ra 50 phan neu
+        dung -segment_time ceil(dur/N) (ADR-009 Nhom 2).
+        """
+        return [round(duration * k / n, 3) for k in range(1, n)]
+
+    def _ffmpeg_quiet(self, cmd):
+        """Chay 1 lenh ffmpeg, KHONG log gi, KHONG parse tien trinh. Tra (ok, last_err).
+
+        Dung cho nhanh FLAC cua _run_audio_split, noi MOT dong bang can N lan
+        goi ffmpeg (moi phan mot lenh rieng) - _run_ffmpeg/_run_ffmpeg_with_table
+        deu log co dinh moi lan goi nen se de lai N dong log rac + N lan ghi de
+        % cua dong (ADR-009 Negative). Van dung DUNG pattern _current_procs de
+        Pause/Stop hoat dong (Stop se kill proc dang chay qua _kill_all_ffmpeg,
+        khong can vong lap kiem tra rieng trong ham nay).
+        """
+        if self._stopped:
+            return False, 'Da dung.'
+
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+        )
+        self._current_procs.append(proc)
+
+        stderr_lines = []
+        def drain():
+            for line in proc.stderr:
+                stderr_lines.append(line)
+        t = threading.Thread(target=drain, daemon=True)
+        t.start()
+
+        proc.wait()
+        t.join()
+
+        if proc in self._current_procs:
+            self._current_procs.remove(proc)
+
+        if self._stopped:
+            return False, 'Da dung.'
+
+        if proc.returncode == 0:
+            return True, ''
+
+        err = ''.join(stderr_lines).strip()
+        last_err = err.splitlines()[-1] if err else 'Unknown error'
+        return False, last_err
+
+    def _run_audio_split(self, params, code):
+        self._js("uiApi.setStatus('Dang chia nho nhac...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau chia nho nhac ===", 'info')
+
+        input_dir = params.get('inputDir', '')
+        output_dir = params.get('outputDir', '')
+        workers = max(1, params.get('workers', 2))
+        from_exts = [e.lower() for e in code.get(
+            'from_ext', ['.mp3', '.wav', '.m4a', '.flac', '.aac', '.ogg'])]
+        reencode_exts = [e.lower() for e in code.get('reencode_ext', ['.flac'])]
+        keep_cover = bool(code.get('keep_cover', False))
+        min_part_seconds = float(code.get('min_part_seconds', 1.0))
+
+        mode = (params.get('audioSplitMode') or code.get('default_mode', 'parts')).strip().lower()
+        try:
+            parts = int(params.get('audioSplitParts') or code.get('default_parts', 5))
+        except (ValueError, TypeError):
+            parts = 0
+        try:
+            seconds = int(params.get('audioSplitSeconds') or code.get('default_seconds', 300))
+        except (ValueError, TypeError):
+            seconds = 0
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder.", 'err')
+            return
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+        if mode not in ('parts', 'duration'):
+            self._log(f"Che do chia khong hop le: {mode}", 'err')
+            return
+        if mode == 'parts' and parts < 2:
+            self._log("So phan phai tu 2 tro len.", 'err')
+            return
+        if mode == 'duration' and seconds < 1:
+            self._log("Thoi luong moi phan khong hop le.", 'err')
+            return
+
+        files = sorted(
+            f for f in os.listdir(input_dir)
+            if os.path.splitext(f)[1].lower() in from_exts
+        )
+        if not files:
+            self._log("Khong tim thay file nhac trong Input.", 'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        if mode == 'parts':
+            self._log(f"Tim thay {len(files)} file | {workers} luong | chia {parts} phan.", 'info')
+        else:
+            self._log(f"Tim thay {len(files)} file | {workers} luong | chia moi {seconds} giay.", 'info')
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success: ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            self._mark_row(idx, success)
+            self._js(f"uiApi.setProgress({int(d/total*100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang chia... {d}/{total} file')")
+
+        def split_one(idx, filename):
+            i = idx + 1
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            self._log(f"[{i}/{total}] Chia: {filename}", 'info')
+
+            inp = os.path.join(input_dir, filename)
+            stem, ext = os.path.splitext(filename)
+            stem_safe = stem.replace('%', '_')
+            use_branch_b = ext.lower() in reencode_exts
+
+            rx = re.compile(r'^' + re.escape(stem_safe) + r' \((\d+)\)' + re.escape(ext) + r'$', re.IGNORECASE)
+            old = [f2 for f2 in os.listdir(output_dir) if rx.match(f2)]
+            if old:
+                self._log(
+                    f"[{i}/{total}] Da co {len(old)} file phan cu, se ghi de "
+                    f"(phan thua khong bi xoa): {filename}", 'info')
+
+            duration = self._get_duration(inp)
+            fatal_zero_dur = use_branch_b or mode == 'parts'
+            if duration <= 0 and fatal_zero_dur:
+                self._log(f"[{i}/{total}] Khong doc duoc thoi luong: {filename}", 'err')
+                return False, filename
+
+            if mode == 'parts' and duration / parts < min_part_seconds:
+                self._log(
+                    f"[{i}/{total}] File qua ngan de chia {parts} phan: "
+                    f"{filename} ({duration:.1f}s)", 'err')
+                return False, filename
+
+            pattern = os.path.join(output_dir, f"{stem_safe} (%d){ext}")
+
+            if not use_branch_b:
+                # NHANH A: mot lenh segment, khong ma hoa lai (WAV/MP3/M4A/AAC/OGG)
+                cmd = [self.ffmpeg_path, '-i', inp]
+                cmd += ['-map', '0' if keep_cover else '0:a']
+                cmd += ['-c', 'copy', '-map_chapters', '-1']
+                cmd += ['-f', 'segment']
+                if mode == 'parts':
+                    times = self._audio_split_times(duration, parts)
+                    times_str = ','.join(f'{t:.3f}' for t in times)
+                    cmd += ['-segment_times', times_str]
+                else:
+                    cmd += ['-segment_time', str(seconds)]
+                cmd += ['-reset_timestamps', '1', '-segment_start_number', '1']
+                cmd += ['-progress', 'pipe:1', '-nostats', pattern, '-y']
+
+                success, _ = self._run_ffmpeg_with_table(cmd, idx, duration, filename)
+            else:
+                # NHANH B: chi FLAC - cat tung phan bang -ss/-t roi ma hoa lai
+                # FLAC (lossless, MD5 trung khop tuyet doi - xem ADR-009 §7.4).
+                # -ss/-t chi duoc dung cho dinh dang nay; lam duong chung se
+                # hong .aac (0 KB) va .wav (0.1 KB) - da kiem chung, xem ADR-009 §7.3.
+                if mode == 'parts':
+                    starts = [0.0] + self._audio_split_times(duration, parts)
+                else:
+                    starts = []
+                    t = 0.0
+                    while t < duration - 0.001:
+                        starts.append(t)
+                        t += seconds
+                n = len(starts)
+                success = True
+                for k in range(1, n + 1):
+                    if self._stopped:
+                        self._js(f"uiApi.updateProcessItem({idx}, {int((k-1)/n*100)}, 'stopped')")
+                        success = False
+                        break
+                    start = starts[k - 1]
+                    out_k = os.path.join(output_dir, f"{stem_safe} ({k}){ext}")
+                    cmd_k = [self.ffmpeg_path, '-ss', f'{start:.3f}']
+                    if k < n:                                   # phan cuoi KHONG co -t: doc toi EOF
+                        cmd_k += ['-t', f'{starts[k] - start:.3f}']
+                    cmd_k += ['-i', inp, '-map', '0:a', '-map_chapters', '-1', '-c:a', 'flac', out_k, '-y']
+                    ok, last_err = self._ffmpeg_quiet(cmd_k)
+                    if not ok:
+                        self._log(f"[{i}/{total}] LOI phan {k}/{n} ({filename}): {last_err}", 'err')
+                        success = False
+                        break
+                    self._js(f"uiApi.updateProcessItem({idx}, {int(k/n*100)}, 'running')")
+
+            if success:
+                k_actual = len([f2 for f2 in os.listdir(output_dir) if rx.match(f2)])
+                self._log(f"  [{i}/{total}] OK: {k_actual} phan", 'ok')
+            return success, filename
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in run_items:
+                if self._stopped: break
+                futures[ex.submit(split_one, i, f)] = i
+            for f in as_completed(futures):
+                idx = futures[f]
+                try:
+                    success, _ = f.result()
+                except Exception:
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} file ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} file.')")
 
     # ── Re-encode ──
 

@@ -374,6 +374,32 @@ button[hidden] { display: none !important; }
         </div>
       </div>
 
+      <div id="audioSplitSection" style="display:none;">
+        <div class="field-label">🎵 Chế độ chia nhạc</div>
+        <div class="settings-row">
+          <select id="audioSplitMode" style="width:180px;" onchange="onAudioSplitModeChanged()">
+            <option value="parts">Theo số phần</option>
+            <option value="duration">Theo thời lượng</option>
+          </select>
+        </div>
+
+        <div id="audioSplitPartsRow">
+          <div class="field-label" style="margin-top:6px;">🔢 Số phần</div>
+          <div class="settings-row">
+            <input type="text" id="audioSplitParts" value="5" style="width:80px;">
+            <span style="font-size:11px; color:var(--text-muted);">phần / file</span>
+          </div>
+        </div>
+
+        <div id="audioSplitSecondsRow" style="display:none;">
+          <div class="field-label" style="margin-top:6px;">✂ Thời lượng mỗi phần</div>
+          <div class="settings-row">
+            <input type="text" id="audioSplitSeconds" value="300" style="width:80px;">
+            <span style="font-size:11px; color:var(--text-muted);">giây / phần</span>
+          </div>
+        </div>
+      </div>
+
       <div id="resizeSection" style="display:none;">
         <div class="field-label">📐 Kích thước resize (px)</div>
         <div class="settings-row">
@@ -684,6 +710,12 @@ function onYtFormatChanged() {
   document.getElementById('ytQualityRow').style.display = isMp3 ? 'none' : '';
 }
 
+function onAudioSplitModeChanged() {
+  const isParts = document.getElementById('audioSplitMode').value === 'parts';
+  document.getElementById('audioSplitPartsRow').style.display = isParts ? '' : 'none';
+  document.getElementById('audioSplitSecondsRow').style.display = isParts ? 'none' : '';
+}
+
 // ── Called from Python ──
 window.uiApi = {
   setVersion(v) { document.getElementById('versionText').textContent = 'v' + v; },
@@ -712,6 +744,11 @@ window.uiApi = {
 
   showSplitSection(show) {
     document.getElementById('splitSection').style.display = show ? 'block' : 'none';
+  },
+
+  showAudioSplitSection(show) {
+    document.getElementById('audioSplitSection').style.display = show ? 'block' : 'none';
+    if (show) onAudioSplitModeChanged();
   },
 
   showResizeSection(show) {
@@ -1126,6 +1163,9 @@ const pyApi = new Proxy({}, {
           ytThumbSize: getFieldValue('ytThumbSize'),
           ytThumbFormat: getFieldValue('ytThumbFormat'),
           ytThumbSelected: getFieldValue('ytThumbSelected'),
+          audioSplitMode: getFieldValue('audioSplitMode'),
+          audioSplitParts: getFieldValue('audioSplitParts'),
+          audioSplitSeconds: getFieldValue('audioSplitSeconds'),
         }];
       }
       if (method === 'saveNoiTxt') args = [getFieldValue('editor')];

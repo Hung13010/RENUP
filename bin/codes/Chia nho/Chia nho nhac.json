@@ -1,0 +1,12 @@
+{
+    "name": "Chia nhỏ nhạc (theo số phần hoặc thời lượng)",
+    "type": "split_audio",
+    "description": "Chia mỗi file nhạc trong Input thành nhiều phần, không mã hoá lại (rieng FLAC mã hoá lại lossless de sua header thoi luong). Tên file ra: Ten goc (1).mp3, Ten goc (2).mp3, ...",
+    "from_ext": [".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg"],
+    "default_mode": "parts",
+    "default_parts": 5,
+    "default_seconds": 300,
+    "min_part_seconds": 1.0,
+    "keep_cover": false,
+    "reencode_ext": [".flac"]
+}

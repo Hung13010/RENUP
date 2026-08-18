@@ -6,6 +6,40 @@ echo ========================================
 echo.
 
 REM ========================================
+REM CANH BAO LUONG CU - doc truoc khi lam bat cu gi
+REM ========================================
+REM Su co that da xay ra (v1.1.23): ai do chay NHAM build.bat (luong cu,
+REM dong goi MOT FILE DUY NHAT) thay vi build_installer.bat (luong chinh
+REM thuc hien nay, dong goi kieu --onedir + bo cai dat Inno Setup). File
+REM RENUP.exe mot-file 18.92MB bi day len GitHub Release. May nguoi dung
+REM dang cai BAN CAI DAT (thu muc co file khoi chay nho + thu muc con
+REM "_internal" chua thu vien) tu dong tai ban "cap nhat" nay ve va GHI DE
+REM len file khoi chay cua ho. Ket qua: mot file kieu MOT-FILE nam canh
+REM thu muc "_internal" kieu MOI - bo nap khong xac dinh duoc dang goi nao,
+REM app CHET ngay khi mo voi loi:
+REM   _PYI_APPLICATION_HOME_DIR environment variable is not defined!
+REM Phai xoa 2 release khoi GitHub de khong ai khac dinh loi nay.
+echo ========================================
+echo   [CANH BAO] DAY LA LUONG CU (dong goi MOT FILE)
+echo ========================================
+echo   Luong PHAT HANH CHINH THUC bay gio la build_installer.bat
+echo   (dong goi --onedir + bo cai dat Inno Setup).
+echo.
+echo   File build.bat nay CHI con dung de build thu MOT FILE .exe
+echo   cuc bo (kiem tra nhanh, khong dai dien cho ban se phat hanh).
+echo.
+echo   Neu ban PHAT HANH nham file mot-file nay len GitHub, may nguoi
+echo   dang dung ban CAI DAT se tu dong tai "cap nhat" ve, GHI DE len
+echo   file khoi chay cua ho va lam HONG app cua ho ngay lap tuc
+echo   (loi "_PYI_APPLICATION_HOME_DIR environment variable is not
+echo   defined!"). Da xay ra that voi v1.1.23, phai xoa release de cuu.
+echo.
+echo   Neu ban dinh phat hanh phien ban moi, hay dung Ctrl+C ngay bay
+echo   gio va chay build_installer.bat thay the.
+echo ========================================
+echo.
+
+REM ========================================
 REM Kiem tra tools bat buoc (Python, PyInstaller)
 REM Neu thieu thi build khong the tiep tuc, dung ngay
 REM ========================================
@@ -57,6 +91,15 @@ REM TRUOC khi build chay. Neu build that bai o buoc 4, version.txt se
 REM duoc KHOI PHUC ve lai CURRENT_VER (xem buoc 4 ben duoi) - tranh
 REM "dot" mat so version cho nhung lan build hong (da tung mat lien
 REM tiep 1.1.22 -> 1.1.25 vi khong co co che nay).
+REM
+REM Luu y them: neu build thanh cong nhung nguoi dung KHONG xac nhan
+REM phat hanh (xem buoc 5 ben duoi - buoc gate moi), version.txt CUNG
+REM se duoc khoi phuc ve CURRENT_VER. Ly do: file build.bat nay bay gio
+REM chi con dung de build thu cuc bo, khong con la luong phat hanh
+REM chinh thuc; neu moi lan build thu deu "dot" mot so version that su
+REM (du khong phat hanh gi), so version se nhay coc vo nghia trong
+REM version.txt cua repo. Chi giu version MOI khi nguoi dung xac nhan
+REM RO RANG muon phat hanh that.
 REM ========================================
 for /f "delims=" %%a in ('python -c "v='%CURRENT_VER%'.split('.'); v[-1]=str(int(v[-1])+1); print('.'.join(v))"') do set NEW_VER=%%a
 echo %NEW_VER%> version.txt
@@ -176,7 +219,74 @@ if exist "build" rmdir /s /q "build"
 if exist "__pycache__" rmdir /s /q "__pycache__"
 
 REM ========================================
-REM 5. Git commit and push (chi khi co git)
+REM 5. GATE PHAT HANH - bat buoc go dung chuoi xac nhan
+REM Day la hang rao chinh de khong ai "lo tay" phat hanh nham luong
+REM cu nay len GitHub nua (xem canh bao dau file). Buoc commit/push
+REM (6) va tao GitHub Release (7) ben duoi CHI chay khi nguoi dung go
+REM DUNG chuoi xac nhan - khong phai bam phim bat ky (Enter khong tinh
+REM la dong y, phai bang chu).
+REM
+REM Xu ly stdin can (giong het co che da dung o vong lap changelog o
+REM buoc 3): dung gia tri mot "khong the go duoc" lam mac dinh cho bien
+REM truoc khi doc. Neu "set /p" khong doc duoc gi (stdin da can, vi du
+REM script duoc goi tu mot tien trinh khong co input), bien van giu
+REM nguyen gia tri mac dinh do -> code hieu la CHUA XAC NHAN va TU DONG
+REM HUY buoc phat hanh, KHONG treo may, KHONG coi nhu dong y.
+REM ========================================
+echo ========================================
+echo   BUOC PHAT HANH ^(GitHub^)
+echo ========================================
+echo   Build .exe MOT-FILE da xong tai:
+echo     %RELEASE_DIR%\RENUP.exe
+echo.
+echo   Buoc tiep theo se COMMIT + PUSH len git va TAO GITHUB RELEASE
+echo   voi dung file mot-file nay. Nhu canh bao o dau script: neu ai do
+echo   dang dung ban CAI DAT, ho se bi ghi de file khoi chay va app cua
+echo   ho se HONG.
+echo.
+echo   Chi tiep tuc neu ban CHAC CHAN muon phat hanh bang luong cu nay
+echo   (thuong thi KHONG - hay dung build_installer.bat thay the).
+echo.
+echo   De XAC NHAN phat hanh, go dung chuoi sau roi Enter:
+echo       XAC NHAN PHAT HANH
+echo   Go bat ky thu gi khac, de trong, hoac Enter khi khong co input,
+echo   se HUY buoc phat hanh ^(build .exe cuc bo van giu nguyen^).
+echo.
+set "RELEASE_CONFIRM=__EOF_SENTINEL__"
+set /p "RELEASE_CONFIRM=  > "
+if "%RELEASE_CONFIRM%"=="XAC NHAN PHAT HANH" (
+    set "DO_RELEASE=1"
+) else (
+    set "DO_RELEASE=0"
+)
+
+if "%DO_RELEASE%"=="0" (
+    echo.
+    if "%RELEASE_CONFIRM%"=="__EOF_SENTINEL__" (
+        echo [CANH BAO] Stdin ket thuc som ^(khong doc duoc xac nhan^). Coi nhu HUY phat hanh.
+    ) else (
+        echo [INFO] Khong khop chuoi xac nhan. Huy buoc phat hanh.
+    )
+    echo [INFO] Khoi phuc version.txt ve v%CURRENT_VER% ^(version moi v%NEW_VER% CHUA duoc su dung, khong "dot" so vi build nay khong phat hanh^).
+    echo %CURRENT_VER%> version.txt
+    del changelog.tmp 2>nul
+    echo.
+    echo ========================================
+    echo   [OK] BUILD THU CUC BO XONG - KHONG PHAT HANH
+    echo   File: %RELEASE_DIR%\RENUP.exe
+    echo   ^(File nay van dung "v%NEW_VER%" ben trong vi da build roi -
+    echo    chi version.txt trong source la duoc khoi phuc^)
+    echo   Muon phat hanh that? Dung build_installer.bat.
+    echo ========================================
+    echo.
+    pause
+    exit /b 0
+)
+echo [OK] Da xac nhan phat hanh. Tiep tuc...
+echo.
+
+REM ========================================
+REM 6. Git commit and push (chi khi co git)
 REM Day dung NHANH HIEN TAI dang checkout (khong hardcode "main" -
 REM script co the chay tu bat ky nhanh nao), va DUNG toan bo script
 REM neu commit/push that bai thuc su - khong duoc in [OK] khi khong
@@ -220,7 +330,7 @@ if "%HAS_GIT%"=="1" (
 echo.
 
 REM ========================================
-REM 6. Tao GitHub Release (chi khi co gh)
+REM 7. Tao GitHub Release (chi khi co gh)
 REM ========================================
 if "%HAS_GH%"=="1" (
     echo [RELEASE] Dang tao release v%NEW_VER%...
