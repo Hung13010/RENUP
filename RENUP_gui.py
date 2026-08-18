@@ -3438,6 +3438,16 @@ class Api:
         # bin/qjs.exe di kem app (bin/ khong nam tren PATH nen chi truyen ten
         # thoi la khong du). De trong -> khong truyen co.
         js_runtimes = self._resolve_js_runtime(code.get('js_runtimes', ''))
+        # ADR-013: PHA LAY TIEU DE dung client RIENG voi pha tai.
+        # Hai client hong o hai cho khac nhau (do that 2026-08-18):
+        #   android_vr    lay tieu de OK  | tai du lieu 403
+        #   web_embedded  lay tieu de bi chan bot khi goi nhieu lan | tai OK
+        # Ghep ca hai viec vao mot client thi cho nao cung dinh mot nua. Pha lay
+        # tieu de ban N lan goi lien tiep (1 link = 1 lan) nen no la cho de dinh
+        # rate-limit nhat - dung client 'app' cho no. Pha tai chi can client tai
+        # duoc. De trong -> dung luon player_client (hanh vi cu).
+        meta_player_client = str(
+            code.get('metadata_player_client', 'android_vr') or '').strip() or player_client
 
         if not yt_links:
             self._log("Chua nhap link Youtube.", 'err')
@@ -3493,7 +3503,17 @@ class Api:
             if self._stopped:
                 return i, it['video_id']
             title = self._yt_fetch_title(it['video_id'], socket_timeout,
-                                         player_client, js_runtimes)
+                                         meta_player_client, js_runtimes)
+            # ADR-013: hong thi thu client CON LAI mot lan truoc khi bo cuoc.
+            # Hai client hong o hai co che khac nhau (mot doi PO Token, mot bi
+            # chan bot theo tan suat) nen it khi hong cung luc. Chan-bot lai la
+            # thu KHONG on dinh - phu thuoc lich su truy van tich luy tu dia chi
+            # mang - nen mot lan thu lai bang duong khac la re va dang gia.
+            if not title and player_client and player_client != meta_player_client:
+                title = self._yt_fetch_title(it['video_id'], socket_timeout,
+                                             player_client, js_runtimes)
+                if title:
+                    self._log(f"[{i + 1}] Lay tieu de bang {player_client} (du phong).", 'info')
             if not title:
                 title = it['video_id']
                 self._log(f"[{i + 1}] Khong lay duoc tieu de, dung ID: {it['video_id']}", 'info')
