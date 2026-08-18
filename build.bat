@@ -212,6 +212,8 @@ xcopy /y /e /i "bin\codes" "%RELEASE_DIR%\bin\codes" >nul
 copy /y "bin\ffmpeg.exe" "%RELEASE_DIR%\bin\ffmpeg.exe" >nul
 copy /y "bin\ffprobe.exe" "%RELEASE_DIR%\bin\ffprobe.exe" >nul
 copy /y "bin\yt-dlp.exe" "%RELEASE_DIR%\bin\yt-dlp.exe" >nul
+REM qjs.exe (QuickJS, ~2 MB) - bat buoc cho tai video Youtube, xem ADR-012.
+copy /y "bin\qjs.exe" "%RELEASE_DIR%\bin\qjs.exe" >nul
 
 REM Don dep
 if exist "RENUP.spec" del "RENUP.spec"

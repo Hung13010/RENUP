@@ -196,6 +196,17 @@ xcopy /y /e /i "bin\codes" "%APP_STAGE%\bin\codes" >nul
 copy /y "bin\ffmpeg.exe" "%APP_STAGE%\bin\ffmpeg.exe" >nul
 copy /y "bin\ffprobe.exe" "%APP_STAGE%\bin\ffprobe.exe" >nul
 copy /y "bin\yt-dlp.exe" "%APP_STAGE%\bin\yt-dlp.exe" >nul
+REM qjs.exe (QuickJS, ~2 MB): BAT BUOC cho chuc nang tai video Youtube ke tu
+REM ADR-012. Youtube bat giai "n challenge" bang JavaScript o moi duong tai,
+REM thieu file nay thi khong tai duoc video nao. Ten file phai dung 'qjs.exe'.
+copy /y "bin\qjs.exe" "%APP_STAGE%\bin\qjs.exe" >nul
+if not exist "%APP_STAGE%\bin\qjs.exe" (
+    echo [LOI] Thieu bin\qjs.exe - chuc nang tai video Youtube se KHONG chay.
+    echo [LOI] Tai tai: https://github.com/quickjs-ng/quickjs/releases/latest
+    echo [LOI]   file qjs-windows-x86_64.exe, doi ten thanh qjs.exe, dat vao bin\
+    pause
+    exit /b 1
+)
 
 REM Don dep file/thu muc trung gian cua PyInstaller (khong dung xoa
 REM APP_STAGE - do la ket qua build can giu lai cho buoc Inno Setup).

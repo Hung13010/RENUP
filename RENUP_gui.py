@@ -103,6 +103,11 @@ class Api:
         self.noi_txt_path = os.path.join(self.bin_dir, 'Noi.txt')
         self.claim_state_path = os.path.join(self.bin_dir, 'claim_state.json')
         self.ytdlp_path = os.path.join(self.bin_dir, 'yt-dlp.exe')
+        # ADR-012: QuickJS di kem app. Youtube tu ~2026-08 bat giai "n challenge"
+        # bang JavaScript nen MOI duong tai deu can mot JS runtime; qjs.exe chi
+        # 2 MB (Node 88 MB, Deno con lon hon) nen dong goi duoc ma khong lam
+        # phinh dang ke. Ten file BUOC phai la 'qjs.exe' - yt-dlp tim dung ten do.
+        self.qjs_path = os.path.join(self.bin_dir, 'qjs.exe')
         self.is_running = False
         self._paused = False
         self._stopped = False
@@ -3106,6 +3111,34 @@ class Api:
             f'b[height<={h}][vcodec!*=av01]'
         )
 
+    def _resolve_js_runtime(self, spec):
+        """Bien gia tri preset `js_runtimes` thanh doi so cho `--js-runtimes`.
+
+        Tra ve None neu khong dung runtime nao (preset de trong) - khi do KHONG
+        truyen co, dung hanh vi truoc khi co truong nay.
+
+        Quy tac:
+          ''                -> None
+          'quickjs'         -> 'quickjs:<bin/qjs.exe>' neu file do CO,
+                               nguoc lai 'quickjs' (de yt-dlp tu tim tren PATH)
+          'node' / 'deno'   -> giu nguyen, yt-dlp tu tim tren PATH
+          '<ten>:<duong dan>' -> giu nguyen, nguoi dung da chi dinh ro
+
+        Vi sao phai ghep duong dan tuyet doi: yt-dlp chi tim runtime tren PATH,
+        va bin/ cua app KHONG nam tren PATH. Da kiem chung: duong dan dung ->
+        '[jsc:quickjs] Solving JS challenges using quickjs' + tai duoc that;
+        duong dan sai -> 'n challenge solving failed'. Tuc la co nay that su
+        doc duong dan chu khong chi doc ten.
+        """
+        spec = str(spec or '').strip()
+        if not spec:
+            return None
+        if ':' in spec:
+            return spec
+        if spec.lower() == 'quickjs' and os.path.exists(self.qjs_path):
+            return f'quickjs:{self.qjs_path}'
+        return spec
+
     def _yt_fetch_title(self, video_id, socket_timeout, player_client=None,
                         js_runtimes=None):
         """Fetch a video's title via `yt-dlp --skip-download --print`. Returns title string or None.
@@ -3399,12 +3432,12 @@ class Api:
         # one. Kept in the preset JSON (not hardcoded) so it can be swapped the
         # moment Youtube breaks android_vr too, with zero rebuild.
         player_client = str(code.get('player_client', 'android_vr') or '').strip()
-        # ADR-010: doi sang 'web_embedded' KHONG con du. Tu ~2026-08 client do
-        # phai giai "n challenge" nen can mot JS runtime; thieu no thi no tra ve
-        # 0 format video (chi con storyboard). Do la ly do co them truong nay:
-        # dat 'node' (hoac 'deno') khi may co san runtime do. Mac dinh rong ->
-        # khong truyen co -> hanh vi y het truoc khi co truong nay.
-        js_runtimes = str(code.get('js_runtimes', '') or '').strip()
+        # ADR-011/012: tu ~2026-08 Youtube bat giai "n challenge" bang JavaScript
+        # o MOI duong tai, nen buoc phai co JS runtime. Mac dinh preset la
+        # 'quickjs' -> _resolve_js_runtime() ghep duong dan tuyet doi toi
+        # bin/qjs.exe di kem app (bin/ khong nam tren PATH nen chi truyen ten
+        # thoi la khong du). De trong -> khong truyen co.
+        js_runtimes = self._resolve_js_runtime(code.get('js_runtimes', ''))
 
         if not yt_links:
             self._log("Chua nhap link Youtube.", 'err')
@@ -3860,8 +3893,10 @@ class Api:
                 self._log(ladder_warning, 'info')
 
             player_client = str(code.get('player_client', 'android_vr') or '').strip()
-            # ADR-010 - xem ghi chu day du o _run_youtube_download.
-            js_runtimes = str(code.get('js_runtimes', '') or '').strip()
+            # ADR-011/012 - xem ghi chu day du o _run_youtube_download. Chuc nang
+            # nay mac dinh de trong: no chi dung yt-dlp cho metadata (liet ke kenh
+            # + lay tieu de), ca hai van chay voi android_vr, nen khong can runtime.
+            js_runtimes = self._resolve_js_runtime(code.get('js_runtimes', ''))
             socket_timeout = int(code.get('socket_timeout', 30))
             http_retries = int(code.get('http_retries', 2))
             max_filename_len = int(code.get('max_filename_len', 150))
