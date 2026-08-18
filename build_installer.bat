@@ -46,7 +46,7 @@ if errorlevel 1 (
 )
 
 REM ----------------------------------------------------------------------
-REM Tim ISCC.exe (trinh bien dich Inno Setup) mà KHONG hardcode ky tu o dia
+REM Tim ISCC.exe (trinh bien dich Inno Setup) ma KHONG hardcode ky tu o dia
 REM hay ten tai khoan Windows. Truoc day dong nay go thang
 REM "C:\Users\Admin\AppData\Local\Programs\InnoSetup6\ISCC.exe" - chi dung
 REM tren dung mot may, dung mot user. Cung mot loai loi voi viec tung
@@ -239,20 +239,12 @@ REM 6. Git commit and push (chi khi co git) - dung y het subroutine cua
 REM build.bat, xem ghi chu chi tiet trong build.bat.
 REM ========================================
 if "%HAS_GIT%"=="1" (
-    set "CUR_BRANCH="
-    for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CUR_BRANCH=%%b"
-    if "%CUR_BRANCH%"=="" (
-        echo [CANH BAO] Khong xac dinh duoc nhanh git hien tai ^(co the day khong phai git repo^). Bo qua buoc commit/push.
-    ) else if /i "%CUR_BRANCH%"=="HEAD" (
-        echo [CANH BAO] Dang o trang thai detached HEAD ^(khong nam tren nhanh nao^). Bo qua buoc commit/push de tranh day nham vao nhanh sai.
-    ) else (
-        call :git_commit_push "%CUR_BRANCH%"
-        if errorlevel 1 (
-            echo [LOI] Buoc commit/push that bai - xem chi tiet loi git o tren. Dung script.
-            echo [LOI] File cai dat da build xong tai "%SETUP_EXE%" nhung CHUA duoc dua len GitHub.
-            pause
-            exit /b 1
-        )
+    call :git_step
+    if errorlevel 1 (
+        echo [LOI] Buoc commit/push that bai - xem chi tiet loi git o tren. Dung script.
+        echo [LOI] File cai dat da build xong tai "%SETUP_EXE%" nhung CHUA duoc dua len GitHub.
+        pause
+        exit /b 1
     )
 ) else (
     echo [BO QUA] Khong co git, bo qua buoc commit/push.
@@ -315,6 +307,42 @@ REM %1 = ten nhanh can push
 REM Tra ve (qua "exit /b"): 0 = OK, 1 = that bai (commit that bai THAT
 REM SU, hoac push that bai).
 REM ========================================
+REM ========================================
+REM Subroutine: git_step
+REM Do nhanh git hien tai, roi goi :git_commit_push.
+REM
+REM BAT BUOC nam trong subroutine, KHONG duoc nhet lai vao khoi
+REM "if "%HAS_GIT%"=="1" ( ... )". Trong mot khoi ngoac, cmd thay gia tri
+REM %CUR_BRANCH% ngay luc DOC ca khoi - tuc la TRUOC khi vong for kip
+REM gan - nen no luon rong, va script luon ket luan sai la "khong xac
+REM dinh duoc nhanh git" roi bo qua commit/push.
+REM
+REM Hau qua that: buoc commit/push chua tung chay lan nao, chi in mot
+REM dong canh bao trong vo hai roi di tiep. Phat hien 2026-08-18, sau
+REM khi hai release v1.1.24 va v1.1.25 len GitHub ma khong co commit
+REM version.txt nao di kem (tag tren GitHub do gh tu tao nen tro vao
+REM commit cu cua nhanh mac dinh, khong tro vao ma nguon that su da
+REM dung nen bo cai).
+REM
+REM Trong subroutine, moi dong duoc doc va thuc thi lan luot nen
+REM %CUR_BRANCH% co dung gia tri. Cach nay tranh phai bat
+REM setlocal enabledelayedexpansion toan cuc - thu se nuot dau "!" don
+REM le trong cac dong echo hien co.
+REM ========================================
+:git_step
+set "CUR_BRANCH="
+for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "CUR_BRANCH=%%b"
+if "%CUR_BRANCH%"=="" (
+    echo [CANH BAO] Khong xac dinh duoc nhanh git hien tai ^(co the day khong phai git repo^). Bo qua buoc commit/push.
+    exit /b 0
+)
+if /i "%CUR_BRANCH%"=="HEAD" (
+    echo [CANH BAO] Dang o trang thai detached HEAD ^(khong nam tren nhanh nao^). Bo qua buoc commit/push de tranh day nham vao nhanh sai.
+    exit /b 0
+)
+call :git_commit_push "%CUR_BRANCH%"
+exit /b %ERRORLEVEL%
+
 :git_commit_push
 set "BRANCH_NAME=%~1"
 echo [GIT] Commit v%NEW_VER% tren nhanh "%BRANCH_NAME%"...
