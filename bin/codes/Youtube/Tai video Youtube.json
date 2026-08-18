@@ -1,10 +1,12 @@
 {
   "name": "Tai video Youtube (batch link -> MP4/MP3 + thumbnail)",
   "type": "youtube_download",
-  "description": "Dan nhieu link Youtube (moi dong 1 link). Chon chat luong (Best/2160p/1440p/1080p/720p/480p/360p) va dinh dang (MP4 hoac MP3). Ten file output = tieu de video. Tai kem thumbnail .jpg cung ten. Khong re-encode: MP4 chi doi container (remux). Loai bo AV1 o moi muc chat luong vi ffmpeg bundled (2018) khong mux duoc AV1 vao MP4; voi 1440p/2160p file MP4 co the chua VP9 thay vi H.264 - mot so player cu co the khong mo duoc. File da co san trong Output se duoc bo qua. Dung player_client de tranh loi 'Sign in to confirm you're not a bot': mac dinh android_vr (khong can PO Token, khong can JS runtime); neu Youtube khoa ca android_vr, doi gia tri thanh web_embedded ngay trong file JSON nay, khong can build lai app. De trong ('') se tat han co --extractor-args.",
+  "description": "Dan nhieu link Youtube (moi dong 1 link). Chon chat luong (Best/2160p/1440p/1080p/720p/480p/360p) va dinh dang (MP4 hoac MP3). Ten file output = tieu de video. Tai kem thumbnail .jpg cung ten. Khong re-encode: MP4 chi doi container (remux). Loai bo AV1 o moi muc chat luong vi ffmpeg bundled (2018) khong mux duoc AV1 vao MP4; voi 1440p/2160p file MP4 co the chua VP9 thay vi H.264 - mot so player cu co the khong mo duoc. File da co san trong Output se duoc bo qua. Dung player_client de tranh loi 'Sign in to confirm you're not a bot': mac dinh android_vr (khong can PO Token, khong can JS runtime); neu Youtube khoa ca android_vr thi phai doi HAI dong cung luc: player_client thanh web_embedded VA js_runtimes thanh 'node' (xem ghi chu o js_runtimes ben duoi) - doi mot minh player_client se KHONG chay. De trong ('') se tat han co --extractor-args.",
   "default_quality": "Best",
   "default_format": "MP4",
   "player_client": "android_vr",
+  "_comment_js_runtimes": "ADR-010. De trong = khong truyen co --js-runtimes = hanh vi y het truoc day; android_vr khong can gi. CHI can khi doi player_client sang web_embedded: tu ~2026-08 client do phai giai 'n challenge' bang JavaScript, thieu JS runtime thi no tra ve 0 format video ('Only images are available') va ngay ca buoc lay tieu de cung that bai, tuc la chuc nang tai video chet han. Dat 'node' hoac 'deno' - nhung CHI chay duoc neu may da cai san runtime do (kiem tra bang 'node --version'). Luu y: yt-dlp KHONG tu dò Node du Node nam tren PATH, phai khai bao tuong minh o day.",
+  "js_runtimes": "",
   "write_thumbnail": true,
   "skip_existing": true,
   "concurrent_fragments": 4,

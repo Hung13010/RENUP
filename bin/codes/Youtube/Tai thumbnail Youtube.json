@@ -3,6 +3,8 @@
   "type": "youtube_thumbnail",
   "description": "Dan link kenh hoac link video (moi dong 1 link). Nhan Load de liet ke video va tai anh xem truoc, sau do tick chon anh nao muon luu roi nhan DOWNLOAD. Moi video 1 anh; chon co chung cho ca luoi, video nao khong co co do thi tu lui xuong co gan nhat ben duoi. Ten file = tieu de video. Co anh duoc chot ngay luc Load: doi dropdown co sau khi Load thi phai nhan Load lai. Neu luoi hien trong (khong thay anh nao) thi doi preview_mode tu 'file' sang 'data' trong file JSON nay, khong can build lai app.",
   "player_client": "android_vr",
+  "_comment_js_runtimes": "ADR-010. De trong = khong truyen co --js-runtimes = hanh vi y het truoc day; android_vr khong can gi. CHI can khi doi player_client sang web_embedded: tu ~2026-08 client do phai giai 'n challenge' bang JavaScript, thieu JS runtime thi buoc lay tieu de tung video that bai. Rieng khau liet ke video tu link KENH dung --flat-playlist nen KHONG phu thuoc player_client - vi vay loi o day trong nhu hong mot nua (luoi van hien mot phan). Dat 'node' hoac 'deno', va CHI chay duoc neu may da cai san runtime do (kiem tra bang 'node --version'). yt-dlp KHONG tu do Node du Node nam tren PATH.",
+  "js_runtimes": "",
   "default_size": "maxresdefault",
   "default_format": "JPG",
   "default_channel_limit": 50,

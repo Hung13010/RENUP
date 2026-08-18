@@ -3106,16 +3106,26 @@ class Api:
             f'b[height<={h}][vcodec!*=av01]'
         )
 
-    def _yt_fetch_title(self, video_id, socket_timeout, player_client=None):
+    def _yt_fetch_title(self, video_id, socket_timeout, player_client=None,
+                        js_runtimes=None):
         """Fetch a video's title via `yt-dlp --skip-download --print`. Returns title string or None.
 
         player_client: value for `--extractor-args youtube:player_client=<value>`
         (e.g. 'android_vr'). Verified experimentally that yt-dlp's default player
         client rotation (web/web_safari/mweb/tv_simply/android/ios) triggers
         Youtube's "Sign in to confirm you're not a bot" error on every video,
-        while 'android_vr' (and 'web_embedded') do not require a PO Token and
-        succeed without any extra JS runtime. Falsy/empty value omits the flag
-        entirely (lets the caller disable it via the preset JSON).
+        while 'android_vr' does not require a PO Token and succeeds without any
+        JS runtime. Falsy/empty value omits the flag entirely (lets the caller
+        disable it via the preset JSON).
+
+        js_runtimes: value for `--js-runtimes <value>` (e.g. 'node'). Empty by
+        default -> flag omitted -> behaviour identical to before this field
+        existed. Only needed by the FALLBACK client 'web_embedded', which since
+        ~2026-08 must solve Youtube's "n challenge" and therefore needs a JS
+        runtime; without one it returns ZERO video formats and yt-dlp reports
+        only "Only images are available" (ADR-010). 'android_vr' still needs
+        nothing. Note that yt-dlp does NOT auto-detect Node even when it is on
+        PATH - Node must be enabled explicitly via this flag.
         """
         if self._stopped:
             return None
@@ -3142,6 +3152,8 @@ class Api:
         ]
         if player_client:
             cmd += ["--extractor-args", f"youtube:player_client={player_client}"]
+        if js_runtimes:
+            cmd += ["--js-runtimes", js_runtimes]
         cmd.append(url)
         try:
             proc = subprocess.Popen(
@@ -3221,7 +3233,7 @@ class Api:
         item: {'video_id', 'url', 'title', 'title_safe'}
         settings: dict with output_dir, yt_format, fmt_selector, write_thumbnail,
                   concurrent_fragments, retries, fragment_retries, socket_timeout,
-                  mp3_quality, player_client
+                  mp3_quality, player_client, js_runtimes
         Returns True/False. Logs its own errors (returncode != 0, missing output file).
         Thumbnail missing is logged as 'info' and does NOT fail the row.
         On failure (bad returncode or missing output file), cleans up any
@@ -3233,6 +3245,7 @@ class Api:
         yt_format = settings['yt_format']
         write_thumbnail = settings['write_thumbnail']
         player_client = settings.get('player_client')
+        js_runtimes = settings.get('js_runtimes')
         ext = 'mp4' if yt_format == 'MP4' else 'mp3'
         out_path = os.path.join(output_dir, f"{title_safe}.{ext}")
         out_template = os.path.join(output_dir, f"{title_safe}.%(ext)s")
@@ -3256,6 +3269,8 @@ class Api:
             ]
         if player_client:
             cmd += ["--extractor-args", f"youtube:player_client={player_client}"]
+        if js_runtimes:
+            cmd += ["--js-runtimes", js_runtimes]
         cmd += [
             "--ffmpeg-location", self.ffmpeg_path,
             "--concurrent-fragments", str(settings['concurrent_fragments']),
@@ -3380,11 +3395,16 @@ class Api:
         max_filename_len = int(code.get('max_filename_len', 150))
         # §Loi 1: Youtube's default player-client rotation (web/web_safari/mweb/
         # tv_simply/android/ios) demands a PO Token and fails every video with
-        # "Sign in to confirm you're not a bot". 'android_vr' (and
-        # 'web_embedded') do not require one. Kept in the preset JSON (not
-        # hardcoded) so it can be swapped to 'web_embedded' the moment Youtube
-        # breaks android_vr too, with zero rebuild.
+        # "Sign in to confirm you're not a bot". 'android_vr' does not require
+        # one. Kept in the preset JSON (not hardcoded) so it can be swapped the
+        # moment Youtube breaks android_vr too, with zero rebuild.
         player_client = str(code.get('player_client', 'android_vr') or '').strip()
+        # ADR-010: doi sang 'web_embedded' KHONG con du. Tu ~2026-08 client do
+        # phai giai "n challenge" nen can mot JS runtime; thieu no thi no tra ve
+        # 0 format video (chi con storyboard). Do la ly do co them truong nay:
+        # dat 'node' (hoac 'deno') khi may co san runtime do. Mac dinh rong ->
+        # khong truyen co -> hanh vi y het truoc khi co truong nay.
+        js_runtimes = str(code.get('js_runtimes', '') or '').strip()
 
         if not yt_links:
             self._log("Chua nhap link Youtube.", 'err')
@@ -3439,7 +3459,8 @@ class Api:
         def fetch_one(i, it):
             if self._stopped:
                 return i, it['video_id']
-            title = self._yt_fetch_title(it['video_id'], socket_timeout, player_client)
+            title = self._yt_fetch_title(it['video_id'], socket_timeout,
+                                         player_client, js_runtimes)
             if not title:
                 title = it['video_id']
                 self._log(f"[{i + 1}] Khong lay duoc tieu de, dung ID: {it['video_id']}", 'info')
@@ -3511,6 +3532,7 @@ class Api:
             'socket_timeout': socket_timeout,
             'mp3_quality': mp3_quality,
             'player_client': player_client,
+            'js_runtimes': js_runtimes,
         }
 
         def process_one(idx, it):
@@ -3573,7 +3595,8 @@ class Api:
             return base
         return base + '/videos'
 
-    def _yt_thumb_list_channel(self, url, limit, socket_timeout, player_client):
+    def _yt_thumb_list_channel(self, url, limit, socket_timeout, player_client,
+                               js_runtimes=None):
         """List up to `limit` videos of a channel/playlist URL via a single
         `yt-dlp --flat-playlist` call (one process for the WHOLE channel -
         cheap compared to per-video title fetches).
@@ -3595,6 +3618,8 @@ class Api:
                "--print", "%(id)s", "--print", "%(title)s"]
         if player_client:
             cmd += ["--extractor-args", f"youtube:player_client={player_client}"]
+        if js_runtimes:
+            cmd += ["--js-runtimes", js_runtimes]
         cmd.append(url)
 
         try:
@@ -3835,6 +3860,8 @@ class Api:
                 self._log(ladder_warning, 'info')
 
             player_client = str(code.get('player_client', 'android_vr') or '').strip()
+            # ADR-010 - xem ghi chu day du o _run_youtube_download.
+            js_runtimes = str(code.get('js_runtimes', '') or '').strip()
             socket_timeout = int(code.get('socket_timeout', 30))
             http_retries = int(code.get('http_retries', 2))
             max_filename_len = int(code.get('max_filename_len', 150))
@@ -3888,7 +3915,8 @@ class Api:
                     continue
                 if RE_YT_CHANNEL.search(line) or RE_YT_PLAYLIST.search(line):
                     normalized = self._yt_thumb_normalize_channel(line)
-                    pairs = self._yt_thumb_list_channel(normalized, limit, socket_timeout, player_client)
+                    pairs = self._yt_thumb_list_channel(normalized, limit, socket_timeout,
+                                                        player_client, js_runtimes)
                     self._log(f"Kenh: {line} -> {len(pairs)} video", 'info')
                     for vid2, title2 in pairs:
                         add_entry(vid2, title2)
@@ -3904,7 +3932,8 @@ class Api:
                 def fetch_one(i, vid):
                     if self._stopped:
                         return vid, None
-                    title = self._yt_fetch_title(vid, socket_timeout, player_client)
+                    title = self._yt_fetch_title(vid, socket_timeout, player_client,
+                                                 js_runtimes)
                     if not title:
                         title = vid
                         self._log(f"[{i + 1}] Khong lay duoc tieu de, dung ID: {vid}", 'info')
