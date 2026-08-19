@@ -528,6 +528,18 @@ button[hidden] { display: none !important; }
           </div>
         </div>
 
+        <div class="field-label" style="margin-top:10px;">🔑 Khóa API Youtube (tùy chọn)</div>
+        <div class="settings-row" style="gap:6px;">
+          <input type="password" id="ytApiKey" style="flex:1;min-width:0;"
+                 placeholder="Dán khóa vào đây rồi nhấn Lưu" spellcheck="false"
+                 autocomplete="off">
+          <button class="btn-sm btn-muted" onclick="saveYtApiKey()">Lưu</button>
+        </div>
+        <div style="margin-top:4px;opacity:.75;font-size:12px;line-height:1.5;">
+          Có khóa thì lấy tiêu đề <b>50 link mỗi lần gọi</b> thay vì mỗi link một lần,
+          nên không còn bị chặn khi tải hàng loạt. Để trống vẫn chạy bình thường.
+        </div>
+
         <div style="margin-top:8px;">
           <button class="btn-sm btn-muted" onclick="pyApi.updateYtDlp()">⟳ Cập nhật yt-dlp</button>
         </div>
@@ -749,6 +761,15 @@ function onYtFormatChanged() {
 // vi gia tri sot lai trong o la mot cai bay im lang: cat 2 phut hom nay, tuan
 // sau dan 20 link muon tai tron ma quen xoa o -> ca 20 file deu bi cat con
 // 2 phut. Checkbox lam trang thai do nhin thay duoc.
+// Khoa API di theo duong RIENG, khong nhet vao params cua run(): khoa la
+// thong tin nhay cam, cang it cho di qua thi cang it cho no lot ra (log,
+// chu ky dau vao cua co che chay lai dong loi, thong bao loi...). Python luu
+// xuong dia va tu doc khi can.
+function saveYtApiKey() {
+  const el = document.getElementById('ytApiKey');
+  pyApi.saveYtApiKey(el ? el.value : '');
+}
+
 function onYtSectionToggled() {
   const on = document.getElementById('ytSectionEnable').checked;
   document.getElementById('ytSectionRow').style.display = on ? '' : 'none';

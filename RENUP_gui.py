@@ -8,6 +8,7 @@ import hashlib
 import random
 import urllib.request
 import urllib.error
+import urllib.parse
 import webbrowser
 import uuid
 import io
@@ -102,6 +103,12 @@ class Api:
         self.ffprobe_path = os.path.join(self.bin_dir, 'ffprobe.exe')
         self.noi_txt_path = os.path.join(self.bin_dir, 'Noi.txt')
         self.claim_state_path = os.path.join(self.bin_dir, 'claim_state.json')
+        # ADR-015: khoa Youtube Data API v3 do NGUOI DUNG tu tao. La thong tin
+        # nhay cam nen KHONG duoc nam trong ma nguon hay trong preset JSON di
+        # kem bo cai - luu rieng ra file nay, va file nay nam trong .gitignore.
+        # Dat trong bin/ giong claim_state.json: bo cai khong mang file nay nen
+        # cai de len khong xoa mat khoa da luu.
+        self.yt_api_key_path = os.path.join(self.bin_dir, 'yt_api_key.txt')
         self.ytdlp_path = os.path.join(self.bin_dir, 'yt-dlp.exe')
         # ADR-012: QuickJS di kem app. Youtube tu ~2026-08 bat giai "n challenge"
         # bang JavaScript nen MOI duong tai deu can mot JS runtime; qjs.exe chi
@@ -289,6 +296,13 @@ class Api:
         self._js("onFuncChanged()")
         self._load_noi_txt()
         self._load_claim_state()
+        # Khoi phuc khoa API da luu vao o nhap (o dang password nen khong lo ra
+        # man hinh). Khong log gi o day - im lang la dung, va tuyet doi khong
+        # duoc ghi khoa ra log.
+        _k = self._load_yt_api_key()
+        if _k:
+            self._js("var e=document.getElementById('ytApiKey');"
+                     f"if(e) e.value = {json.dumps(_k)};")
         threading.Thread(target=self._check_update, daemon=True).start()
 
     def restart(self):
@@ -376,6 +390,35 @@ class Api:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as e:
             self._log(f"Loi luu claim state: {e}", 'err')
+
+    def saveYtApiKey(self, key):
+        """Luu khoa Youtube Data API v3 vao bin/yt_api_key.txt.
+
+        KHONG BAO GIO ghi khoa ra log - chi bao da luu hay da xoa. Log cua app
+        hien tren man hinh va nguoi dung hay chup man hinh gui di.
+        """
+        try:
+            key = str(key or '').strip()
+            if not key:
+                if os.path.exists(self.yt_api_key_path):
+                    os.remove(self.yt_api_key_path)
+                self._log("Da xoa khoa API Youtube.", 'info')
+                return
+            with open(self.yt_api_key_path, 'w', encoding='utf-8') as f:
+                f.write(key)
+            self._log(f"Da luu khoa API Youtube ({len(key)} ky tu).", 'ok')
+        except Exception as e:
+            self._log(f"Loi luu khoa API: {e}", 'err')
+
+    def _load_yt_api_key(self):
+        """Doc khoa API tu dia. Tra '' neu chua co hoac doc loi."""
+        try:
+            if not os.path.exists(self.yt_api_key_path):
+                return ''
+            with open(self.yt_api_key_path, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except Exception:
+            return ''
 
     def _load_claim_state(self):
         """Restore Claim Tiktok state (voiceDir, musicDir, outputDir, workers) from claim_state.json."""
@@ -3127,6 +3170,69 @@ class Api:
             f'b[height<={h}][vcodec!*=av01]'
         )
 
+    def _yt_fetch_titles_api(self, video_ids, api_key, socket_timeout=30):
+        """Lay tieu de hang loat qua Youtube Data API v3. Tra dict {id: title}.
+
+        Vi sao co ham nay (ADR-015): pha lay tieu de bang yt-dlp ban MOT lan goi
+        cho MOI link. Batch 32 link = 32 lan cao du lieu lien tiep -> Youtube
+        chan bot ("Sign in to confirm you're not a bot"), da gap that. Doi client
+        chi giam xac suat chu khong bo duoc nguyen nhan.
+        API chinh thuc nhan 50 ID trong MOT lan goi, ton 1 don vi han muc (mac
+        dinh 10.000/ngay = ~500.000 tieu de/ngay) va khong co chong bot. 32 link
+        tu 32 lan goi xuong con 1.
+
+        Tra ve dict CHI CHUA nhung id API tra loi. Id thieu (video rieng tu, da
+        xoa, hoac khoa bi tu choi) khong co trong dict -> ben goi tu quay ve
+        yt-dlp cho rieng nhung id do. Ham nay KHONG BAO GIO nem loi ra ngoai va
+        khong bao gio ghi khoa ra log.
+        """
+        titles = {}
+        if not api_key or not video_ids:
+            return titles
+        ids = list(dict.fromkeys(video_ids))     # bo trung, giu thu tu
+        for i in range(0, len(ids), 50):         # API gioi han 50 id moi lan
+            if self._stopped:
+                break
+            chunk = ids[i:i + 50]
+            params = urllib.parse.urlencode({
+                'part': 'snippet',
+                'id': ','.join(chunk),
+                'key': api_key,
+                'fields': 'items(id,snippet/title)',
+            })
+            url = f"https://www.googleapis.com/youtube/v3/videos?{params}"
+            try:
+                req = urllib.request.Request(url, headers={'Accept': 'application/json'})
+                with urllib.request.urlopen(req, timeout=socket_timeout) as resp:
+                    data = json.loads(resp.read().decode('utf-8', errors='replace'))
+                for it in data.get('items', []):
+                    vid = it.get('id')
+                    title = (it.get('snippet') or {}).get('title')
+                    if vid and title:
+                        titles[vid] = title
+            except urllib.error.HTTPError as e:
+                # Doc than loi de bao DUNG nguyen nhan: khoa sai va het han muc
+                # la hai chuyen khac han nhau, va nguoi dung xu ly khac han nhau.
+                reason = ''
+                try:
+                    body = json.loads(e.read().decode('utf-8', errors='replace'))
+                    errs = (body.get('error') or {}).get('errors') or []
+                    reason = errs[0].get('reason', '') if errs else ''
+                except Exception:
+                    pass
+                if reason in ('quotaExceeded', 'dailyLimitExceeded'):
+                    self._log("API Youtube het han muc hom nay. Quay ve lay tieu de bang yt-dlp.", 'err')
+                elif reason in ('keyInvalid', 'badRequest', 'forbidden', 'accessNotConfigured'):
+                    self._log(f"Khoa API bi tu choi ({reason or e.code}). Kiem tra lai khoa"
+                              " va xem da bat 'YouTube Data API v3' chua.", 'err')
+                else:
+                    self._log(f"API Youtube loi {e.code} ({reason or 'khong ro'}).", 'err')
+                break            # loi khoa/han muc thi cac lo sau cung se loi
+            except Exception as e:
+                self._log(f"Khong goi duoc API Youtube: {e}", 'err')
+                break
+        return titles
+
     @staticmethod
     def _parse_time_spec(text):
         """'2:00' -> 120.0 | '1:30:00' -> 5400.0 | '90' -> 90.0 | rong/sai -> None.
@@ -3605,9 +3711,33 @@ class Api:
         self._js("uiApi.setStatus('Dang lay tieu de video...')")
         title_count = [0]
 
+        # ADR-015: uu tien Youtube Data API v3 neu nguoi dung da luu khoa.
+        # 1 lan goi cho toi 50 link, khong dinh chong bot. Nhung id API khong
+        # tra ve (video rieng tu / da xoa / khoa bi tu choi) van roi xuong
+        # duong yt-dlp ben duoi, nen day la lop TANG THEM chu khong thay the.
+        api_titles = {}
+        api_key = self._load_yt_api_key()
+        if api_key:
+            all_ids = [it['video_id'] for it in items]
+            n_calls = (len(all_ids) + 49) // 50
+            self._log(f"Dung API Youtube lay tieu de: {len(all_ids)} link trong"
+                      f" {n_calls} lan goi.", 'info')
+            api_titles = self._yt_fetch_titles_api(all_ids, api_key, socket_timeout)
+            missing = len(all_ids) - len(api_titles)
+            if missing > 0:
+                self._log(f"API tra ve {len(api_titles)}/{len(all_ids)} tieu de;"
+                          f" {missing} link con lai se thu bang yt-dlp.", 'info')
+
         def fetch_one(i, it):
             if self._stopped:
                 return i, it['video_id']
+            title = api_titles.get(it['video_id'])
+            if title:
+                with self._lock:
+                    title_count[0] += 1
+                    k = title_count[0]
+                self._log(f"Lay tieu de: {k}/{total}", 'info')
+                return i, title
             title = self._yt_fetch_title(it['video_id'], socket_timeout,
                                          meta_player_client, js_runtimes)
             # ADR-013: hong thi thu client CON LAI mot lan truoc khi bo cuoc.
