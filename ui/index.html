@@ -475,8 +475,9 @@ button[hidden] { display: none !important; }
         <div class="field-label" style="margin-top:6px;">🎬 Định dạng</div>
         <div class="settings-row">
           <select id="ytFormat" style="width:160px;" onchange="onYtFormatChanged()">
-            <option value="MP4">MP4 (video)</option>
+            <option value="MP4">MP4 (video + âm thanh)</option>
             <option value="MP3">MP3 (chỉ âm thanh)</option>
+            <option value="MP4_NOAUDIO">MP4 (chỉ hình, không tiếng)</option>
           </select>
         </div>
 
@@ -492,6 +493,31 @@ button[hidden] { display: none !important; }
               <option value="480p">480p</option>
               <option value="360p">360p</option>
             </select>
+          </div>
+        </div>
+
+        <div class="settings-row" style="margin-top:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="ytSectionEnable" onchange="onYtSectionToggled()">
+            <span>✂ Chỉ tải một đoạn</span>
+          </label>
+        </div>
+        <div id="ytSectionRow" style="display:none;">
+          <div class="settings-row" style="gap:10px;">
+            <div>
+              <div class="field-label">Bắt đầu từ</div>
+              <input type="text" id="ytSectionStart" value="0:00" style="width:110px;"
+                     placeholder="0:00" spellcheck="false">
+            </div>
+            <div>
+              <div class="field-label">Thời lượng</div>
+              <input type="text" id="ytSectionDuration" value="2:00" style="width:110px;"
+                     placeholder="2:00" spellcheck="false">
+            </div>
+          </div>
+          <div style="margin-top:4px;opacity:.75;font-size:12px;line-height:1.5;">
+            Nhận <b>2:00</b> (2 phút), <b>1:30:00</b> (1 giờ 30 phút), hoặc số trần = giây.<br>
+            Áp dụng cho <b>mọi link</b> trong ô trên.
           </div>
         </div>
 
@@ -706,8 +732,19 @@ function onFuncChanged() {
 }
 
 function onYtFormatChanged() {
+  // Chat luong ap dung cho ca hai dinh dang co hinh (MP4 va MP4_NOAUDIO),
+  // chi an voi MP3 - khong con la "khac MP4 thi an" nua.
   const isMp3 = document.getElementById('ytFormat').value === 'MP3';
   document.getElementById('ytQualityRow').style.display = isMp3 ? 'none' : '';
+}
+
+// Hien/an hai o nhap khoang thoi gian. Dung checkbox thay vi "de trong = tat"
+// vi gia tri sot lai trong o la mot cai bay im lang: cat 2 phut hom nay, tuan
+// sau dan 20 link muon tai tron ma quen xoa o -> ca 20 file deu bi cat con
+// 2 phut. Checkbox lam trang thai do nhin thay duoc.
+function onYtSectionToggled() {
+  const on = document.getElementById('ytSectionEnable').checked;
+  document.getElementById('ytSectionRow').style.display = on ? '' : 'none';
 }
 
 function onAudioSplitModeChanged() {
@@ -787,7 +824,7 @@ window.uiApi = {
     document.getElementById('youtubeSection').style.display = show ? 'block' : 'none';
     NO_INPUT_DIR.youtube = show;
     _syncInputDirRow();
-    if (show) onYtFormatChanged();
+    if (show) { onYtFormatChanged(); onYtSectionToggled(); }
   },
 
   // ── Youtube Thumbnail grid (ADR-008) ──
@@ -1132,6 +1169,15 @@ function getFieldValue(id) {
   return el ? el.value : '';
 }
 
+// Checkbox KHONG doc duoc bang getFieldValue: .value cua checkbox luon la
+// chuoi 'on' du co tich hay khong, nen no se bao "da bat" trong moi truong hop.
+// Phai doc .checked. Tra ve chuoi '1'/'' de params van thuan chuoi nhu moi
+// truong khac (Python tu parse), giu hinh dang dong nhat cua proxy.
+function getFieldChecked(id) {
+  const el = document.getElementById(id);
+  return (el && el.checked) ? '1' : '';
+}
+
 const pyApi = new Proxy({}, {
   get(_, method) {
     return (...args) => {
@@ -1158,6 +1204,9 @@ const pyApi = new Proxy({}, {
           resizeHeight: getFieldValue('resizeHeight'),
           ytLinks: getFieldValue('ytLinks'),
           ytFormat: getFieldValue('ytFormat'),
+          ytSectionEnable: getFieldChecked('ytSectionEnable'),
+          ytSectionStart: getFieldValue('ytSectionStart'),
+          ytSectionDuration: getFieldValue('ytSectionDuration'),
           ytQuality: getFieldValue('ytQuality'),
           ytThumbLinks: getFieldValue('ytThumbLinks'),
           ytThumbSize: getFieldValue('ytThumbSize'),

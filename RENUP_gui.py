@@ -3077,7 +3077,14 @@ class Api:
     def _yt_build_format(quality, fmt):
         """Build the yt-dlp -f format selector string for a given quality + format.
 
-        fmt: 'MP4' or 'MP3' (case-insensitive). quality is ignored for MP3.
+        fmt: 'MP4', 'MP3' hoac 'MP4_NOAUDIO' (khong phan biet hoa thuong).
+        quality bi bo qua voi MP3.
+
+        'MP4_NOAUDIO' = chi luong hinh, khong am thanh. Khac MP4 o dung mot cho:
+        bo phan '+ba' nen yt-dlp chi tai MOT luong thay vi hai roi ghep. Nhanh
+        cuoi cung phai la 'bv*[...]' chu KHONG duoc la 'b[...]' - 'b' nghia la
+        luong lien mach da co san am thanh, tra ve no la giao nguoc thu nguoi
+        dung xin.
 
         AV1 video is excluded on EVERY branch (both 'Best' and the per-height
         ladders): the bundled ffmpeg (2018, N-91314) cannot mux av01 into MP4
@@ -3096,6 +3103,15 @@ class Api:
         if fmt == 'MP3':
             return 'ba/b'
         quality = (quality or '').strip()
+        if fmt == 'MP4_NOAUDIO':
+            if quality == 'Best':
+                return 'bv*[vcodec!*=av01]'
+            h = quality.rstrip('p')
+            return (
+                f'bv*[height<={h}][vcodec^=avc1]/'
+                f'bv*[height<={h}][vcodec^=vp9]/'
+                f'bv*[height<={h}][vcodec!*=av01]'
+            )
         if quality == 'Best':
             return (
                 'bv*[vcodec!*=av01]+ba[ext=m4a]/'
@@ -3110,6 +3126,45 @@ class Api:
             f'bv*[height<={h}][vcodec!*=av01]+ba/'
             f'b[height<={h}][vcodec!*=av01]'
         )
+
+    @staticmethod
+    def _parse_time_spec(text):
+        """'2:00' -> 120.0 | '1:30:00' -> 5400.0 | '90' -> 90.0 | rong/sai -> None.
+
+        Nhan ba dang de nguoi dung khong phai nho quy uoc: hh:mm:ss, mm:ss, va
+        so tran (= GIAY). So tran la cho de hieu nham nhat - '2' la 2 giay chu
+        khong phai 2 phut - nen ben goi PHAI in ra cach no da hieu (xem
+        _fmt_seconds) ngay dong log dau tien, truoc khi tai bat cu byte nao.
+        """
+        text = str(text or '').strip()
+        if not text:
+            return None
+        parts = text.split(':')
+        if len(parts) > 3:
+            return None
+        try:
+            nums = [float(p.strip()) for p in parts]
+        except ValueError:
+            return None
+        if any(n < 0 for n in nums):
+            return None
+        # mm/ss chi hop le trong 0..59 khi CO phan dung truoc no
+        if len(nums) > 1 and any(n >= 60 for n in nums[1:]):
+            return None
+        total = 0.0
+        for n in nums:
+            total = total * 60 + n
+        return total
+
+    @staticmethod
+    def _fmt_seconds(sec):
+        """120 -> '02:00' | 5400 -> '01:30:00'. Dung cho log va cho ten file."""
+        sec = int(round(float(sec)))
+        h, rem = divmod(sec, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h:02d}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
 
     def _resolve_js_runtime(self, spec):
         """Bien gia tri preset `js_runtimes` thanh doi so cho `--js-runtimes`.
@@ -3279,7 +3334,7 @@ class Api:
         write_thumbnail = settings['write_thumbnail']
         player_client = settings.get('player_client')
         js_runtimes = settings.get('js_runtimes')
-        ext = 'mp4' if yt_format == 'MP4' else 'mp3'
+        ext = 'mp3' if yt_format == 'MP3' else 'mp4'
         out_path = os.path.join(output_dir, f"{title_safe}.{ext}")
         out_template = os.path.join(output_dir, f"{title_safe}.%(ext)s")
 
@@ -3304,6 +3359,15 @@ class Api:
             cmd += ["--extractor-args", f"youtube:player_client={player_client}"]
         if js_runtimes:
             cmd += ["--js-runtimes", js_runtimes]
+        # ADR-014: chi tai mot doan. Do that (video 3h49m): doan bat dau o gio
+        # thu 3 mat 103 giay, NHANH HON doan dau video - tuc no nhay thang toi
+        # diem cat chu khong doc luot tu dau, nen bang thong duoc tiet kiem that.
+        # Luu y: co nay chuyen viec tai sang ffmpeg thay vi bo tai cua yt-dlp,
+        # nen tien do KHONG con parse duoc tu dong '[download] xx%'.
+        section = settings.get('section')
+        if section:
+            start_s, end_s = section
+            cmd += ["--download-sections", f"*{start_s}-{end_s}"]
         cmd += [
             "--ffmpeg-location", self.ffmpeg_path,
             "--concurrent-fragments", str(settings['concurrent_fragments']),
@@ -3418,6 +3482,16 @@ class Api:
         yt_format = (params.get('ytFormat') or code.get('default_format', 'MP4')).strip().upper()
         yt_quality = (params.get('ytQuality') or code.get('default_quality', 'Best')).strip()
 
+        # ADR-014: tai mot doan thay vi tron video. Bat/tat bang checkbox chu
+        # KHONG suy tu "o co rong hay khong": gia tri sot lai trong o la mot cai
+        # bay im lang (cat 2 phut hom nay, tuan sau dan 20 link muon tai tron ma
+        # quen xoa o -> ca 20 file bi cat, khong co gi bao).
+        section_on = bool(str(params.get('ytSectionEnable', '') or '').strip())
+        sec_start = sec_dur = None
+        if section_on:
+            sec_start = self._parse_time_spec(params.get('ytSectionStart', ''))
+            sec_dur = self._parse_time_spec(params.get('ytSectionDuration', ''))
+
         write_thumbnail = code.get('write_thumbnail', True)
         skip_existing = code.get('skip_existing', True)
         concurrent_fragments = int(code.get('concurrent_fragments', 4))
@@ -3461,10 +3535,21 @@ class Api:
         if not os.path.exists(self.ffmpeg_path):
             self._log("Khong tim thay ffmpeg.exe", 'err')
             return
-        if yt_format not in ('MP4', 'MP3'):
+        if yt_format not in ('MP4', 'MP3', 'MP4_NOAUDIO'):
             self._log(f"Dinh dang khong hop le: {yt_format}", 'err')
             return
-        if yt_format == 'MP4' and yt_quality not in YT_QUALITIES:
+        if section_on:
+            if sec_start is None:
+                self._log(
+                    f"Moc bat dau khong hop le: {params.get('ytSectionStart', '')!r}"
+                    " (vd 2:00 hoac 1:30:00 hoac so giay)", 'err')
+                return
+            if sec_dur is None or sec_dur <= 0:
+                self._log(
+                    f"Thoi luong khong hop le: {params.get('ytSectionDuration', '')!r}"
+                    " (vd 2:00 hoac 1:30:00 hoac so giay)", 'err')
+                return
+        if yt_format in ('MP4', 'MP4_NOAUDIO') and yt_quality not in YT_QUALITIES:
             self._log(f"Chat luong khong hop le: {yt_quality}", 'err')
             return
 
@@ -3494,6 +3579,18 @@ class Api:
 
         total = len(items)
         self._log(f"Tim thay {total} link | {workers} luong | {yt_format} {yt_quality}", 'info')
+        if section_on:
+            # In ra CACH APP DA HIEU truoc khi tai byte nao. So tran la cho de
+            # hieu nham nhat ('2' = 2 giay chu khong phai 2 phut) nen phai cho
+            # nguoi dung thay ngay o dong dau, khong de ho doi tai xong moi biet.
+            self._log(
+                f"Chi tai mot doan: tu {self._fmt_seconds(sec_start)} "
+                f"({int(sec_start)} giay), dai {self._fmt_seconds(sec_dur)} "
+                f"({int(sec_dur)} giay) -> het o {self._fmt_seconds(sec_start + sec_dur)}."
+                " Ap dung cho moi link.", 'info')
+            self._log(
+                "Doan cat luon dai hon yeu cau vai giay (chi cat duoc o khung chinh,"
+                " khong ma hoa lai).", 'info')
 
         # §5.2/§9(a): pre-pass fetch titles in parallel, before initProcessTable
         self._js("uiApi.setStatus('Dang lay tieu de video...')")
@@ -3549,6 +3646,20 @@ class Api:
             safe = safe[:max_filename_len]
             if not safe:
                 safe = it['video_id']
+            # ADR-014: ten file mang KHOANG THOI GIAN va co KHONG-TIENG.
+            # BAT BUOC, khong phai trang tri: khong co chung thi ban cat va ban
+            # day du (hoac ban khong tieng va ban co tieng) TRUNG TEN HET NHAU,
+            # ma app lai bo qua file da ton tai -> tai ban nay roi doi y muon ban
+            # kia thi app bo qua, nguoi dung tuong minh da co thu vua xin.
+            # Dung '_' thay ':' vi ':' la ky tu cam trong ten file Windows.
+            tag = ''
+            if section_on:
+                tag += (f" [{self._fmt_seconds(sec_start).replace(':', '_')}"
+                        f"+{self._fmt_seconds(sec_dur).replace(':', '_')}]")
+            if yt_format == 'MP4_NOAUDIO':
+                tag += ' [khong tieng]'
+            if tag:
+                safe = safe[:max(1, max_filename_len - len(tag))] + tag
             if safe in used_names:
                 new_name = f"{safe}_{it['video_id']}"
                 self._log(f"Trung ten, doi thanh: {new_name}", 'info')
@@ -3586,13 +3697,15 @@ class Api:
             'mp3_quality': mp3_quality,
             'player_client': player_client,
             'js_runtimes': js_runtimes,
+            # None = tai tron video (khong truyen --download-sections).
+            'section': (sec_start, sec_start + sec_dur) if section_on else None,
         }
 
         def process_one(idx, it):
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
             if self._stopped:
                 return False
-            ext = 'mp4' if yt_format == 'MP4' else 'mp3'
+            ext = 'mp3' if yt_format == 'MP3' else 'mp4'
             out_path = os.path.join(output_dir, f"{it['title_safe']}.{ext}")
 
             if skip_existing and os.path.exists(out_path):
