@@ -410,6 +410,35 @@ class Api:
         except Exception as e:
             self._log(f"Loi luu khoa API: {e}", 'err')
 
+    def checkYtApiKey(self, key):
+        """Kiem tra khoa API con song khong, bang MOT loi goi that.
+
+        Chay o thread nen vi co I/O mang. Ket qua tra ve UI qua
+        setYtApiKeyResult(). Neu o nhap de trong thi dung khoa da luu tren dia
+        - de kiem duoc chinh cai khoa se duoc dong goi luc build.
+
+        KHONG BAO GIO ghi khoa ra log hay ra man hinh ket qua.
+        """
+        def work():
+            k = str(key or '').strip() or self._load_yt_api_key()
+            if not k:
+                self._js("setYtApiKeyResult('Chua co khoa. Dan khoa vao o tren roi bam Kiem tra.', 'err')")
+                return
+            # Dung mot video cong khai lau doi lam phep thu. Lay duoc tieu de
+            # nghia la ca chuoi deu thong: khoa hop le, API da bat, con han muc.
+            probe_id = 'jNQXAC9IVRw'
+            titles = self._yt_fetch_titles_api([probe_id], k, 20)
+            if titles.get(probe_id):
+                msg = (f"Khoa hoat dong tot.\\nTra ve: {titles[probe_id]}\\n"
+                       f"Da luu {len(k)} ky tu - se duoc dong goi khi build.")
+                self._js(f"setYtApiKeyResult({json.dumps(msg)}, 'ok')")
+            else:
+                msg = ("Khoa KHONG dung duoc. Xem dong loi o Log ben duoi de biet"
+                       " ly do (khoa sai, chua bat YouTube Data API v3, hoac het han muc).")
+                self._js(f"setYtApiKeyResult({json.dumps(msg)}, 'err')")
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _load_yt_api_key(self):
         """Doc khoa API tu dia. Tra '' neu chua co hoac doc loi."""
         try:

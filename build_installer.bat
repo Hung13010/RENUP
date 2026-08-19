@@ -196,6 +196,21 @@ xcopy /y /e /i "bin\codes" "%APP_STAGE%\bin\codes" >nul
 copy /y "bin\ffmpeg.exe" "%APP_STAGE%\bin\ffmpeg.exe" >nul
 copy /y "bin\ffprobe.exe" "%APP_STAGE%\bin\ffprobe.exe" >nul
 copy /y "bin\yt-dlp.exe" "%APP_STAGE%\bin\yt-dlp.exe" >nul
+REM Khoa Youtube Data API v3: dong goi san vao ban phat hanh de nguoi dung
+REM cuoi khong phai nhap gi (ban dev nhap qua nut "Cai dat", ban phat hanh
+REM khong co nut do). File nay NAM TRONG .gitignore - khoa khong bao gio vao
+REM ma nguon hay lich su git, chi di tu dia sang goi cai.
+REM Thieu khoa KHONG chan build: app van chay, chi la pha lay tieu de quay ve
+REM dung yt-dlp va de dinh chan bot khi batch lon.
+if exist "bin\yt_api_key.txt" (
+    copy /y "bin\yt_api_key.txt" "%APP_STAGE%\bin\yt_api_key.txt" >nul
+    echo [OK] Da dong goi khoa Youtube API vao ban phat hanh.
+) else (
+    echo [CANH BAO] Khong co bin\yt_api_key.txt - ban phat hanh se KHONG co khoa API.
+    echo [CANH BAO] Pha lay tieu de se dung yt-dlp va co the bi chan bot khi batch lon.
+    echo [CANH BAO] Muon co khoa: chay start.bat, bam nut "Cai dat", dan khoa roi Luu.
+)
+
 REM qjs.exe (QuickJS, ~2 MB): BAT BUOC cho chuc nang tai video Youtube ke tu
 REM ADR-012. Youtube bat giai "n challenge" bang JavaScript o moi duong tai,
 REM thieu file nay thi khong tai duoc video nao. Ten file phai dung 'qjs.exe'.

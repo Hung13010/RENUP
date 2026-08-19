@@ -347,6 +347,7 @@ button[hidden] { display: none !important; }
     <div class="dot" id="statusDot"></div>
     <span id="statusLabel">stopped</span>
   </div>
+  <button id="settingsBtn" class="btn-reload" hidden onclick="openSettings()" title="Cai dat (chi ban dev)">⚙ Cài đặt</button>
   <button id="reloadBtn" class="btn-reload" hidden onclick="reloadApp()" title="Reload app (dev only)">⟳ Reload</button>
 </div>
 
@@ -526,18 +527,6 @@ button[hidden] { display: none !important; }
             Nhận <b>2:00</b> (2 phút), <b>1:30:00</b> (1 giờ 30 phút), hoặc số trần = giây.<br>
             Áp dụng cho <b>mọi link</b> trong ô trên.
           </div>
-        </div>
-
-        <div class="field-label" style="margin-top:10px;">🔑 Khóa API Youtube (tùy chọn)</div>
-        <div class="settings-row" style="gap:6px;">
-          <input type="password" id="ytApiKey" style="flex:1;min-width:0;"
-                 placeholder="Dán khóa vào đây rồi nhấn Lưu" spellcheck="false"
-                 autocomplete="off">
-          <button class="btn-sm btn-muted" onclick="saveYtApiKey()">Lưu</button>
-        </div>
-        <div style="margin-top:4px;opacity:.75;font-size:12px;line-height:1.5;">
-          Có khóa thì lấy tiêu đề <b>50 link mỗi lần gọi</b> thay vì mỗi link một lần,
-          nên không còn bị chặn khi tải hàng loạt. Để trống vẫn chạy bình thường.
         </div>
 
         <div style="margin-top:8px;">
@@ -725,6 +714,34 @@ button[hidden] { display: none !important; }
   </div>
 </div>
 
+<!-- Settings CHI hien o ban dev (setDevMode). Ban phat hanh khong co nut mo
+     hop nay: khoa da duoc dong goi san vao bin/yt_api_key.txt luc build, nguoi
+     dung cuoi khong phai nhap gi. -->
+<div class="update-overlay" id="settingsOverlay">
+  <div class="update-box" style="max-width:520px;">
+    <div class="update-icon">⚙</div>
+    <div class="update-title">Cài đặt (chỉ có ở bản dev)</div>
+    <div style="text-align:left;margin-top:12px;">
+      <div class="field-label">🔑 Khóa Youtube Data API v3</div>
+      <input type="password" id="ytApiKey" style="width:100%;box-sizing:border-box;"
+             placeholder="Dán khóa vào đây" spellcheck="false" autocomplete="off">
+      <div style="margin-top:6px;opacity:.75;font-size:12px;line-height:1.55;">
+        Khóa được lưu vào <code>bin\yt_api_key.txt</code> và <b>đóng gói sẵn</b> khi build,
+        nên bản phát hành không cần nhập gì.<br>
+        Nhớ giới hạn khóa trong Google Cloud Console: chỉ cho phép
+        <b>YouTube Data API v3</b> — khóa nhúng trong exe là moi ra được.
+      </div>
+      <div id="ytApiKeyResult" style="margin-top:10px;font-size:13px;line-height:1.5;
+           min-height:20px;white-space:pre-wrap;"></div>
+    </div>
+    <div class="update-btns">
+      <button class="btn-accent" onclick="checkYtApiKey()">🔎 Kiểm tra khóa</button>
+      <button class="btn-muted" onclick="saveYtApiKey()">💾 Lưu</button>
+      <button class="btn-danger" onclick="closeSettings()">✕ Đóng</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Globals ──
 let selectedRows = new Set();
@@ -768,6 +785,31 @@ function onYtFormatChanged() {
 function saveYtApiKey() {
   const el = document.getElementById('ytApiKey');
   pyApi.saveYtApiKey(el ? el.value : '');
+  setYtApiKeyResult('Đã lưu.', 'ok');
+}
+
+function checkYtApiKey() {
+  const el = document.getElementById('ytApiKey');
+  setYtApiKeyResult('Đang kiểm tra...', 'info');
+  pyApi.checkYtApiKey(el ? el.value : '');
+}
+
+// Python goi nguoc ve day voi ket qua kiem tra.
+function setYtApiKeyResult(msg, kind) {
+  const box = document.getElementById('ytApiKeyResult');
+  if (!box) return;
+  const color = kind === 'ok' ? '#2e7d32' : (kind === 'err' ? '#c62828' : 'inherit');
+  box.style.color = color;
+  box.textContent = msg;
+}
+
+function openSettings() {
+  document.getElementById('settingsOverlay').classList.add('show');
+  setYtApiKeyResult('', 'info');
+}
+
+function closeSettings() {
+  document.getElementById('settingsOverlay').classList.remove('show');
 }
 
 function onYtSectionToggled() {
@@ -946,6 +988,10 @@ window.uiApi = {
 
   setDevMode(isDev) {
     document.getElementById('reloadBtn').hidden = !isDev;
+    // Nut Cai dat CHI co o ban dev. Ban phat hanh khong co no vi khoa API da
+    // duoc dong goi san luc build - nguoi dung cuoi khong phai nhap gi.
+    const sb = document.getElementById('settingsBtn');
+    if (sb) sb.hidden = !isDev;
   },
 
   setVideos(videos) {
