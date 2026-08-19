@@ -3492,7 +3492,16 @@ class Api:
             sec_start = self._parse_time_spec(params.get('ytSectionStart', ''))
             sec_dur = self._parse_time_spec(params.get('ytSectionDuration', ''))
 
-        write_thumbnail = code.get('write_thumbnail', True)
+        # Checkbox tren UI la nguon quyet dinh. Phan biet "khong tich" voi
+        # "khong co truong" bang cach kiem tra khoa CO TON TAI hay khong:
+        # getFieldChecked tra '' cho ca hai truong hop, nen neu chi doc gia tri
+        # thi mot phien ban UI cu (chua co checkbox) se am tham TAT anh bia.
+        # Khoa vang mat -> quay ve mac dinh cua preset (hanh vi cu).
+        _wt = params.get('ytWriteThumbnail')
+        if _wt is None:
+            write_thumbnail = code.get('write_thumbnail', True)
+        else:
+            write_thumbnail = bool(str(_wt).strip())
         skip_existing = code.get('skip_existing', True)
         concurrent_fragments = int(code.get('concurrent_fragments', 4))
         retries = int(code.get('retries', 3))
