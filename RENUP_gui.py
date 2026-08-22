@@ -212,11 +212,28 @@ class Api:
         self._js("uiApi.setStatus('Da dung.')")
 
     def _kill_all_ffmpeg(self):
-        """Kill all tracked FFmpeg processes."""
+        """Kill all tracked processes AND their descendants.
+
+        yt-dlp spawns its own ffmpeg child for remuxing (--ffmpeg-location); on
+        Windows, proc.kill() only terminates the tracked PID itself, not that
+        child, leaving ffmpeg orphaned and still downloading/writing to disk
+        after Stop/close. 'taskkill /T' kills the whole process tree instead.
+        """
         for proc in self._current_procs:
             try:
                 self._resume_process(proc.pid)
-                proc.kill()
+            except Exception:
+                pass
+            try:
+                subprocess.run(
+                    ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                    capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
                 proc.wait(timeout=5)
             except Exception:
                 pass
@@ -3587,8 +3604,15 @@ class Api:
             return False
 
         if proc.returncode != 0:
-            err = ''.join(stderr_lines).strip()
-            last_err = err.splitlines()[-1] if err else 'Unknown error'
+            # Chi dong CUOI cung thuong la "ffmpeg exited with code 1" - dung
+            # nguyen nhan (loi codec, mang, CDN...) nam o vai dong TRUOC do
+            # trong stderr cua ffmpeg. Lay 5 dong cuoi thay vi 1 de con doc
+            # duoc ly do that; van gioi han do dai vi mot so loi (vd geo-block)
+            # tu ket noi ca danh sach 200+ quoc gia vao MOT dong.
+            err_lines = [l.strip() for l in ''.join(stderr_lines).splitlines() if l.strip()]
+            last_err = ' | '.join(err_lines[-5:]) if err_lines else 'Unknown error'
+            if len(last_err) > 500:
+                last_err = last_err[:500] + '...'
             self._log(f"yt-dlp loi ({title}): {last_err}", 'err')
             self._log(f"[{idx + 1}] Tai fail: {title}", 'err')
             self._yt_cleanup_partial(output_dir, title_safe)
