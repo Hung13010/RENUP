@@ -1,6 +1,8 @@
 import sys
 import os
 import re
+import time
+import collections
 import subprocess
 import threading
 import json
@@ -62,7 +64,28 @@ YT_ID_PATTERNS = [
 YT_ID_BARE = re.compile(r'^[A-Za-z0-9_-]{11}$')
 YT_QUALITIES = ('Best', '2160p', '1440p', '1080p', '720p', '480p', '360p')
 RE_YT_DL = re.compile(r'^\[download\]\s+(\d{1,3}(?:\.\d+)?)%')
-RE_YT_POST = re.compile(r'^\[(Merger|ExtractAudio|VideoRemuxer|ThumbnailsConvertor|FixupM3u8|Fixup\w*)\]')
+# Moi luot tai mot luong (video, roi audio) mo dau bang mot dong Destination.
+# Dung no de dem "pha" thay vi doan qua viec phan tram tut xuong - phep doan do
+# sai khi yt-dlp tiep tuc mot file da tai do dang (bat dau tu 40% chang han).
+RE_YT_DEST = re.compile(r'^\[download\]\s+Destination:')
+# "at 10.83MiB/s" / "at 999.04KiB/s". CO Y KHONG khop "at Unknown B/s" (yt-dlp in
+# the o vai dong dau khi chua do duoc toc do) - khong hien gi con hon hien "Unknown".
+RE_YT_SPEED = re.compile(r'\sat\s+([\d.]+\s*[KMGT]?i?B/s)')
+# ThumbnailsConvertor CO Y bi loai khoi danh sach nay. Do thuc te (2026-08-22):
+# anh bia duoc tai va chuyen doi TRUOC khi video bat dau tai, nen coi no la dau
+# hieu "sap xong" se day thanh tien trinh len 92% ngay tu dau, va vi code chi
+# cap nhat khi phan tram TANG nen moi dong [download] xx% sau do (toi da 70) deu
+# bi bo qua - thanh do nam im o 92% suot ca lan tai. Xem TODO #045.
+RE_YT_POST = re.compile(r'^\[(Merger|ExtractAudio|VideoRemuxer|FixupM3u8|Fixup\w*)\]')
+# Che do "chi tai mot doan" (--download-sections) giao viec tai cho ffmpeg, nen
+# KHONG con dong "[download] xx%" nao trong suot qua trinh. Tien do that nam o
+# stderr cua ffmpeg: "frame=150 ... time=00:00:09.98 bitrate=..." - time= la moc
+# da xu ly xong, so voi do dai doan da yeu cau se ra phan tram that.
+RE_FF_TIME = re.compile(r'\btime=\s*(\d+):(\d\d):(\d\d(?:\.\d+)?)')
+RE_FF_SIZE = re.compile(r'\b[A-Za-z]*size=\s*(\d+)kB')
+# Dong tien do cua ffmpeg lap lai moi giay; giu chung trong bo dem loi se day
+# nguyen nhan that ra khoi 5 dong cuoi ma _yt_download_one dung de bao loi.
+RE_FF_PROGRESS_LINE = re.compile(r'^(frame|size)=')
 
 # ── Youtube Thumbnail (ADR-008): module-level constants ──
 YT_THUMB_LADDER = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default']
@@ -3318,6 +3341,25 @@ class Api:
             return f"{h:02d}:{m:02d}:{s:02d}"
         return f"{m:02d}:{s:02d}"
 
+    @staticmethod
+    def _fmt_rate_kb(kb_per_sec):
+        """Doi toc do (kB/giay) thanh chuoi ngan gon: 850.0 -> '850KiB/s'.
+
+        Chi dung cho che do "chi tai mot doan": o do ffmpeg lam viec tai nen
+        khong co san chuoi toc do nhu yt-dlp, phai tu tinh tu do chenh cua
+        "size=" giua hai dong tien do. Dinh dang bat chuoc yt-dlp de hai che do
+        hien giong nhau tren giao dien.
+        """
+        try:
+            kb = float(kb_per_sec)
+        except (TypeError, ValueError):
+            return ''
+        if kb < 0:
+            return ''
+        if kb >= 1024:
+            return f"{kb / 1024:.2f}MiB/s"
+        return f"{kb:.0f}KiB/s"
+
     def _resolve_js_runtime(self, spec):
         """Bien gia tri preset `js_runtimes` thanh doi so cho `--js-runtimes`.
 
@@ -3547,43 +3589,127 @@ class Api:
 
         self._current_procs.append(proc)
 
-        stderr_lines = []
-
-        def drain():
-            for line in proc.stderr:
-                stderr_lines.append(line)
-        t = threading.Thread(target=drain, daemon=True)
-        t.start()
-
         # §7: two-download-pass progress mapping (video pass 0-70%, audio pass 70-88%),
-        # post-processing (merge/remux/extract-audio/thumbnail-convert) bumps to 92%.
+        # post-processing (merge/remux/extract-audio) bumps to 92%.
         # 100% is never pushed from here — only by the caller once the row is fully done.
         pass_idx = 0
         raw_prev = -1.0
         last_pct = -1
+        saw_dl = False          # da thay it nhat mot dong "[download] xx%" chua
+        speed_txt = ''          # toc do tai gan nhat, hien canh phan tram
+        last_push_t = 0.0       # moc lan day cuoi, de chan lu evaluate_js
         bands = [(0, 70), (70, 88)]
+        state_lock = threading.Lock()
+
+        # Do dai doan da yeu cau (giay) - chi co o che do "chi tai mot doan".
+        # Dung lam mau so de doi "time=" cua ffmpeg thanh phan tram.
+        sec_span = None
+        _sec = settings.get('section')
+        if _sec:
+            try:
+                _span = float(_sec[1]) - float(_sec[0])
+                if _span > 0:
+                    sec_span = _span
+            except (TypeError, ValueError):
+                sec_span = None
+
+        def push(pct, extra=''):
+            """Day tien do len giao dien, dam bao khong bao gio lui.
+
+            Goi tu CA hai luong (stdout cua vong lap chinh, stderr cua drain khi
+            o che do cat doan) nen phai khoa - neu khong, hai luong co the doc
+            last_pct cu roi ghi de len nhau lam thanh do nhay giat.
+
+            Chan lu evaluate_js: file lon in rat nhieu dong tien do cho cung mot
+            con so phan tram. Phan tram tang thi day ngay; chi doi moi toc do
+            thi toi da 2 lan/giay.
+            """
+            nonlocal last_pct, last_push_t
+            with state_lock:
+                if pct < last_pct:
+                    return
+                now = time.time()
+                if pct == last_pct and (not extra or now - last_push_t < 0.5):
+                    return
+                last_pct = pct
+                last_push_t = now
+                payload = json.dumps(extra) if extra else "''"
+                self._js(f"uiApi.updateProcessItem({idx}, {pct}, 'running', {payload})")
+
+        # maxlen: o che do cat doan ffmpeg co the in hang chuc nghin dong; giu het
+        # la phi bo nho ma khong duoc gi. Dong tien do bi loai han (xem duoi) nen
+        # 400 dong con lai deu la thong tin that.
+        stderr_lines = collections.deque(maxlen=400)
+
+        def drain():
+            # Toc do o che do cat doan phai TU TINH: ffmpeg khong in san chuoi
+            # toc do nhu yt-dlp, chi in "size=" (kB tron). Hai cach don gian deu
+            # da thu va deu hong:
+            #   - hieu giua hai dong lien tiep: ffmpeg in nhanh hon toc do file
+            #     phinh -> ra 0 qua nua so lan;
+            #   - cua so 1 giay: van ra 0 xen ke, vi ffmpeg ghi dia theo cum chu
+            #     khong deu (do that: 0 / 0 / 243 / 243 / 0 / 0 KiB/s).
+            # Cua so truot 5 giay lam phang duoc do gian doan do ma van bam theo
+            # tinh hinh mang hien tai, khac voi trung binh tich luy tu dau.
+            ff_samples = collections.deque()   # (moc thoi gian, kB)
+            ff_speed = ''
+            for line in proc.stderr:
+                if RE_FF_PROGRESS_LINE.match(line.lstrip()):
+                    # Chi co y nghia o che do cat doan; o che do thuong ffmpeg chi
+                    # chay luc ghep nen vai dong nay khong dai dien cho gi.
+                    if sec_span:
+                        mt = RE_FF_TIME.search(line)
+                        if mt:
+                            done = (int(mt.group(1)) * 3600 + int(mt.group(2)) * 60
+                                    + float(mt.group(3)))
+                            pct = int(min(done / sec_span, 1.0) * 88)
+                            ms = RE_FF_SIZE.search(line)
+                            now = time.time()
+                            if ms:
+                                kb = int(ms.group(1))
+                                ff_samples.append((now, kb))
+                                while ff_samples and now - ff_samples[0][0] > 5.0:
+                                    ff_samples.popleft()
+                                span = now - ff_samples[0][0]
+                                if len(ff_samples) >= 2 and span >= 1.0:
+                                    rate = (kb - ff_samples[0][1]) / span
+                                    if rate >= 0:
+                                        ff_speed = self._fmt_rate_kb(rate)
+                            push(pct, ff_speed)
+                    continue
+                stderr_lines.append(line)
+        t = threading.Thread(target=drain, daemon=True)
+        t.start()
 
         try:
             for line in proc.stdout:
                 if self._stopped:
                     break
                 line = line.strip()
+                if RE_YT_DEST.match(line):
+                    # Bat dau mot luong moi (vd: xong video, sang audio).
+                    if saw_dl:
+                        pass_idx += 1
+                    raw_prev = -1.0
+                    continue
                 m = RE_YT_DL.match(line)
                 if m:
+                    saw_dl = True
                     raw = float(m.group(1))
-                    if raw < raw_prev - 5:
-                        pass_idx += 1
                     raw_prev = raw
                     lo, hi = bands[min(pass_idx, len(bands) - 1)]
                     pct = int(lo + raw / 100.0 * (hi - lo))
-                    if pct > last_pct:
-                        self._js(f"uiApi.updateProcessItem({idx}, {pct}, 'running')")
-                        last_pct = pct
+                    msp = RE_YT_SPEED.search(line)
+                    if msp:
+                        speed_txt = msp.group(1).replace(' ', '')
+                    push(pct, speed_txt)
                     continue
                 if RE_YT_POST.match(line):
-                    if last_pct < 92:
-                        self._js(f"uiApi.updateProcessItem({idx}, 92, 'running')")
-                        last_pct = 92
+                    # Chot chan: chi coi la "sap xong" khi da that su tai duoc gi.
+                    # O che do cat doan khong co dong [download] xx% nao trong luc
+                    # tai, nhung ffmpeg da day tien trinh qua push() roi.
+                    if saw_dl or sec_span:
+                        push(92)
             proc.wait()
         finally:
             t.join()

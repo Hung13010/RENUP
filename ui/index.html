@@ -225,13 +225,15 @@ button[hidden] { display: none !important; }
 .process-table tr:hover td { background: #fafafa; }
 .pcol-num { width: 40px; text-align: center; }
 .pcol-name { }
-.pcol-progress { width: 140px; }
+/* 170px chu khong phai 140px: o day nay gio chua ca "45% · 10.83MiB/s" cho
+   chuc nang tai Youtube, khong con chi mot con so phan tram. */
+.pcol-progress { width: 170px; }
 .pcol-status { width: 100px; text-align: center; }
 
 /* Mini progress bar in table */
 .mini-progress { width: 100%; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
 .mini-progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.3s; border-radius: 4px; }
-.mini-pct { font-size: 9px; font-family: monospace; color: var(--text-dim); margin-top: 2px; }
+.mini-pct { font-size: 9px; font-family: monospace; color: var(--text-dim); margin-top: 2px; white-space: nowrap; }
 
 /* Status badge */
 .status-badge {
@@ -1065,7 +1067,11 @@ window.uiApi = {
     document.getElementById('processCount').textContent = files.length + ' file';
   },
 
-  updateProcessItem(idx, pct, status) {
+  // extra: tham so THU TU, chi chuc nang tai Youtube truyen (toc do tai, vd
+  // "10.83MiB/s"). 12 handler con lai goi voi 3 tham so nhu cu -> extra la
+  // undefined -> hien thi khong doi mot ly nao. Them tham so tuy chon thay vi
+  // callback moi de khong phai sua ca 12 cho goi.
+  updateProcessItem(idx, pct, status, extra) {
     const bar = document.getElementById('pbar-' + idx);
     const pctEl = document.getElementById('ppct-' + idx);
     const badge = document.getElementById('pstatus-' + idx);
@@ -1073,7 +1079,10 @@ window.uiApi = {
 
     if (pct >= 0) {
       bar.style.width = pct + '%';
-      pctEl.textContent = pct + '%';
+      // Toc do chi co nghia trong luc dang chay; khi dong da xong/loi thi bo di
+      // de khong de lai con so dong cung gay hieu nham la van dang tai.
+      const showSpeed = extra && (!status || status === 'running');
+      pctEl.textContent = showSpeed ? (pct + '% · ' + extra) : (pct + '%');
     }
 
     if (status) {
