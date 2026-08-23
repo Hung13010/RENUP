@@ -225,9 +225,13 @@ button[hidden] { display: none !important; }
 .process-table tr:hover td { background: #fafafa; }
 .pcol-num { width: 40px; text-align: center; }
 .pcol-name { }
-/* 170px chu khong phai 140px: o day nay gio chua ca "45% · 10.83MiB/s" cho
-   chuc nang tai Youtube, khong con chi mot con so phan tram. */
-.pcol-progress { width: 170px; }
+/* GIU 140px. O nay nay gio co the chua "100% · 1000.31KiB/s" (19 ky tu) cho
+   chuc nang tai Youtube, nhung 140px van du: monospace 9px ~ 5px/ky tu -> ~95px
+   noi dung + 20px padding = ~115px. Da tung noi len 170px va do la SAI: bang
+   tien trinh dung chung cho ca 12 chuc nang, table-layout la fixed va cot ten
+   khong dat width nen an phan con lai - noi cot nay ra 30px la bop cot ten cua
+   Claim Tiktok (ten dai san, td co text-overflow: ellipsis) di dung 30px. */
+.pcol-progress { width: 140px; }
 .pcol-status { width: 100px; text-align: center; }
 
 /* Mini progress bar in table */
