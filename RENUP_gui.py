@@ -86,6 +86,14 @@ RE_FF_SIZE = re.compile(r'\b[A-Za-z]*size=\s*(\d+)kB')
 # Dong tien do cua ffmpeg lap lai moi giay; giu chung trong bo dem loi se day
 # nguyen nhan that ra khoi 5 dong cuoi ma _yt_download_one dung de bao loi.
 RE_FF_PROGRESS_LINE = re.compile(r'^(frame|size)=')
+# Claim Tiktok - cac moc that trong dau ra cua yt-dlp khi tai voice. Dung de neo
+# thanh tien trinh; xem ghi chu trong _download_voice_tiktok ve ly do khong bam
+# thang vao "[download] xx%" (khau tai chi chiem 0.6% thoi gian cua buoc nay).
+RE_TT_EXTRACT = re.compile(r'^\[tiktok:\w+\]\s+Extracting URL')
+RE_TT_LIST = re.compile(
+    r'^\[(?:tiktok:\w+|download)\]\s+.*(?:Downloading video list|Downloading \d+ items'
+    r'|Downloading item |Downloading playlist)')
+RE_TT_AUDIO = re.compile(r'^\[ExtractAudio\]')
 
 # ── Youtube Thumbnail (ADR-008): module-level constants ──
 YT_THUMB_LADDER = ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default']
@@ -2840,7 +2848,21 @@ class Api:
         return stripped + ' short'
 
 
-    def _download_voice_tiktok(self, voice_id, voice_dir, device_id):
+    def _download_voice_tiktok(self, voice_id, voice_dir, device_id, idx=None, lo=0, hi=33):
+        """Tai voice TikTok qua yt-dlp. idx co gia tri thi bao tien do vao dong idx.
+
+        Vi sao khong the bam thang vao phan tram tai that: do that tren mot voice
+        (tong 10.1 giay) cho thay khau TAI chi chiem 0.06 giay - 0.6% thoi gian.
+        Phan con lai la khoi dong yt-dlp (5.8 giay, KHONG in ra dong nao), mo
+        trang sound + tai danh sach video (3.1 giay), va ffmpeg tach sang mp3
+        (0.7 giay). Bam theo "[download] xx%" se cho ra mot thanh do nam im 9.5
+        giay roi vut mot cai - dung bang khong sua.
+
+        Cach dung o day: neo vao cac MOC CO THAT (moi moc la mot dong yt-dlp thuc
+        su in ra), con giua hai moc thi cho thanh bo dan theo thoi gian, tiem can
+        moc ke tiep va KHONG BAO GIO vuot qua no. Nguoi dung thay chuyen dong
+        lien tuc, ma khong bao gio bi bao la da qua mot buoc chua xay ra.
+        """
         if self._stopped:
             return False
         voice_path = os.path.join(voice_dir, f"{voice_id}.mp3")
@@ -2848,6 +2870,7 @@ class Api:
         cmd = [
             self.ytdlp_path,
             "--encoding", "utf-8",
+            "--newline",
             "--extractor-args", f"tiktok:device_id={device_id}",
             "--playlist-end", "1",
             "-x", "--audio-format", "mp3",
@@ -2857,6 +2880,71 @@ class Api:
             url,
         ]
         stderr_lines = []
+
+        span = max(1, hi - lo)
+        # Ranh gioi cac giai doan, chia theo DUNG TY LE THOI GIAN da do (tong
+        # 10.1 giay tren mot voice):
+        #   khoi dong yt-dlp   5.8s -> 57%   (khong in ra dong nao)
+        #   mo trang + ds video 3.1s -> 30%
+        #   chon dinh dang      0.2s ->  2%
+        #   tai that           0.06s ->  1%
+        #   ffmpeg tach mp3     0.7s ->  7%
+        # Chia theo thoi gian chu khong theo cam tinh la ly do thanh do chay deu:
+        # neu cho khau "tai that" mot dai rong thi no se vut qua trong 0.06 giay
+        # roi dung im o cho khac.
+        P_START = (0.00, 0.57, 5.8)     # (dau, cuoi, so giay du kien)
+        P_LIST = (0.57, 0.87, 3.1)
+        P_DEST = (0.87, 0.90, 0.3)
+        P_DL = (0.90, 0.93, 0.5)
+        P_AUDIO = (0.93, 1.00, 0.8)
+
+        st = {'ph': P_START, 't0': time.time(), 'cur': float(lo),
+              'last': -1, 'run': True}
+        st_lock = threading.Lock()
+
+        def _pct_locked():
+            a, b, dur = st['ph']
+            k = min(1.0, (time.time() - st['t0']) / max(dur, 0.01))
+            # *0.97: khong bao gio cham dung ranh gioi cuoi giai doan khi giai
+            # doan do chua thuc su ket thuc.
+            return lo + span * (a + (b - a) * k * 0.97)
+
+        def emit():
+            with st_lock:
+                v = _pct_locked()
+                if v > st['cur']:
+                    st['cur'] = v
+                p = int(st['cur'])
+                if p == st['last']:
+                    return
+                st['last'] = p
+            self._js(f"uiApi.updateProcessItem({idx}, {p}, 'running')")
+
+        def ticker():
+            while True:
+                time.sleep(0.2)
+                with st_lock:
+                    if not st['run']:
+                        return
+                emit()
+
+        tick = None
+        if idx is not None:
+            tick = threading.Thread(target=ticker, daemon=True)
+            tick.start()
+
+        def enter(phase):
+            """Sang giai doan moi vi mot moc CO THAT vua den."""
+            with st_lock:
+                if phase[0] < st['ph'][0]:
+                    return          # moc den lech thu tu: bo qua, khong lui
+                st['ph'] = phase
+                st['t0'] = time.time()
+                floor = lo + span * phase[0]
+                if st['cur'] < floor:
+                    st['cur'] = floor
+            emit()
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -2874,7 +2962,18 @@ class Api:
                         stderr_lines.append(line)
                 t = threading.Thread(target=drain, daemon=True)
                 t.start()
-                proc.stdout.read()
+                for line in proc.stdout:
+                    if idx is None:
+                        continue
+                    line = line.strip()
+                    if RE_TT_EXTRACT.match(line) or RE_TT_LIST.match(line):
+                        enter(P_LIST)
+                    elif RE_YT_DEST.match(line):
+                        enter(P_DEST)
+                    elif RE_YT_DL.match(line):
+                        enter(P_DL)
+                    elif RE_TT_AUDIO.match(line):
+                        enter(P_AUDIO)
                 proc.wait()
                 t.join()
             finally:
@@ -2883,6 +2982,11 @@ class Api:
         except Exception as e:
             self._log(f"Loi spawn yt-dlp: {e}", 'err')
             return False
+        finally:
+            with st_lock:
+                st['run'] = False
+            if tick is not None:
+                tick.join(timeout=1)
 
         if self._stopped:
             return False
@@ -2932,6 +3036,23 @@ class Api:
         own `.part`, last `os.replace()` wins, `dest_path` is always valid).
         """
         part_path = f"{dest_path}.{uuid.uuid4().hex}.part"
+        # Bat tay HTTP voi Drive (co the phai qua trang xac nhan virus) mat ~2.6
+        # giay do duoc, va trong khoang do chua co byte nao de tinh phan tram.
+        # Danh 3 diem dau dai cho no, bo theo thoi gian; phan truyen that bat dau
+        # tu dl_lo nen thanh khong bao gio lui.
+        dl_lo = lo + 3 if hi - lo > 6 else lo
+        connected = threading.Event()
+        if idx is not None:
+            def _creep():
+                c0 = time.time()
+                shown = lo
+                while not connected.wait(0.25):
+                    k = min(1.0, (time.time() - c0) / 2.6)
+                    p = lo + int((dl_lo - lo) * k * 0.97)
+                    if p != shown:
+                        shown = p
+                        self._js(f"uiApi.updateProcessItem({idx}, {p}, 'running')")
+            threading.Thread(target=_creep, daemon=True).start()
         try:
             if self._stopped:
                 return False
@@ -2988,6 +3109,7 @@ class Api:
                 total_bytes = int(resp.headers.get('Content-Length') or 0)
             except (TypeError, ValueError):
                 total_bytes = 0
+            connected.set()     # het pha bat tay, tu day co byte de dem that
             got = 0
             last_t = time.time()
             last_got = 0
@@ -3006,7 +3128,7 @@ class Api:
                         continue
                     got += len(chunk)
                     now = time.time()
-                    pct = min(lo + int(got / total_bytes * (hi - lo)), hi) if total_bytes else lo
+                    pct = min(dl_lo + int(got / total_bytes * (hi - dl_lo)), hi) if total_bytes else dl_lo
                     # Day khi phan tram doi (nhieu nhat hi-lo = 33 lan cho ca file)
                     # HOAC moi nua giay de con cap nhat toc do. Khong duoc day theo
                     # tung khoi 64 KB: file 47 MB se thanh ~750 lan goi evaluate_js.
@@ -3028,6 +3150,7 @@ class Api:
             self._log(f"Loi tai nhac Drive: {e}", 'err')
             return False
         finally:
+            connected.set()     # dung pha bat tay du co loi hay bi Stop
             if os.path.exists(part_path):
                 try:
                     os.remove(part_path)
@@ -3150,7 +3273,7 @@ class Api:
 
                 voice_path = os.path.join(voice_dir, f"{voice_id}.mp3")
                 if not os.path.exists(voice_path):
-                    ok = self._download_voice_tiktok(voice_id, voice_dir, device_id)
+                    ok = self._download_voice_tiktok(voice_id, voice_dir, device_id, idx=idx)
                     if not ok or not os.path.exists(voice_path):
                         self._log(f"[{idx + 1}] Voice fail: {voice_id}", 'err')
                         return False
