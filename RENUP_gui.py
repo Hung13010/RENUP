@@ -2910,8 +2910,12 @@ class Api:
             return url
         return None
 
-    def _download_music_drive(self, url, dest_path):
+    def _download_music_drive(self, url, dest_path, idx=None, lo=33, hi=66):
         """Download a public Google Drive file directly over HTTP (no gdown).
+
+        idx/lo/hi (tuy chon): so thu tu dong trong bang tien trinh va dai phan
+        tram danh cho buoc nay. Truyen vao thi ham bao tien do + toc do trong
+        luc tai; bo qua thi im lang y het truoc day.
 
         Google Drive's public-download flow redirects to
         https://drive.usercontent.google.com/download . For small files this
@@ -2976,6 +2980,20 @@ class Api:
                     self._log("Loi tai nhac Drive: van nhan HTML sau khi xac nhan (file co the private).", 'err')
                     return False
 
+            # Bao tien do trong luc tai. Khong co doan nay thi dong bang nam im
+            # o 33% suot ca lan tai - va file nhac Drive thuc te nang toi vai
+            # chuc MB (do that: 47 MB moi dong), chay 1 luong thi nguoi dung
+            # nhin thay y het nhu treo. Da bi bao la "loi" dung vi ly do nay.
+            try:
+                total_bytes = int(resp.headers.get('Content-Length') or 0)
+            except (TypeError, ValueError):
+                total_bytes = 0
+            got = 0
+            last_t = time.time()
+            last_got = 0
+            last_pct = -1
+            speed = ''
+
             with open(part_path, 'wb') as f:
                 while True:
                     if self._stopped:
@@ -2984,6 +3002,22 @@ class Api:
                     if not chunk:
                         break
                     f.write(chunk)
+                    if idx is None:
+                        continue
+                    got += len(chunk)
+                    now = time.time()
+                    pct = min(lo + int(got / total_bytes * (hi - lo)), hi) if total_bytes else lo
+                    # Day khi phan tram doi (nhieu nhat hi-lo = 33 lan cho ca file)
+                    # HOAC moi nua giay de con cap nhat toc do. Khong duoc day theo
+                    # tung khoi 64 KB: file 47 MB se thanh ~750 lan goi evaluate_js.
+                    due = now - last_t >= 0.5
+                    if due:
+                        speed = self._fmt_rate_kb((got - last_got) / 1024.0 / (now - last_t))
+                        last_t, last_got = now, got
+                    if due or pct != last_pct:
+                        last_pct = pct
+                        payload = json.dumps(speed) if speed else "''"
+                        self._js(f"uiApi.updateProcessItem({idx}, {pct}, 'running', {payload})")
 
             if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
                 return False
@@ -3129,7 +3163,7 @@ class Api:
                         return False
                     if self._stopped:
                         return False
-                    ok = self._download_music_drive(music_url, music_path)
+                    ok = self._download_music_drive(music_url, music_path, idx=idx)
                     if not ok or not os.path.exists(music_path):
                         self._log(f"[{idx + 1}] Tai nhac fail: {final_name}", 'err')
                         return False
@@ -3150,6 +3184,11 @@ class Api:
                 return False
 
         self._log(f"Tim thay {len(rows)} dong | {workers} luong.", 'info')
+        # Bat buoc: khong co dong nay thi thanh trang thai ket o "Dang chuan bi
+        # Claim Tiktok..." cho toi khi dong DAU TIEN xong (setStatus chi duoc goi
+        # trong update(), tuc sau moi dong). Dong dau co the mat vai phut vi phai
+        # tai file nhac vai chuc MB -> nguoi dung tuong app treo.
+        self._js(f"uiApi.setStatus('Dang xu ly... 0/{total} dong')")
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:
