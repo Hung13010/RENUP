@@ -3368,10 +3368,21 @@ class Api:
         picks the highest resolution available among non-AV1 codecs (usually
         VP9 at 1440p/2160p).
 
-        Invariant (covered by a unit test): every quality-capped selector still
-        ends on a height-constrained final branch (`b[height<={h}][...]`) with
-        NO bare `b` fallback — a video with no stream <= the requested height
-        must fail loudly instead of silently downloading a higher resolution.
+        DUNG them nhanh uu tien avc1 vao 'Best' de "sua" viec no tra ve VP9.
+        Chuoi -f chi LOC ra tap format hop le; no khong dien dat duoc "trong
+        so cac format con lai thi lay cai nao", va moi nhanh avc1 khong kem
+        rang buoc chieu cao deu keo video 4K tut xuong 1080p. Viec chon codec
+        khi CUNG do phan giai thuoc ve --format-sort, dat o _yt_download_one
+        (preset 'format_sort'). Do that 2026-08-25, video fITHDrND8tE co ca
+        avc1 lan vp9 o 360p: khong -S thi yt-dlp lay vp9, co -S thi lay avc1,
+        va do phan giai khong doi trong ca hai truong hop.
+
+        Bat bien (KHONG co test tu dong - du an chua co ha tang test, phai giu
+        bang mat khi sua): moi selector co gioi han chat luong phai ket thuc
+        bang mot nhanh co rang buoc chieu cao (`b[height<={h}][...]`), TUYET
+        DOI khong co nhanh `b` tran - video khong co luong nao <= chieu cao
+        yeu cau thi phai bao loi ro rang chu khong duoc am tham tai ve ban do
+        phan giai cao hon.
         """
         fmt = (fmt or '').strip().upper()
         if fmt == 'MP3':
@@ -3675,9 +3686,10 @@ class Api:
         """Download one Youtube video/audio (§5.5/§5.6) and parse its progress (§7).
 
         item: {'video_id', 'url', 'title', 'title_safe'}
-        settings: dict with output_dir, yt_format, fmt_selector, write_thumbnail,
-                  concurrent_fragments, retries, fragment_retries, socket_timeout,
-                  mp3_quality, player_client, js_runtimes
+        settings: dict with output_dir, yt_format, fmt_selector, format_sort,
+                  write_thumbnail, concurrent_fragments, retries,
+                  fragment_retries, socket_timeout, mp3_quality, player_client,
+                  js_runtimes
         Returns True/False. Logs its own errors (returncode != 0, missing output file).
         Thumbnail missing is logged as 'info' and does NOT fail the row.
         On failure (bad returncode or missing output file), cleans up any
@@ -3711,6 +3723,13 @@ class Api:
                 "--merge-output-format", "mp4",
                 "--remux-video", "mp4",
             ]
+            # Uu tien H.264 khi CUNG do phan giai. Xem ly do day du o
+            # _yt_build_format: chuoi -f chi loc, khong xep hang duoc.
+            # KHONG truyen cho MP3: cac truong res/fps/vcodec deu vo nghia
+            # voi luong chi co tieng.
+            fmt_sort = settings.get('format_sort')
+            if fmt_sort:
+                cmd += ["-S", fmt_sort]
         if player_client:
             cmd += ["--extractor-args", f"youtube:player_client={player_client}"]
         if js_runtimes:
@@ -4001,6 +4020,12 @@ class Api:
         # bin/qjs.exe di kem app (bin/ khong nam tren PATH nen chi truyen ten
         # thoi la khong du). De trong -> khong truyen co.
         js_runtimes = self._resolve_js_runtime(code.get('js_runtimes', ''))
+        # Thu tu xep hang format khi da loc xong bang -f. Mac dinh uu tien
+        # H.264 o CUNG do phan giai, vi Premiere/NLE cu khong doc duoc VP9
+        # nam trong vo MP4 (bao "loi dinh dang" du file mp4 hoan toan hop le).
+        # De trong -> khong truyen -S -> dong lenh giong het truoc khi co
+        # truong nay, nen khong the gay hoi quy.
+        format_sort = str(code.get('format_sort', 'res,fps,vcodec:h264') or '').strip()
         # ADR-013: PHA LAY TIEU DE dung client RIENG voi pha tai.
         # Hai client hong o hai cho khac nhau (do that 2026-08-18):
         #   android_vr    lay tieu de OK  | tai du lieu 403
@@ -4202,6 +4227,7 @@ class Api:
             'output_dir': output_dir,
             'yt_format': yt_format,
             'fmt_selector': self._yt_build_format(yt_quality, yt_format),
+            'format_sort': format_sort,
             'write_thumbnail': write_thumbnail,
             'concurrent_fragments': concurrent_fragments,
             'http_chunk_size': http_chunk_size,
