@@ -4001,6 +4001,26 @@ class Api:
                 if not os.path.exists(thumb_path):
                     self._log(f"[{idx + 1}] Khong co thumbnail .jpg: {title}", 'info')
 
+            # ADR-016 chi sua duoc khi Youtube CO san avc1 o dung do phan giai da
+            # chon (video 1080p tro xuong hau nhu luon co, nhung 1440p/2160p —
+            # va video HDR o do phan giai cao nhat — thi Youtube khong phuc vu
+            # H.264 nao ca, du chon quality gi). Nhung truong hop do van ra VP9
+            # trong vo .mp4 - dung duoi, sai ruot, Premiere/NLE cu bao loi dinh
+            # dang. Bao ngay o day thay vi de nguoi dung tu phat hien trong
+            # Premiere: khong re-encode o day (ADR-016 da do & bac bo huong nay -
+            # 9-18 phut + phinh 2.5-3.8 lan MOI FILE), chi tro toi loi ra da co
+            # san ("Convert video", dich MP4, skip_same_codec tranh ma hoa lai
+            # file da dung codec).
+            if yt_format in ('MP4', 'MP4_NOAUDIO'):
+                probed = self._probe_spec(out_path)
+                v_codec = (probed or {}).get('v_codec')
+                if v_codec and v_codec != 'h264':
+                    self._log(
+                        f"[{idx + 1}] Luu y: file la {v_codec} (khong phai H.264) du duoi"
+                        " la .mp4 - Premiere va mot so NLE cu se bao loi dinh dang."
+                        " Neu gap loi do, dung chuc nang 'Convert video' (chon dich MP4)"
+                        " tren thu muc Output de chuyen sang H.264.", 'info')
+
             return True
 
         return False
