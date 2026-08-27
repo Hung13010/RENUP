@@ -3647,15 +3647,25 @@ class Api:
             short = n_noi * need - sum(min(r, need) for r in remaining)
             per_new = min(n_parts, need)
             add = -(-short // per_new) if per_new > 0 else 0
-            self._log(
-                f"DUNG: nhac noi khong du cho ca me. Co {len(ready)} bai"
-                f" ({sum(remaining)} phan con lai) -> chi lam duoc {cap} video,"
-                f" trong khi Kho Nhac goc co {need} bai.", 'err')
-            self._log(
-                f"      Moi video can {n_noi} bai KHAC NHAU, nen mot bai du"
-                f" con nhieu phan cung chi gop 1 phan cho moi video.", 'info')
-            self._log(f"      Hay them it nhat {add} link nhac noi nua roi"
-                      f" chay lai.", 'err')
+            # Viet thanh tung dong ngan, moi dong mot y. Ban dau don het vao
+            # mot cau va nguoi dung doc thanh "1 bai noi can 5 bai goc".
+            self._log("DUNG: thieu nhac noi.", 'err')
+            self._log(f"      Kho Nhac goc co {need} bai -> se ra {need}"
+                      f" video (moi bai nhac goc = 1 video).", 'info')
+            self._log(f"      Moi video can {n_noi} bai noi KHAC NHAU"
+                      f" (moi bai gop 1 doan).", 'info')
+            self._log(f"      Ban co {len(ready)} bai noi, {sum(remaining)}"
+                      f" doan chua dung -> chi du cho {cap} video.", 'info')
+            self._log(f"      Cach 1: them it nhat {add} link nhac noi nua.",
+                      'err')
+            # Ha so bai/video cung la mot loi thoat, va nguoi dung thuong
+            # khong nghi ra - noi thang gia tri nao dung duoc.
+            fit = next((x for x in range(n_noi - 1, 0, -1)
+                        if self._jazz_capacity(remaining, x) >= need), 0)
+            if fit:
+                self._log(f"      Cach 2: ha 'So bai noi moi video' xuong"
+                          f" {fit} (voi so bai hien co thi du cho {need}"
+                          f" video).", 'err')
             self._js("uiApi.setStatus('Dung: thieu nhac noi.')")
             return
         self._log(f"Du cho {cap} video (Kho Nhac goc co {need} bai).", 'ok')
