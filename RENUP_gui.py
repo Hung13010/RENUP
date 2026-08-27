@@ -575,6 +575,9 @@ class Api:
         if result and len(result) > 0:
             self._js(f"uiApi.setJazzFolder('{js_key}', {json.dumps(result[0])})")
 
+    def browseJazzVideoFolder(self):
+        self._browse_into('video')
+
     def browseJazzGocFolder(self):
         self._browse_into('goc')
 
@@ -3506,8 +3509,10 @@ class Api:
         """Loop hinh cho du thoi luong nhac goc, thay the vai doan sau moc
         1h30 bang nhac noi tai tu Drive, roi gan nhac CID vao cuoi. ADR-019.
         """
-        video_dir = (params.get('inputDir') or '').strip()
         folders = params.get('folders') or {}
+        # Kho Video co O RIENG trong section, khong dung chung o Folder Input.
+        # O Folder Input bi an di cho chuc nang nay (NO_INPUT_DIR.claimjazz).
+        video_dir = (folders.get('jazzVideo') or '').strip()
         goc_dir = (folders.get('jazzGoc') or '').strip()
         cid_dir = (folders.get('jazzCid') or '').strip()
         noi_dir = (params.get('jazzNoiDir') or '').strip()

@@ -475,29 +475,33 @@ button[hidden] { display: none !important; }
       </div>
 
       <div id="claimJazzSection" style="display:none;">
-        <div class="field-label">🎬 Kho Video (dùng ô Folder Input bên dưới)</div>
-        <div class="field-label" style="margin-top:6px;">🎼 Kho Nhạc gốc</div>
+        <div class="field-label">🎬 Kho Video (hình, ~30 phút/file)</div>
         <div class="input-row">
-          <input type="text" id="jazzGocDir" placeholder="Thư mục chứa nhạc gốc (mỗi bài ~3 tiếng)...">
+          <input type="text" id="jazzVideoDir" placeholder="Thư mục chứa video hình...">
+          <button class="browse-btn" onclick="pyApi.browseJazzVideoFolder()">📂</button>
+        </div>
+        <div class="field-label" style="margin-top:6px;">🎼 Kho Nhạc gốc (~3 tiếng/bài)</div>
+        <div class="input-row">
+          <input type="text" id="jazzGocDir" placeholder="Mỗi bài ra 1 video...">
           <button class="browse-btn" onclick="pyApi.browseJazzGocFolder()">📂</button>
         </div>
-        <div class="field-label" style="margin-top:6px;">🔗 Bảng nhạc nối (mỗi dòng: Tên bài ⇥ Link Drive)</div>
-        <textarea id="jazzNoiTable" style="min-height:100px;"
-                  placeholder="Ten bai&#9;https://drive.google.com/file/d/.../view&#10;(hoac chi dan link, moi dong 1 link)" spellcheck="false"></textarea>
+        <div class="field-label" style="margin-top:6px;">🔗 Bảng nhạc nối (Tab: Tên bài | Link Drive)</div>
+        <textarea id="jazzNoiTable" style="min-height:80px;"
+                  placeholder="Ten bai&#9;https://drive.google.com/file/d/.../view" spellcheck="false"></textarea>
         <div class="field-label" style="margin-top:6px;">📁 Folder cache nhạc nối</div>
         <div class="input-row">
-          <input type="text" id="jazzNoiDir" placeholder="Thư mục lưu nhạc nối tải về...">
+          <input type="text" id="jazzNoiDir" placeholder="Nơi lưu nhạc nối tải về...">
           <button class="browse-btn" onclick="pyApi.browseJazzNoiFolder()">📂</button>
         </div>
         <div class="field-label" style="margin-top:6px;">🎧 Kho Nhạc CID lớn</div>
         <div class="input-row">
-          <input type="text" id="jazzCidDir" placeholder="Thư mục chứa nhạc CID...">
+          <input type="text" id="jazzCidDir" placeholder="Mỗi video lấy ngẫu nhiên 1 bài...">
           <button class="browse-btn" onclick="pyApi.browseJazzCidFolder()">📂</button>
         </div>
-        <div class="field-label" style="margin-top:6px;">🔢 Số bài nối ghép vào mỗi video</div>
+        <div class="field-label" style="margin-top:6px;">🔢 Số bài nối mỗi video</div>
         <div class="settings-row">
-          <input type="number" id="jazzNoiCount" value="4" min="1" max="50" style="width:90px;">
-          <span class="hint">mỗi bài góp 1 đoạn, đặt ngẫu nhiên sau mốc 1h30</span>
+          <input type="text" id="jazzNoiCount" value="4" style="width:80px;">
+          <span style="font-size:11px; color:var(--text-muted);">bài · mỗi bài 1 đoạn</span>
         </div>
       </div>
 
@@ -782,9 +786,10 @@ let ytThumbSelectedIds = new Set();   // tap chon thumbnail (JS la chu, xem F2/I
 
 // Cac function khong co Folder Input. Moi show*Section chi set co cua rieng no
 // roi goi _syncInputDirRow(); khong callback nao duoc ghi thang vao #inputDirRow.
-const NO_INPUT_DIR = { claim: false, youtube: false, ytthumb: false };
+const NO_INPUT_DIR = { claim: false, youtube: false, ytthumb: false, claimjazz: false };
 function _syncInputDirRow() {
-  const hide = NO_INPUT_DIR.claim || NO_INPUT_DIR.youtube || NO_INPUT_DIR.ytthumb;
+  const hide = NO_INPUT_DIR.claim || NO_INPUT_DIR.youtube || NO_INPUT_DIR.ytthumb
+            || NO_INPUT_DIR.claimjazz;
   document.getElementById('inputDirRow').style.display = hide ? 'none' : '';
 }
 
@@ -930,14 +935,17 @@ window.uiApi = {
     if (show) { onYtFormatChanged(); onYtSectionToggled(); }
   },
 
-  // Claim Jazz KHONG dat NO_INPUT_DIR: no CO dung o Folder Input lam Kho Video.
   showClaimJazzSection(show) {
     document.getElementById('claimJazzSection').style.display = show ? 'block' : 'none';
+    NO_INPUT_DIR.claimjazz = show;
+    _syncInputDirRow();
   },
 
   setJazzFolder(key, path) {
-    const el = document.getElementById(
-      { goc: 'jazzGocDir', noi: 'jazzNoiDir', cid: 'jazzCidDir' }[key]);
+    const el = document.getElementById({
+      video: 'jazzVideoDir', goc: 'jazzGocDir',
+      noi: 'jazzNoiDir', cid: 'jazzCidDir',
+    }[key]);
     if (el) el.value = path;
   },
 
@@ -1321,6 +1329,7 @@ const pyApi = new Proxy({}, {
             kichban: getFieldValue('kichBanDir'),
             art: getFieldValue('artDir'),
             edit: getFieldValue('editDir'),
+            jazzVideo: getFieldValue('jazzVideoDir'),
             jazzGoc: getFieldValue('jazzGocDir'),
             jazzCid: getFieldValue('jazzCidDir'),
           },
