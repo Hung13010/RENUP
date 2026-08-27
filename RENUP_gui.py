@@ -534,6 +534,7 @@ class Api:
         self._js(f"uiApi.showResizeSection({str(code_type == 'resize_image').lower()})")
         self._js(f"uiApi.showYoutubeSection({str(code_type == 'youtube_download').lower()})")
         self._js(f"uiApi.showYtThumbSection({str(code_type == 'youtube_thumbnail').lower()})")
+        self._js(f"uiApi.showClaimJazzSection({str(code_type == 'claim_jazz').lower()})")
 
     def addSeparator(self):
         self._js("document.getElementById('editor').value += '#\\n'; updateLineCount();")
@@ -567,6 +568,21 @@ class Api:
         if result and len(result) > 0:
             path = result[0]
             self._js(f"uiApi.setOverlayPath({json.dumps(path)})")
+
+    def _browse_into(self, js_key):
+        """Mo hop chon thu muc roi do duong dan vao mot o cua Claim Jazz."""
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            self._js(f"uiApi.setJazzFolder('{js_key}', {json.dumps(result[0])})")
+
+    def browseJazzGocFolder(self):
+        self._browse_into('goc')
+
+    def browseJazzNoiFolder(self):
+        self._browse_into('noi')
+
+    def browseJazzCidFolder(self):
+        self._browse_into('cid')
 
     def browseKichBanFolder(self):
         result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
@@ -840,6 +856,8 @@ class Api:
                     self._run_concat_multi_folder(params, code)
                 elif code_type == 'claim_tiktok':
                     self._run_claim_tiktok(params, code)
+                elif code_type == 'claim_jazz':
+                    self._run_claim_jazz(params, code)
                 elif code_type == 'resize_image':
                     self._run_resize_image(params, code)
                 elif code_type == 'youtube_download':
@@ -3372,6 +3390,392 @@ class Api:
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} dong ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} dong.')")
+
+    # ── Claim Jazz Youtube (ADR-019) ──
+
+    @staticmethod
+    def _jazz_parse_noi_table(text):
+        """Doc bang nhac noi. Moi dong: 'Ten bai <TAB> link Drive', hoac chi link.
+
+        Tra ve [{'name', 'url', 'file_id'}, ...], da bo dong trung file_id.
+        Ten bai chi de doc log va lam ten file cache; DANH TINH dung cho quota
+        la file_id cua Drive - doi ten bai khong lam mat lich su da dung.
+        """
+        out, seen = [], set()
+        for raw in (text or '').splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split('\t')]
+            if len(parts) >= 2 and parts[1]:
+                name, url = parts[0], parts[1]
+            else:
+                name, url = '', parts[0]
+            fid = Api._extract_drive_file_id(url)
+            if not fid:
+                continue
+            if fid in seen:
+                continue
+            seen.add(fid)
+            out.append({'name': name or fid, 'url': url, 'file_id': fid})
+        return out
+
+    @staticmethod
+    def _jazz_pick_slots(region_start, region_end, lengths, rng):
+        """Chon vi tri dat cac doan noi, ngau nhien nhung KHONG chong lan.
+
+        Chia [region_start, region_end] thanh len(lengths) o bang nhau roi boc
+        ngau nhien trong tung o. Chia o truoc khi boc la cach re nhat de bao
+        dam khong chong lan ma van ngau nhien - boc tu do roi kiem tra va boc
+        lai co the lap vo han khi vung qua chat.
+
+        Tra ve list moc bat dau, tang dan. None neu khong du cho.
+        """
+        n = len(lengths)
+        if n == 0:
+            return []
+        span = region_end - region_start
+        if span <= 0:
+            return None
+        slot = span / n
+        if slot < max(lengths):
+            return None            # o hep hon doan can dat -> khong du cho
+        starts = []
+        for i, L in enumerate(lengths):
+            lo = region_start + i * slot
+            hi = lo + slot - L
+            starts.append(round(rng.uniform(lo, max(lo, hi)), 3))
+        return starts
+
+    def _jazz_load_state(self, path):
+        """Doc so dung nhac noi. Cau truc: {'used': {file_id: [chi so phan]}}."""
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            used = data.get('used', {})
+            return {k: sorted(set(int(i) for i in v))
+                    for k, v in used.items() if isinstance(v, list)}
+        except Exception:
+            return {}
+
+    def _jazz_save_state(self, path, used):
+        """Ghi so dung. Ghi ra .part roi os.replace de khong bao gio de lai
+        file do dang neu app bi tat giua chung (cung cach _download_music_drive
+        dang lam)."""
+        tmp = path + '.part'
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump({'used': {k: sorted(v) for k, v in used.items()}},
+                          fh, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception as e:
+            self._log(f"Khong ghi duoc so dung nhac noi: {e}", 'err')
+
+    def _jazz_build_filter(self, dur_goc, slots, seg_specs, has_cid):
+        """Dung chuoi filter_complex thay the cac doan trong nhac goc.
+
+        Quy uoc input: 0 = danh sach video (concat demuxer), 1 = nhac goc,
+        2..n = cac file nhac noi theo dung thu tu seg_specs, cuoi cung = CID.
+
+        seg_specs: [(input_index, start_trong_bai_noi, do_dai), ...] doi ung
+        1-1 voi slots (da sap tang dan).
+        """
+        parts, labels, cur = [], [], 0.0
+        for i, (start, (inp, s_off, L)) in enumerate(zip(slots, seg_specs)):
+            if start > cur + 0.001:
+                parts.append(f"[1:a]atrim={cur:.3f}:{start:.3f},"
+                             f"asetpts=PTS-STARTPTS[g{i}]")
+                labels.append(f"[g{i}]")
+            parts.append(f"[{inp}:a]atrim={s_off:.3f}:{s_off + L:.3f},"
+                         f"asetpts=PTS-STARTPTS[n{i}]")
+            labels.append(f"[n{i}]")
+            cur = start + L          # THAY THE: bo doan goc dai bang doan noi
+        if dur_goc > cur + 0.001:
+            parts.append(f"[1:a]atrim={cur:.3f}:{dur_goc:.3f},"
+                         f"asetpts=PTS-STARTPTS[gz]")
+            labels.append("[gz]")
+        if has_cid:
+            cid_idx = 2 + len(seg_specs)
+            parts.append(f"[{cid_idx}:a]asetpts=PTS-STARTPTS[cid]")
+            labels.append("[cid]")
+        parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[aout]")
+        return ';'.join(parts)
+
+    def _run_claim_jazz(self, params, code):
+        """Loop hinh cho du thoi luong nhac goc, thay the vai doan sau moc
+        1h30 bang nhac noi tai tu Drive, roi gan nhac CID vao cuoi. ADR-019.
+        """
+        video_dir = (params.get('inputDir') or '').strip()
+        folders = params.get('folders') or {}
+        goc_dir = (folders.get('jazzGoc') or '').strip()
+        cid_dir = (folders.get('jazzCid') or '').strip()
+        noi_dir = (params.get('jazzNoiDir') or '').strip()
+        noi_table = params.get('jazzNoiTable') or ''
+        output_dir = (params.get('outputDir') or '').strip()
+        workers = max(1, int(params.get('workers') or 1))
+
+        vid_ext = [e.lower() for e in code.get(
+            'video_ext', ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v'])]
+        aud_ext = [e.lower() for e in code.get(
+            'audio_ext', ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'])]
+        n_parts = max(1, int(code.get('noi_parts', 5)))
+        insert_after = float(code.get('insert_after_seconds', 5400))
+        sr = int(code.get('sample_rate', 44100))
+        ch = int(code.get('channels', 2))
+        abr = str(code.get('audio_bitrate', '192k'))
+        state_name = str(code.get('state_file', 'claim_jazz_state.json'))
+
+        try:
+            n_noi = int(str(params.get('jazzNoiCount') or '').strip()
+                        or code.get('default_noi_count', 4))
+        except ValueError:
+            n_noi = int(code.get('default_noi_count', 4))
+
+        self._js("uiApi.setStatus('Dang chuan bi Claim Jazz...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau Claim Jazz Youtube ===", 'info')
+
+        for label, path in (("Kho Video", video_dir), ("Kho Nhac goc", goc_dir),
+                            ("Kho CID", cid_dir),
+                            ("Folder cache nhac noi", noi_dir),
+                            ("Output", output_dir)):
+            if not path:
+                self._log(f"Chua chon {label}.", 'err')
+                return
+        for label, path in (("Kho Video", video_dir), ("Kho Nhac goc", goc_dir),
+                            ("Kho CID", cid_dir)):
+            if not os.path.isdir(path):
+                self._log(f"Khong thay {label}: {path}", 'err')
+                return
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+        if n_noi < 1:
+            self._log("So bai nhac noi phai tu 1 tro len.", 'err')
+            return
+
+        videos = sorted(f for f in os.listdir(video_dir)
+                        if os.path.splitext(f)[1].lower() in vid_ext)
+        gocs = sorted(f for f in os.listdir(goc_dir)
+                      if os.path.splitext(f)[1].lower() in aud_ext)
+        cids = sorted(f for f in os.listdir(cid_dir)
+                      if os.path.splitext(f)[1].lower() in aud_ext)
+        for label, lst in (("Kho Video", videos), ("Kho Nhac goc", gocs),
+                           ("Kho CID", cids)):
+            if not lst:
+                self._log(f"{label} rong.", 'err')
+                return
+
+        noi_rows = self._jazz_parse_noi_table(noi_table)
+        if not noi_rows:
+            self._log("Bang nhac noi rong hoac khong co link Drive hop le.",
+                      'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(noi_dir, exist_ok=True)
+
+        # --- Tai truoc toan bo nhac noi (cache theo file_id) ---
+        self._js("uiApi.setStatus('Dang tai nhac noi tu Drive...')")
+        ready = []
+        for i, row in enumerate(noi_rows):
+            if self._stopped:
+                return
+            dest = os.path.join(noi_dir, f"{row['file_id']}.mp3")
+            if not os.path.exists(dest):
+                self._log(f"Tai nhac noi {i + 1}/{len(noi_rows)}:"
+                          f" {row['name']}", 'info')
+                if not self._download_music_drive(row['url'], dest):
+                    self._log(f"  Tai fail, bo qua bai: {row['name']}", 'err')
+                    continue
+            d = self._get_duration(dest)
+            if d <= 0:
+                self._log(f"  Khong doc duoc thoi luong, bo qua:"
+                          f" {row['name']}", 'err')
+                continue
+            row['path'], row['dur'] = dest, d
+            ready.append(row)
+        if not ready:
+            self._log("Khong co bai nhac noi nao dung duoc.", 'err')
+            return
+        self._log(f"Nhac noi san sang: {len(ready)} bai"
+                  f" (moi bai cat {n_parts} phan).", 'ok')
+
+        state_path = os.path.join(os.path.dirname(self.ffmpeg_path), state_name)
+        used = self._jazz_load_state(state_path)
+
+        run_items = self._begin_batch(gocs)
+        total = len(run_items)
+        self._log(f"Tim thay {len(gocs)} bai nhac goc | {len(videos)} video"
+                  f" | {workers} luong | ghep {n_noi} bai noi.", 'info')
+
+        ok_count, done_count = [0], [0]
+        rng = random.Random()
+
+        def reserve(k):
+            """Giu cho k bai noi con phan chua dung. Tra ve
+            [(row, chi_so_phan), ...] hoac None. Phai goi trong khoa: hai dong
+            chay song song ma cung boc mot phan thi quota sai va hai video
+            chua cung mot doan nhac."""
+            with self._lock:
+                avail = [r for r in ready
+                         if len(used.get(r['file_id'], [])) < n_parts]
+                if len(avail) < k:
+                    return None
+                picked = rng.sample(avail, k)
+                out = []
+                for r in picked:
+                    done = set(used.get(r['file_id'], []))
+                    free = [i for i in range(n_parts) if i not in done]
+                    idx_part = rng.choice(free)
+                    used.setdefault(r['file_id'], []).append(idx_part)
+                    out.append((r, idx_part))
+                self._jazz_save_state(state_path, used)
+                return out
+
+        def release(picked):
+            with self._lock:
+                for r, idx_part in picked:
+                    lst = used.get(r['file_id'], [])
+                    if idx_part in lst:
+                        lst.remove(idx_part)
+                self._jazz_save_state(state_path, used)
+
+        def update(idx, success):
+            with self._lock:
+                if success:
+                    ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            self._mark_row(idx, success)
+            self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang xu ly... {d}/{total} video')")
+
+        def make_one(idx, goc_name):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            goc_path = os.path.join(goc_dir, goc_name)
+            dur_goc = self._get_duration(goc_path)
+            if dur_goc <= 0:
+                self._log(f"[{idx + 1}] Khong doc duoc thoi luong nhac goc:"
+                          f" {goc_name}", 'err')
+                return False
+            if dur_goc <= insert_after:
+                self._log(f"[{idx + 1}] Nhac goc chi dai {dur_goc / 60:.1f}"
+                          f" phut, ngan hon moc {insert_after / 60:.0f} phut"
+                          f" nen khong co cho ghep: {goc_name}", 'err')
+                return False
+
+            picked = reserve(n_noi)
+            if picked is None:
+                left = sum(max(0, n_parts - len(used.get(r['file_id'], [])))
+                           for r in ready)
+                self._log(f"[{idx + 1}] Khong du bai nhac noi con luot dung"
+                          f" (can {n_noi} bai, con {left} phan tren"
+                          f" {len(ready)} bai): {goc_name}", 'err')
+                return False
+
+            tmp_list = None
+            try:
+                lengths = [r['dur'] / n_parts for r, _ in picked]
+                slots = self._jazz_pick_slots(insert_after, dur_goc, lengths,
+                                              rng)
+                if slots is None:
+                    self._log(f"[{idx + 1}] Khong du cho de dat {n_noi} doan"
+                              f" sau moc {insert_after / 60:.0f} phut:"
+                              f" {goc_name}", 'err')
+                    release(picked)
+                    return False
+
+                cid_name = rng.choice(cids)
+                cid_path = os.path.join(cid_dir, cid_name)
+                dur_cid = max(0.0, self._get_duration(cid_path))
+                vid_name = rng.choice(videos)
+                vid_path = os.path.join(video_dir, vid_name)
+                dur_vid = self._get_duration(vid_path)
+                if dur_vid <= 0:
+                    self._log(f"[{idx + 1}] Khong doc duoc thoi luong video:"
+                              f" {vid_name}", 'err')
+                    release(picked)
+                    return False
+
+                total_dur = dur_goc + dur_cid
+                n_rep = int(total_dur // dur_vid) + 1
+
+                self._log(f"[{idx + 1}/{total}] {goc_name}"
+                          f" | hinh: {vid_name} x{n_rep}"
+                          f" | CID: {cid_name}", 'info')
+                for (r, ip), st in zip(picked, slots):
+                    self._log(f"      noi: {r['name']} phan {ip + 1}/{n_parts}"
+                              f" -> dat o {self._fmt_seconds(int(st))}", 'info')
+
+                tmp_list = os.path.join(
+                    output_dir, f"_jazz_{uuid.uuid4().hex}.txt")
+                with open(tmp_list, 'w', encoding='utf-8') as fh:
+                    for _ in range(n_rep):
+                        fh.write("file '" + vid_path.replace('\\', '/')
+                                 + "'\n")
+
+                seg_specs = [(2 + i, ip * (r['dur'] / n_parts),
+                              r['dur'] / n_parts)
+                             for i, (r, ip) in enumerate(picked)]
+                fc = self._jazz_build_filter(dur_goc, slots, seg_specs,
+                                             dur_cid > 0)
+
+                cmd = [self.ffmpeg_path,
+                       '-f', 'concat', '-safe', '0', '-i', tmp_list,
+                       '-i', goc_path]
+                for r, _ip in picked:
+                    cmd += ['-i', r['path']]
+                if dur_cid > 0:
+                    cmd += ['-i', cid_path]
+                cmd += ['-filter_complex', fc,
+                        '-map', '0:v:0', '-map', '[aout]',
+                        '-c:v', 'copy', '-c:a', 'aac', '-b:a', abr,
+                        '-ar', str(sr), '-ac', str(ch),
+                        '-t', f'{total_dur:.3f}',
+                        '-movflags', '+faststart',
+                        os.path.join(output_dir,
+                                     self._safe_filename(
+                                         os.path.splitext(goc_name)[0])
+                                     + '.mp4'),
+                        '-progress', 'pipe:1', '-nostats', '-y']
+                success, _ = self._run_ffmpeg_with_table(
+                    cmd, idx, total_dur, goc_name)
+                if not success:
+                    release(picked)
+                return success
+            except Exception as e:
+                self._log(f"[{idx + 1}] LOI: {e}", 'err')
+                release(picked)
+                return False
+            finally:
+                if tmp_list and os.path.exists(tmp_list):
+                    try:
+                        os.remove(tmp_list)
+                    except OSError:
+                        pass
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, name in run_items:
+                if self._stopped:
+                    break
+                futures[ex.submit(make_one, i, name)] = i
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception as e:
+                    self._log(f"[{i + 1}] LOI: {e}", 'err')
+                    success = False
+                update(i, success)
+
+        left = sum(max(0, n_parts - len(used.get(r['file_id'], [])))
+                   for r in ready)
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video"
+                  f" | nhac noi con {left} phan chua dung ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
 
     # ── Youtube Download ──
 

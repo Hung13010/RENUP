@@ -1,0 +1,28 @@
+{
+  "name": "Claim Jazz Youtube (loop hình + nhạc gốc + nhạc nối + CID)",
+  "type": "claim_jazz",
+  "description": "Với mỗi bài trong Kho Nhạc gốc: loop một video ngẫu nhiên từ Kho Video cho đủ thời lượng, thay thế vài đoạn nhạc gốc sau mốc 1h30 bằng các đoạn nhạc nối tải từ Google Drive, rồi gắn một file CID ngẫu nhiên vào cuối. Hình KHÔNG bị mã hoá lại (chỉ nối lại bằng concat demuxer) nên nhanh; chi phí nằm ở mã hoá lại phần tiếng. Mỗi bài nhạc nối được cắt thành 5 phần và mỗi phần chỉ dùng ĐÚNG MỘT LẦN — số lượt đã dùng được ghi ra file và nhớ qua các lần chạy.",
+
+  "_comment_video_ext": "Đuôi file được coi là video khi quét Kho Video.",
+  "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v"],
+
+  "_comment_audio_ext": "Đuôi file được coi là nhạc khi quét Kho Nhạc gốc và Kho CID.",
+  "audio_ext": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"],
+
+  "_comment_noi_parts": "Mỗi bài nhạc nối được cắt thành bao nhiêu phần bằng nhau. Đây CŨNG là số lần tối đa một bài được dùng, vì mỗi phần chỉ dùng đúng một lần. Đổi số này sau khi đã chạy vài mẻ sẽ làm lệch ý nghĩa các chỉ số phần đã ghi trong state_file — nếu đổi thì nên xoá luôn file đó.",
+  "noi_parts": 5,
+
+  "_comment_default_noi_count": "Số bài nối ghép vào MỖI video, dùng khi ô trên giao diện để trống. Mỗi bài góp đúng một phần, nên số này cũng là số đoạn được thay thế.",
+  "default_noi_count": 4,
+
+  "_comment_insert_after_seconds": "Chỉ thay thế từ mốc này trở đi (5400 = 1 tiếng 30 phút). Bài nhạc gốc ngắn hơn mốc này sẽ báo lỗi dòng đó chứ không ghép bừa vào đầu bài.",
+  "insert_after_seconds": 5400,
+
+  "_comment_state_file": "Sổ ghi phần nào của bài nào đã dùng, đặt cạnh ffmpeg.exe trong bin/. Danh tính một bài là FILE ID của Google Drive chứ không phải tên bài — đổi tên bài trong bảng không làm mất lịch sử đã dùng. Xoá file này = cho phép dùng lại tất cả từ đầu.",
+  "state_file": "claim_jazz_state.json",
+
+  "_comment_audio": "Phần tiếng luôn được mã hoá lại (bắt buộc, vì phải cắt ghép nhiều nguồn). Hình thì không.",
+  "audio_bitrate": "192k",
+  "sample_rate": 44100,
+  "channels": 2
+}
