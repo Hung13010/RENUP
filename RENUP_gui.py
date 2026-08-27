@@ -1070,7 +1070,7 @@ class Api:
             cmd = [self.ffmpeg_path, '-i', inp, '-c', 'copy', '-f', 'segment',
                    '-segment_time', str(seg), '-reset_timestamps', '1', pattern, '-y']
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+                                     text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
             proc.communicate()
             ok = proc.returncode == 0
             if ok:
@@ -1119,7 +1119,7 @@ class Api:
 
         proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+            text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
         )
         self._current_procs.append(proc)
 
@@ -1332,7 +1332,7 @@ class Api:
                 r = subprocess.run(
                     [self.ffprobe_path, '-v', 'quiet', '-print_format', 'json',
                      '-show_streams', '-show_format', fp],
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, encoding='utf-8', errors='replace',
                     creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
                 )
                 data = json.loads(r.stdout)
@@ -2352,7 +2352,7 @@ class Api:
             r = subprocess.run(
                 [self.ffprobe_path, '-v', 'error', '-select_streams', 'a',
                  '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', path],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
             )
             return 'audio' in (r.stdout or '')
@@ -2365,7 +2365,7 @@ class Api:
                 [self.ffprobe_path, '-v', 'error', '-select_streams', 'v:0',
                  '-show_entries', 'stream=width,height,r_frame_rate',
                  '-of', 'default=noprint_wrappers=1:nokey=1', path],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
             )
             lines = [l.strip() for l in (r.stdout or '').strip().split('\n') if l.strip()]
@@ -2497,7 +2497,7 @@ class Api:
         try:
             r = subprocess.run(
                 [self.ffmpeg_path, '-hide_banner', '-encoders'],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
             )
             output = r.stdout
@@ -2536,7 +2536,7 @@ class Api:
         try:
             r = subprocess.run(
                 [self.ffmpeg_path, '-filters'],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
             )
             return 'scale_cuda' in r.stdout
@@ -2549,7 +2549,7 @@ class Api:
             r = subprocess.run(
                 [self.ffmpeg_path, '-f', 'lavfi', '-i', 'color=c=black:s=256x256:d=0.1',
                  '-c:v', encoder, '-f', 'null', '-', '-y'],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
             )
             return r.returncode == 0
@@ -2636,7 +2636,7 @@ class Api:
         cmd = [cmd[0], '-threads', str(threads)] + cmd[1:]
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+                                 text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
 
         # Track process for pause/stop
         self._current_procs.append(proc)
@@ -2694,7 +2694,7 @@ class Api:
         cmd = [cmd[0], '-threads', str(threads)] + cmd[1:]
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+                                 text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
         self._current_procs.append(proc)
 
         stderr_lines = []
@@ -2786,7 +2786,7 @@ class Api:
                     file_path,
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 timeout=10,
             )
@@ -2817,7 +2817,7 @@ class Api:
         try:
             r = subprocess.run(
                 [self.ffprobe_path, '-v', 'quiet', '-print_format', 'json', '-show_format', filepath],
-                capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+                capture_output=True, text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
             return float(json.loads(r.stdout)['format']['duration'])
         except Exception:
             return 0.0
@@ -3450,6 +3450,28 @@ class Api:
             starts.append(round(rng.uniform(lo, max(lo, hi)), 3))
         return starts
 
+    @staticmethod
+    def _jazz_capacity(remaining, per_video):
+        """Voi so luot con lai cua tung bai, lam duoc TOI DA bao nhieu video?
+
+        KHONG phai tong luot chia cho per_video. Moi video can per_video bai
+        KHAC NHAU, nen mot bai con 100 luot cung chi gop duoc 1 luot cho moi
+        video. Vi du: 3 bai con [10, 1, 1], moi video can 3 bai -> tong 12
+        luot nhung chi lam duoc 1 video.
+
+        Dung dieu kien chuan: lam duoc K video <=> sum(min(r_i, K)) >= K*n.
+        Ve trai giam dan tuong doi so voi ve phai khi K tang, nen do dan len
+        tu 0 la du va khong can tim kiem nhi phan.
+        """
+        if per_video <= 0:
+            return 0
+        k = 0
+        while sum(min(r, k + 1) for r in remaining) >= (k + 1) * per_video:
+            k += 1
+            if k > 100000:              # chan tren, khong bao gio cham toi
+                break
+        return k
+
     def _jazz_load_state(self, path):
         """Doc so dung nhac noi. Cau truc: {'used': {file_id: [chi so phan]}}."""
         try:
@@ -3530,6 +3552,11 @@ class Api:
         ch = int(code.get('channels', 2))
         abr = str(code.get('audio_bitrate', '192k'))
         state_name = str(code.get('state_file', 'claim_jazz_state.json'))
+        loop_goc = bool(params.get('jazzLoopGoc'))
+        loop_min = float(code.get('loop_target_min_seconds', 10800))
+        loop_max = float(code.get('loop_target_max_seconds', 11700))
+        if loop_max < loop_min:
+            loop_max = loop_min
 
         try:
             n_noi = int(str(params.get('jazzNoiCount') or '').strip()
@@ -3610,6 +3637,29 @@ class Api:
         state_path = os.path.join(os.path.dirname(self.ffmpeg_path), state_name)
         used = self._jazz_load_state(state_path)
 
+        # Kiem DU CHO CA ME truoc khi chay dong nao. Neu thieu thi dung han
+        # va bao them link, thay vi chay duoc mot nua roi bao loi tung dong -
+        # nua chung se de lai mot dong video do dang va da dot mat quota.
+        remaining = [n_parts - len(used.get(r['file_id'], [])) for r in ready]
+        cap = self._jazz_capacity(remaining, n_noi)
+        need = len(gocs)
+        if cap < need:
+            short = n_noi * need - sum(min(r, need) for r in remaining)
+            per_new = min(n_parts, need)
+            add = -(-short // per_new) if per_new > 0 else 0
+            self._log(
+                f"DUNG: nhac noi khong du cho ca me. Co {len(ready)} bai"
+                f" ({sum(remaining)} phan con lai) -> chi lam duoc {cap} video,"
+                f" trong khi Kho Nhac goc co {need} bai.", 'err')
+            self._log(
+                f"      Moi video can {n_noi} bai KHAC NHAU, nen mot bai du"
+                f" con nhieu phan cung chi gop 1 phan cho moi video.", 'info')
+            self._log(f"      Hay them it nhat {add} link nhac noi nua roi"
+                      f" chay lai.", 'err')
+            self._js("uiApi.setStatus('Dung: thieu nhac noi.')")
+            return
+        self._log(f"Du cho {cap} video (Kho Nhac goc co {need} bai).", 'ok')
+
         run_items = self._begin_batch(gocs)
         total = len(run_items)
         self._log(f"Tim thay {len(gocs)} bai nhac goc | {len(videos)} video"
@@ -3665,10 +3715,22 @@ class Api:
                 self._log(f"[{idx + 1}] Khong doc duoc thoi luong nhac goc:"
                           f" {goc_name}", 'err')
                 return False
-            if dur_goc <= insert_after:
-                self._log(f"[{idx + 1}] Nhac goc chi dai {dur_goc / 60:.1f}"
+
+            # Bai ngan hon nguong thi lap lai chinh no cho du mot do dai boc
+            # ngau nhien trong [loop_min, loop_max]. Boc ngau nhien chu khong
+            # lay tron 3 tieng: nhieu video ra cung dung mot do dai la dau
+            # hieu de nhan.
+            eff_goc, goc_rep = dur_goc, 1
+            if loop_goc and dur_goc < loop_min:
+                eff_goc = rng.uniform(loop_min, loop_max)
+                goc_rep = int(eff_goc // dur_goc) + 1
+
+            if eff_goc <= insert_after:
+                extra = ("" if loop_goc else
+                         " (tick 'Loop nhac goc' de tu keo dai)")
+                self._log(f"[{idx + 1}] Nhac goc chi dai {eff_goc / 60:.1f}"
                           f" phut, ngan hon moc {insert_after / 60:.0f} phut"
-                          f" nen khong co cho ghep: {goc_name}", 'err')
+                          f" nen khong co cho ghep{extra}: {goc_name}", 'err')
                 return False
 
             picked = reserve(n_noi)
@@ -3680,10 +3742,10 @@ class Api:
                           f" {len(ready)} bai): {goc_name}", 'err')
                 return False
 
-            tmp_list = None
+            tmp_files = []
             try:
                 lengths = [r['dur'] / n_parts for r, _ in picked]
-                slots = self._jazz_pick_slots(insert_after, dur_goc, lengths,
+                slots = self._jazz_pick_slots(insert_after, eff_goc, lengths,
                                               rng)
                 if slots is None:
                     self._log(f"[{idx + 1}] Khong du cho de dat {n_noi} doan"
@@ -3704,32 +3766,47 @@ class Api:
                     release(picked)
                     return False
 
-                total_dur = dur_goc + dur_cid
+                total_dur = eff_goc + dur_cid
                 n_rep = int(total_dur // dur_vid) + 1
 
+                loop_note = ("" if goc_rep == 1 else
+                             f" | loop nhac goc x{goc_rep}"
+                             f" -> {self._fmt_seconds(int(eff_goc))}")
                 self._log(f"[{idx + 1}/{total}] {goc_name}"
                           f" | hinh: {vid_name} x{n_rep}"
-                          f" | CID: {cid_name}", 'info')
+                          f" | CID: {cid_name}{loop_note}", 'info')
                 for (r, ip), st in zip(picked, slots):
                     self._log(f"      noi: {r['name']} phan {ip + 1}/{n_parts}"
                               f" -> dat o {self._fmt_seconds(int(st))}", 'info')
 
-                tmp_list = os.path.join(
-                    output_dir, f"_jazz_{uuid.uuid4().hex}.txt")
-                with open(tmp_list, 'w', encoding='utf-8') as fh:
-                    for _ in range(n_rep):
-                        fh.write("file '" + vid_path.replace('\\', '/')
-                                 + "'\n")
+                def _mklist(path_in, times):
+                    """File danh sach cho concat demuxer. Dung CACH NAY de lap
+                    lai, KHONG dung -stream_loop: co do thoi lap ngay khi lenh
+                    co input thu hai (ADR-019)."""
+                    p = os.path.join(output_dir,
+                                     f"_jazz_{uuid.uuid4().hex}.txt")
+                    with open(p, 'w', encoding='utf-8') as fh:
+                        for _ in range(times):
+                            fh.write("file '" + path_in.replace('\\', '/')
+                                     + "'\n")
+                    tmp_files.append(p)
+                    return p
+
+                vid_list = _mklist(vid_path, n_rep)
 
                 seg_specs = [(2 + i, ip * (r['dur'] / n_parts),
                               r['dur'] / n_parts)
                              for i, (r, ip) in enumerate(picked)]
-                fc = self._jazz_build_filter(dur_goc, slots, seg_specs,
+                fc = self._jazz_build_filter(eff_goc, slots, seg_specs,
                                              dur_cid > 0)
 
                 cmd = [self.ffmpeg_path,
-                       '-f', 'concat', '-safe', '0', '-i', tmp_list,
-                       '-i', goc_path]
+                       '-f', 'concat', '-safe', '0', '-i', vid_list]
+                if goc_rep > 1:
+                    cmd += ['-f', 'concat', '-safe', '0', '-i',
+                            _mklist(goc_path, goc_rep)]
+                else:
+                    cmd += ['-i', goc_path]
                 for r, _ip in picked:
                     cmd += ['-i', r['path']]
                 if dur_cid > 0:
@@ -3755,11 +3832,12 @@ class Api:
                 release(picked)
                 return False
             finally:
-                if tmp_list and os.path.exists(tmp_list):
-                    try:
-                        os.remove(tmp_list)
-                    except OSError:
-                        pass
+                for p in tmp_files:
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
 
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as ex:

@@ -503,6 +503,15 @@ button[hidden] { display: none !important; }
           <input type="text" id="jazzNoiCount" value="4" style="width:80px;">
           <span style="font-size:11px; color:var(--text-muted);">bài · mỗi bài 1 đoạn</span>
         </div>
+        <div class="settings-row" style="margin-top:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="jazzLoopGoc">
+            <span>🔁 Loop nhạc gốc nếu dưới 3 tiếng</span>
+          </label>
+        </div>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+          lặp tới độ dài ngẫu nhiên 3:00–3:15
+        </div>
       </div>
 
       <div id="youtubeSection" style="display:none;">
@@ -1336,6 +1345,7 @@ const pyApi = new Proxy({}, {
           jazzNoiDir: getFieldValue('jazzNoiDir'),
           jazzNoiTable: getFieldValue('jazzNoiTable'),
           jazzNoiCount: getFieldValue('jazzNoiCount'),
+          jazzLoopGoc: getFieldChecked('jazzLoopGoc'),
           claimTable: getFieldValue('claimTable'),
           voiceDir: getFieldValue('voiceDir'),
           musicDir: getFieldValue('musicDir'),

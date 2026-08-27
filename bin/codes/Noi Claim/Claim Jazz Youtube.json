@@ -18,6 +18,10 @@
   "_comment_insert_after_seconds": "Chỉ thay thế từ mốc này trở đi (5400 = 1 tiếng 30 phút). Bài nhạc gốc ngắn hơn mốc này sẽ báo lỗi dòng đó chứ không ghép bừa vào đầu bài.",
   "insert_after_seconds": 5400,
 
+  "_comment_loop_target": "Chỉ dùng khi tick '🔁 Loop nhạc gốc nếu dưới 3 tiếng'. Bài ngắn hơn loop_target_min_seconds sẽ được lặp lại chính nó cho tới một độ dài BỐC NGẪU NHIÊN trong khoảng [min, max]. Bốc ngẫu nhiên chứ không lấy tròn 3 tiếng, vì hàng loạt video ra cùng đúng một độ dài là dấu hiệu dễ nhận. 10800 = 3 tiếng, 11700 = 3 tiếng 15 phút.",
+  "loop_target_min_seconds": 10800,
+  "loop_target_max_seconds": 11700,
+
   "_comment_state_file": "Sổ ghi phần nào của bài nào đã dùng, đặt cạnh ffmpeg.exe trong bin/. Danh tính một bài là FILE ID của Google Drive chứ không phải tên bài — đổi tên bài trong bảng không làm mất lịch sử đã dùng. Xoá file này = cho phép dùng lại tất cả từ đầu.",
   "state_file": "claim_jazz_state.json",
 
