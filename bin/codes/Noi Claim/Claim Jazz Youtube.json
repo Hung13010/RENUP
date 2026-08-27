@@ -9,6 +9,12 @@
   "_comment_audio_ext": "Đuôi file được coi là nhạc khi quét Kho Nhạc gốc và Kho CID.",
   "audio_ext": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"],
 
+  "_comment_image": "Kho Video nhận CẢ ẢNH TĨNH. Ảnh được dựng thành một đoạn video dài image_clip_seconds rồi lặp đoạn đó bằng concat như với video thường. KHÔNG mã hoá thẳng ra độ dài cuối cùng: đo thật 2026-08-27 cho thấy mã hoá 300 giây từ ảnh mất 423 giây, tức một video 3 tiếng sẽ mất ~254 PHÚT; cách dựng đoạn ngắn chỉ mất ~1,8 phút và chi phí không tăng theo độ dài đầu ra. Một ảnh chỉ được dựng MỘT lần cho cả mẻ dù được bốc cho nhiều bài nhạc gốc. image_clip_seconds nhỏ thì dựng nhanh hơn nhưng file danh sách concat dài hơn; 30 giây là chỗ cân bằng. Ảnh có cạnh LẺ được tự làm tròn xuống số chẵn - bắt buộc, vì libx264 chết hẳn với kích thước lẻ chứ không phải chỉ cảnh báo.",
+  "image_ext": [".jpg", ".jpeg", ".png", ".webp", ".bmp"],
+  "image_clip_seconds": 30,
+  "image_fps": 30,
+  "image_crf": 23,
+
   "_comment_noi_parts": "Mỗi bài nhạc nối được cắt thành bao nhiêu phần bằng nhau. Đây CŨNG là số lần tối đa một bài được dùng, vì mỗi phần chỉ dùng đúng một lần. Đổi số này sau khi đã chạy vài mẻ sẽ làm lệch ý nghĩa các chỉ số phần đã ghi trong state_file — nếu đổi thì nên xoá luôn file đó.",
   "noi_parts": 5,
 

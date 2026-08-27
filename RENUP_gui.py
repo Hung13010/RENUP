@@ -16,6 +16,7 @@ import uuid
 import io
 import base64
 import tempfile
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 
@@ -3472,6 +3473,32 @@ class Api:
                 break
         return k
 
+    def _jazz_image_to_clip(self, img_path, out_path, secs, fps, crf):
+        """Bien mot ANH TINH thanh doan video ngan de dem di lap.
+
+        KHONG ma hoa thang ra do dai cuoi cung: do that 2026-08-27 cho thay
+        ma hoa 300 giay tu anh mat 423 giay, tuc mot video 3 tieng se mat
+        ~254 PHUT. Dung doan ngan mot lan roi lap bang concat demuxer chi
+        mat ~1.8 phut, va chi phi dung doan KHONG tang theo do dai dau ra.
+
+        scale=trunc(iw/2)*2 la BAT BUOC chu khong phai lam dep: anh co canh
+        le (do that: 1001x563) lam libx264 chet han voi "Error while opening
+        encoder", khong phai canh bao.
+        """
+        cmd = [self.ffmpeg_path, '-v', 'error', '-y',
+               '-loop', '1', '-framerate', str(fps), '-i', img_path,
+               '-t', f'{secs:.3f}',
+               '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', str(crf),
+               '-pix_fmt', 'yuv420p', '-g', str(int(fps)), '-an', out_path]
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace',
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        if p.returncode != 0 or not os.path.exists(out_path):
+            err = (p.stderr or '').strip().splitlines()
+            return False, (err[-1][:160] if err else 'khong ro')
+        return True, ''
+
     def _jazz_load_state(self, path):
         """Doc so dung nhac noi. Cau truc: {'used': {file_id: [chi so phan]}}."""
         try:
@@ -3544,6 +3571,11 @@ class Api:
 
         vid_ext = [e.lower() for e in code.get(
             'video_ext', ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v'])]
+        img_ext = [e.lower() for e in code.get(
+            'image_ext', ['.jpg', '.jpeg', '.png', '.webp', '.bmp'])]
+        img_secs = float(code.get('image_clip_seconds', 30))
+        img_fps = float(code.get('image_fps', 30))
+        img_crf = int(code.get('image_crf', 23))
         aud_ext = [e.lower() for e in code.get(
             'audio_ext', ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'])]
         n_parts = max(1, int(code.get('noi_parts', 5)))
@@ -3588,7 +3620,8 @@ class Api:
             return
 
         videos = sorted(f for f in os.listdir(video_dir)
-                        if os.path.splitext(f)[1].lower() in vid_ext)
+                        if os.path.splitext(f)[1].lower() in vid_ext
+                        or os.path.splitext(f)[1].lower() in img_ext)
         gocs = sorted(f for f in os.listdir(goc_dir)
                       if os.path.splitext(f)[1].lower() in aud_ext)
         cids = sorted(f for f in os.listdir(cid_dir)
@@ -3677,6 +3710,25 @@ class Api:
 
         ok_count, done_count = [0], [0]
         rng = random.Random()
+        # Anh -> doan video ngan. Nho lai theo duong dan anh: mot anh duoc
+        # boc cho nhieu bai nhac goc thi chi dung doan MOT lan cho ca me
+        # (dung doan la phan dat nhat cua nhanh anh).
+        clip_cache = {}
+        clip_dir = tempfile.mkdtemp(prefix='renup_jazz_')
+
+        def clip_for_image(img_path):
+            with self._lock:
+                hit = clip_cache.get(img_path)
+            if hit:
+                return hit, ''
+            out = os.path.join(clip_dir, f"{uuid.uuid4().hex}.mp4")
+            ok, err = self._jazz_image_to_clip(img_path, out, img_secs,
+                                               img_fps, img_crf)
+            if not ok:
+                return None, err
+            with self._lock:
+                clip_cache[img_path] = out
+            return out, ''
 
         def reserve(k):
             """Giu cho k bai noi con phan chua dung. Tra ve
@@ -3769,12 +3821,22 @@ class Api:
                 dur_cid = max(0.0, self._get_duration(cid_path))
                 vid_name = rng.choice(videos)
                 vid_path = os.path.join(video_dir, vid_name)
-                dur_vid = self._get_duration(vid_path)
-                if dur_vid <= 0:
-                    self._log(f"[{idx + 1}] Khong doc duoc thoi luong video:"
-                              f" {vid_name}", 'err')
-                    release(picked)
-                    return False
+                is_img = os.path.splitext(vid_name)[1].lower() in img_ext
+                if is_img:
+                    vid_path, err = clip_for_image(vid_path)
+                    if not vid_path:
+                        self._log(f"[{idx + 1}] Khong dung duoc doan video tu"
+                                  f" anh {vid_name}: {err}", 'err')
+                        release(picked)
+                        return False
+                    dur_vid = img_secs
+                else:
+                    dur_vid = self._get_duration(vid_path)
+                    if dur_vid <= 0:
+                        self._log(f"[{idx + 1}] Khong doc duoc thoi luong"
+                                  f" video: {vid_name}", 'err')
+                        release(picked)
+                        return False
 
                 total_dur = eff_goc + dur_cid
                 n_rep = int(total_dur // dur_vid) + 1
@@ -3782,8 +3844,9 @@ class Api:
                 loop_note = ("" if goc_rep == 1 else
                              f" | loop nhac goc x{goc_rep}"
                              f" -> {self._fmt_seconds(int(eff_goc))}")
+                kind = "anh" if is_img else "hinh"
                 self._log(f"[{idx + 1}/{total}] {goc_name}"
-                          f" | hinh: {vid_name} x{n_rep}"
+                          f" | {kind}: {vid_name} x{n_rep}"
                           f" | CID: {cid_name}{loop_note}", 'info')
                 for (r, ip), st in zip(picked, slots):
                     self._log(f"      noi: {r['name']} phan {ip + 1}/{n_parts}"
@@ -3863,6 +3926,13 @@ class Api:
                     self._log(f"[{i + 1}] LOI: {e}", 'err')
                     success = False
                 update(i, success)
+
+        # Doan video dung tu anh duoc dung chung giua cac dong nen chi don
+        # duoc khi CA ME xong, khong don trong tung dong.
+        try:
+            shutil.rmtree(clip_dir, ignore_errors=True)
+        except Exception:
+            pass
 
         left = sum(max(0, n_parts - len(used.get(r['file_id'], [])))
                    for r in ready)
