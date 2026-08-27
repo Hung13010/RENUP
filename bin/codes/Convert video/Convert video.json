@@ -1,5 +1,7 @@
 {
   "name": "Convert video (chọn định dạng đích)",
   "type": "convert_video",
-  "description": "Convert mọi định dạng video sang định dạng đích bạn chọn (MP4 / MOV / MKV / WEBM / AVI / FLV / WMV). Source ext tự detect: MP4, MOV, MKV, AVI, FLV, WEBM, WMV, MPEG, TS, 3GP, MXF, HEVC, ProRes, DNxHR... Khi chọn function này UI sẽ hiện dropdown 'Convert sang' để chọn đích."
+  "description": "Convert mọi định dạng video sang định dạng đích bạn chọn (MP4 / MOV / MKV / WEBM / AVI / FLV / WMV). Source ext tự detect: MP4, MOV, MKV, AVI, FLV, WEBM, WMV, MPEG, TS, 3GP, MXF, HEVC, ProRes, DNxHR... Khi chọn function này UI sẽ hiện dropdown 'Convert sang' để chọn đích. File TRÙNG đuôi đích cũng được nhận làm nguồn (ví dụ MP4 chứa VP9 → MP4 chứa H.264, cần khi Premiere báo lỗi định dạng), nhưng khi đó Output PHẢI là thư mục khác Input — nếu trùng thư mục, app bỏ qua các file đó và báo rõ, vì convert tại chỗ sẽ ghi đè lên chính file gốc.",
+  "_comment_skip_same_codec": "Chỉ có tác dụng với file TRÙNG đuôi đích. Bật (mặc định) thì app dùng ffprobe kiểm codec trước: file đã đúng codec đích rồi thì bỏ qua, vì mã hoá lại nó chỉ tốn hàng giờ và làm giảm chất lượng thêm một đời mà không được gì. Nhờ vậy chọn đích MP4 trên một thư mục trộn lẫn sẽ chỉ xử lý đúng các file VP9/AV1, bỏ qua file vốn đã H.264. Tắt (false) nếu bạn cố ý muốn mã hoá lại tất cả. Không ảnh hưởng file khác đuôi đích - chúng luôn được chuyển. Codec đích: MP4/MOV/MKV/FLV = h264, WEBM = vp9, AVI = mpeg4, WMV = wmv2.",
+  "skip_same_codec": true
 }

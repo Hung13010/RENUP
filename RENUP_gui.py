@@ -2181,14 +2181,17 @@ class Api:
 
     # ── Convert Video ──
 
+    # 'vcodec' = ten codec ma ffprobe se bao cao cho file SAU khi convert. Dung
+    # de bo qua file vao von da dung codec do (xem _run_convert_video). Luu y no
+    # KHONG doi khi swap sang GPU: h264_nvenc/h264_amf/h264_qsv deu ra 'h264'.
     CONVERT_TARGETS = {
-        'MP4':  {'ext': '.mp4',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart']},
-        'MOV':  {'ext': '.mov',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']},
-        'MKV':  {'ext': '.mkv',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']},
-        'WEBM': {'ext': '.webm', 'args': ['-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0', '-deadline', 'good', '-cpu-used', '4', '-c:a', 'libopus', '-b:a', '128k']},
-        'AVI':  {'ext': '.avi',  'args': ['-c:v', 'mpeg4', '-vtag', 'XVID', '-q:v', '5', '-c:a', 'libmp3lame', '-q:a', '4']},
-        'FLV':  {'ext': '.flv',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100']},
-        'WMV':  {'ext': '.wmv',  'args': ['-c:v', 'wmv2', '-b:v', '4M', '-c:a', 'wmav2', '-b:a', '192k']},
+        'MP4':  {'ext': '.mp4',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart']},
+        'MOV':  {'ext': '.mov',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']},
+        'MKV':  {'ext': '.mkv',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']},
+        'WEBM': {'ext': '.webm', 'vcodec': 'vp9',   'args': ['-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0', '-deadline', 'good', '-cpu-used', '4', '-c:a', 'libopus', '-b:a', '128k']},
+        'AVI':  {'ext': '.avi',  'vcodec': 'mpeg4', 'args': ['-c:v', 'mpeg4', '-vtag', 'XVID', '-q:v', '5', '-c:a', 'libmp3lame', '-q:a', '4']},
+        'FLV':  {'ext': '.flv',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100']},
+        'WMV':  {'ext': '.wmv',  'vcodec': 'wmv2',  'args': ['-c:v', 'wmv2', '-b:v', '4M', '-c:a', 'wmav2', '-b:a', '192k']},
     }
 
     CONVERT_SOURCE_EXTS = ['.mp4', '.mov', '.mkv', '.avi', '.flv', '.webm', '.wmv',
@@ -2202,6 +2205,12 @@ class Api:
             self._log(f"Target khong ho tro: {target}", 'err')
             return
         to_ext = spec['ext']
+        want_vcodec = spec.get('vcodec')
+        # File dung duoi dich VA dung codec dich thi khong con gi de lam - ma
+        # hoa lai no chi ton hang gio va lam giam chat luong them mot doi. Chi
+        # co tac dung voi file trung duoi dich (xem convert_one), nen dat mac
+        # dinh bat khong lam doi hanh vi cu.
+        skip_same_codec = bool(code.get('skip_same_codec', True))
 
         self._js(f"uiApi.setStatus('Dang convert video sang {target}...')")
         self._js("uiApi.setProgress(0, '')")
@@ -2227,14 +2236,33 @@ class Api:
             return
         os.makedirs(output_dir, exist_ok=True)
 
-        # Source = all supported video exts EXCEPT target ext (avoid clobbering input)
-        from_exts = [e for e in self.CONVERT_SOURCE_EXTS if e != to_ext]
+        # File trung duoi dich CO duoc nhan lam nguon. Truoc day chung bi loai
+        # thang, khien "MP4 chua VP9 -> MP4 chua H.264" thanh viec app khong lam
+        # duoc - dung thu can den sau khi YouTube tra ve VP9 o muc Best (ADR-016).
+        # Doi lai phai tu chan ghi de, xem ngay ben duoi.
         files = sorted(
             f for f in os.listdir(input_dir)
-            if os.path.splitext(f)[1].lower() in from_exts
+            if os.path.splitext(f)[1].lower() in self.CONVERT_SOURCE_EXTS
         )
+
+        # Cung mot thu muc thi file trung duoi dich se co duong dan ra TRUNG
+        # duong dan vao -> ffmpeg vua doc vua ghi mot file -> hong file goc.
+        # Loai chung ra thay vi bao loi ca me: bao loi se pha hanh vi cu cua
+        # nguoi dang convert AVI->MP4 ngay trong mot thu muc, thu van an toan.
+        if (os.path.normcase(os.path.abspath(input_dir))
+                == os.path.normcase(os.path.abspath(output_dir))):
+            clash = [f for f in files
+                     if os.path.splitext(f)[1].lower() == to_ext]
+            if clash:
+                files = [f for f in files if f not in set(clash)]
+                self._log(
+                    f"Input va Output la cung mot thu muc nen bo qua {len(clash)}"
+                    f" file *{to_ext} (convert tai cho se ghi de len chinh file"
+                    f" goc). Chon thu muc Output khac neu muon xu ly chung.",
+                    'info')
+
         if not files:
-            self._log(f"Khong tim thay video nguon (bo qua *{to_ext}).", 'err')
+            self._log("Khong tim thay video nguon.", 'err')
             return
 
         run_items = self._begin_batch(files)
@@ -2258,6 +2286,20 @@ class Api:
             inp = os.path.join(input_dir, filename)
             new_name = os.path.splitext(filename)[0] + to_ext
             out = os.path.join(output_dir, new_name)
+
+            # Chi kiem file TRUNG duoi dich - dung nhom vua duoc mo them o tren.
+            # File khac duoi thi luon phai chuyen, khong ton mot lan probe nao,
+            # nen hanh vi cu khong doi mot ly. Probe nam trong worker (khong
+            # phai mot vong quet truoc) de N lan goi ffprobe chay song song.
+            # probe fail -> probed None -> van chuyen; hong ve phia an toan.
+            if (skip_same_codec and want_vcodec
+                    and os.path.splitext(filename)[1].lower() == to_ext):
+                probed = self._probe_spec(inp)
+                if probed and probed.get('v_codec') == want_vcodec:
+                    self._log(f"  [{idx + 1}] Da la {want_vcodec} san, bo qua:"
+                              f" {filename}", 'info')
+                    return True
+
             dur = self._get_duration(inp)
             parts = ['-i', inp] + spec['args'] + [out]
             if use_gpu:
