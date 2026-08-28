@@ -1375,7 +1375,14 @@ class Api:
         workers = max(1, params.get('workers', 2))
         cmd_template = code.get('command', '')
 
-        self._detect_gpu()
+        # _detect_gpu() chi tu log o LAN DAU (ket qua duoc nho lai), nen tu
+        # lan chay thu hai tro di khong con dong nao noi dang dung GPU hay
+        # CPU. Log ro moi lan, giong _run_convert_video/_run_pad_duration.
+        gpu = self._detect_gpu()
+        if gpu:
+            self._log(f"GPU encoder: {gpu.upper()} (uu tien)", 'ok')
+        else:
+            self._log("Khong co GPU encoder, dung CPU.", 'info')
 
         if not input_dir or not output_dir:
             self._log("Chua chon folder.", 'err')
@@ -2557,6 +2564,35 @@ class Api:
         except Exception:
             return False
 
+    def _gpu_h264_args(self, crf, cpu_preset='veryfast'):
+        """Doi so bo ma hoa H.264: UU TIEN GPU, tu lui ve CPU khi khong co.
+
+        Dung cho nhung cho ma hoa KHONG di qua _swap_to_gpu duoc. Khac biet
+        quan trong: ham nay chi doi BO MA HOA, khong them co giai ma phan
+        cung. _swap_to_gpu chen '-hwaccel cuda' truoc '-i' vi no gia dinh
+        dau vao la mot luong video can giai ma; noi goi ham nay thi dau vao
+        la ANH TINH (hoac mot filter graph), khong co gi de GPU giai ma, va
+        ep '-hwaccel' vao do se lam ffmpeg bao loi thay vi chay nhanh hon.
+
+        Quy doi chat luong giong het _swap_to_gpu: NVENC/AMF khong hieu
+        '-crf', phai doi sang '-qp'; QSV dung '-global_quality'.
+
+        Tra ve (danh sach doi so, ten de ghi log).
+        """
+        gpu = self._detect_gpu()
+        q = str(crf)
+        if gpu == 'nvenc':
+            return (['-c:v', 'h264_nvenc', '-preset', 'fast',
+                     '-rc', 'constqp', '-qp', q], 'GPU h264_nvenc')
+        if gpu == 'amf':
+            return (['-c:v', 'h264_amf', '-quality', 'speed',
+                     '-rc', 'cqp', '-qp_i', q, '-qp_p', q], 'GPU h264_amf')
+        if gpu == 'qsv':
+            return (['-c:v', 'h264_qsv', '-preset', 'fast',
+                     '-global_quality', q], 'GPU h264_qsv')
+        return (['-c:v', 'libx264', '-preset', cpu_preset, '-crf', q],
+                'CPU libx264')
+
     def _swap_to_gpu(self, cmd_parts):
         """Replace CPU encoder with GPU encoder in command parts. Add HW accel decode."""
         gpu = self._detect_gpu()
@@ -3516,14 +3552,22 @@ class Api:
 
         scale=trunc(iw/2)*2 la BAT BUOC chu khong phai lam dep: anh co canh
         le (do that: 1001x563) lam libx264 chet han voi "Error while opening
-        encoder", khong phai canh bao.
+        encoder", khong phai canh bao. Rang buoc nay dung cho CA GPU: kich
+        thuoc le lam h264_nvenc chet y het.
+
+        UU TIEN GPU qua _gpu_h264_args, tu lui ve CPU khi may khong co.
+        KHONG dung _swap_to_gpu o day: no chen '-hwaccel' truoc '-i', ma dau
+        vao la mot tam ANH chu khong phai luong video, nen co do chi lam
+        ffmpeg bao loi.
         """
+        venc, tag = self._gpu_h264_args(crf)
         cmd = [self.ffmpeg_path, '-v', 'error', '-y',
                '-loop', '1', '-framerate', str(fps), '-i', img_path,
                '-t', f'{secs:.3f}',
-               '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', str(crf),
+               '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2'] + venc + [
                '-pix_fmt', 'yuv420p', '-g', str(int(fps)), '-an', out_path]
+        self._log(f"      dung doan tu anh bang {tag}: "
+                  f"{os.path.basename(img_path)}", 'info')
         p = subprocess.run(cmd, capture_output=True, text=True,
                            encoding='utf-8', errors='replace',
                            creationflags=subprocess.CREATE_NO_WINDOW)
