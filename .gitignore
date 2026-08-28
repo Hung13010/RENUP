@@ -28,6 +28,12 @@ bin/output_videos/
 bin/_temp_list_*.txt
 bin/_claim_music_*/
 bin/yt-dlp.exe.new
+# So trang thai app ghi luc chay. Chan theo MAU chu khong theo tung ten:
+# hai lan trong hai ngay (TODO #063, roi bin/jazzcnt_state.json cua mot bai
+# thu) mot file dang nay lot len repo CONG KHAI qua "git add -A" cua
+# build_installer.bat, chi vi khong ai them dong .gitignore tuong ung khi
+# tao file moi. Hai dong duoi la thua ke, giu lai cho de doc.
+bin/*_state.json
 bin/claim_state.json
 bin/claim_jazz_state.json
 bin/_yt_thumb_cache/
