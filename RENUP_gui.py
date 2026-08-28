@@ -2213,14 +2213,28 @@ class Api:
     # 'vcodec' = ten codec ma ffprobe se bao cao cho file SAU khi convert. Dung
     # de bo qua file vao von da dung codec do (xem _run_convert_video). Luu y no
     # KHONG doi khi swap sang GPU: h264_nvenc/h264_amf/h264_qsv deu ra 'h264'.
+    # 'args'       = ma hoa lai (duong cu, dung khi codec nguon KHAC codec dich)
+    # 'remux_args' = doi vo, chep nguyen luong hinh (dung khi codec DA KHOP).
+    #                Luon giu '-c:v copy'; phan tieng thi VAN ma hoa lai sang
+    #                codec cua vo dich, vi '-c copy' ca hai luong se hong khi
+    #                nguon mang tieng la co (do that: MKV+Opus -> MP4 bao
+    #                "Could not write header"). Tieng re, hinh moi dat.
+    #                None = vo do khong ho tro doi vo, luon ma hoa lai.
     CONVERT_TARGETS = {
-        'MP4':  {'ext': '.mp4',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart']},
-        'MOV':  {'ext': '.mov',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']},
-        'MKV':  {'ext': '.mkv',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']},
-        'WEBM': {'ext': '.webm', 'vcodec': 'vp9',   'args': ['-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0', '-deadline', 'good', '-cpu-used', '4', '-c:a', 'libopus', '-b:a', '128k']},
-        'AVI':  {'ext': '.avi',  'vcodec': 'mpeg4', 'args': ['-c:v', 'mpeg4', '-vtag', 'XVID', '-q:v', '5', '-c:a', 'libmp3lame', '-q:a', '4']},
-        'FLV':  {'ext': '.flv',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100']},
-        'WMV':  {'ext': '.wmv',  'vcodec': 'wmv2',  'args': ['-c:v', 'wmv2', '-b:v', '4M', '-c:a', 'wmav2', '-b:a', '192k']},
+        'MP4':  {'ext': '.mp4',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart'],
+                 'remux_args': ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart']},
+        'MOV':  {'ext': '.mov',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k'],
+                 'remux_args': ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k']},
+        'MKV':  {'ext': '.mkv',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k'],
+                 'remux_args': ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k']},
+        'WEBM': {'ext': '.webm', 'vcodec': 'vp9',   'args': ['-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0', '-deadline', 'good', '-cpu-used', '4', '-c:a', 'libopus', '-b:a', '128k'],
+                 'remux_args': ['-c:v', 'copy', '-c:a', 'libopus', '-b:a', '128k']},
+        'AVI':  {'ext': '.avi',  'vcodec': 'mpeg4', 'args': ['-c:v', 'mpeg4', '-vtag', 'XVID', '-q:v', '5', '-c:a', 'libmp3lame', '-q:a', '4'],
+                 'remux_args': ['-c:v', 'copy', '-c:a', 'libmp3lame', '-q:a', '4']},
+        'FLV':  {'ext': '.flv',  'vcodec': 'h264',  'args': ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100'],
+                 'remux_args': ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k', '-ar', '44100']},
+        'WMV':  {'ext': '.wmv',  'vcodec': 'wmv2',  'args': ['-c:v', 'wmv2', '-b:v', '4M', '-c:a', 'wmav2', '-b:a', '192k'],
+                 'remux_args': ['-c:v', 'copy', '-c:a', 'wmav2', '-b:a', '192k']},
     }
 
     CONVERT_SOURCE_EXTS = ['.mp4', '.mov', '.mkv', '.avi', '.flv', '.webm', '.wmv',
@@ -2240,6 +2254,7 @@ class Api:
         # co tac dung voi file trung duoi dich (xem convert_one), nen dat mac
         # dinh bat khong lam doi hanh vi cu.
         skip_same_codec = bool(code.get('skip_same_codec', True))
+        remux_same_codec = bool(code.get('remux_same_codec', True))
 
         self._js(f"uiApi.setStatus('Dang convert video sang {target}...')")
         self._js("uiApi.setProgress(0, '')")
@@ -2316,20 +2331,48 @@ class Api:
             new_name = os.path.splitext(filename)[0] + to_ext
             out = os.path.join(output_dir, new_name)
 
-            # Chi kiem file TRUNG duoi dich - dung nhom vua duoc mo them o tren.
-            # File khac duoi thi luon phai chuyen, khong ton mot lan probe nao,
-            # nen hanh vi cu khong doi mot ly. Probe nam trong worker (khong
-            # phai mot vong quet truoc) de N lan goi ffprobe chay song song.
-            # probe fail -> probed None -> van chuyen; hong ve phia an toan.
-            if (skip_same_codec and want_vcodec
-                    and os.path.splitext(filename)[1].lower() == to_ext):
-                probed = self._probe_spec(inp)
-                if probed and probed.get('v_codec') == want_vcodec:
-                    self._log(f"  [{idx + 1}] Da la {want_vcodec} san, bo qua:"
-                              f" {filename}", 'info')
-                    return True
+            # Probe MOI file (truoc day chi probe file trung duoi dich). Ton
+            # them mot lan ffprobe cho file khac duoi, nhung no mua duoc viec
+            # doi vo khong ma hoa lai - dat ~0.1s de tiet kiem ~24s moi phut
+            # video. Probe nam trong worker chu khong phai mot vong quet
+            # truoc, nen N lan goi chay song song.
+            # probe fail -> probed None -> ma hoa lai; hong ve phia an toan.
+            probed = self._probe_spec(inp) if want_vcodec else None
+            same_codec = bool(probed and probed.get('v_codec') == want_vcodec)
+            same_ext = os.path.splitext(filename)[1].lower() == to_ext
+
+            if skip_same_codec and same_ext and same_codec:
+                self._log(f"  [{idx + 1}] Da la {want_vcodec} san, bo qua:"
+                          f" {filename}", 'info')
+                return True
 
             dur = self._get_duration(inp)
+
+            # DOI VO, KHONG MA HOA LAI khi luong hinh da dung codec dich.
+            # Do that 2026-08-28 tren file 1080p dai 60 giay: 0.16s so voi
+            # 23.89s, va MD5 luong hinh TRUNG KHOP - tuc khong mat mot chut
+            # chat luong nao. Dieu kien "cung codec" chinh la thu giu cho
+            # luong sua file VP9-cho-Premiere khong bi dung toi: VP9 khac
+            # h264 nen van di duong ma hoa lai.
+            # Tieng VAN duoc ma hoa lai sang codec cua vo dich: '-c copy' ca
+            # hai luong se HONG khi nguon mang tieng Opus (do that: MKV+Opus
+            # -> MP4 bao "Could not write header").
+            remux_args = spec.get('remux_args') if remux_same_codec else None
+            if same_codec and remux_args:
+                cmd = ([self.ffmpeg_path, '-i', inp] + remux_args + [out]
+                       + ['-progress', 'pipe:1', '-nostats', '-y'])
+                success, _ = self._run_ffmpeg_with_table(cmd, idx, dur,
+                                                         new_name)
+                if success:
+                    self._log(f"  [{idx + 1}] Doi vo, khong ma hoa lai:"
+                              f" {filename}", 'ok')
+                    return True
+                # Doi vo hong (profile/pixel format la vo dich khong nhan)
+                # -> ma hoa lai. Nho nhanh nay ma thay doi khong bao gio te
+                # hon hanh vi cu, chi co the tot hon.
+                self._log(f"  [{idx + 1}] Doi vo khong duoc, chuyen sang ma"
+                          f" hoa lai: {filename}", 'info')
+
             parts = ['-i', inp] + spec['args'] + [out]
             if use_gpu:
                 parts = self._swap_to_gpu(parts)
