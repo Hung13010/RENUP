@@ -1,7 +1,7 @@
 {
   "name": "Claim Jazz Youtube (loop hình + nhạc gốc + nhạc nối + CID)",
   "type": "claim_jazz",
-  "description": "Với mỗi bài trong Kho Nhạc gốc: loop một video ngẫu nhiên từ Kho Video cho đủ thời lượng, thay thế vài đoạn nhạc gốc sau mốc 1h30 bằng các đoạn nhạc nối tải từ Google Drive, rồi gắn một file CID ngẫu nhiên vào cuối. Hình KHÔNG bị mã hoá lại (chỉ nối lại bằng concat demuxer) nên nhanh; chi phí nằm ở mã hoá lại phần tiếng. Mỗi bài nhạc nối được cắt thành 5 phần và mỗi phần chỉ dùng ĐÚNG MỘT LẦN — số lượt đã dùng được ghi ra file và nhớ qua các lần chạy.",
+  "description": "Với mỗi bài trong Kho Nhạc gốc: loop một video ngẫu nhiên từ Kho Video cho đủ thời lượng, thay thế vài đoạn nhạc gốc sau mốc 1h30 bằng các đoạn nhạc nối tải từ Google Drive, rồi gắn một file CID ngẫu nhiên vào cuối. Hình KHÔNG bị mã hoá lại (chỉ nối lại bằng concat demuxer) nên nhanh; chi phí nằm ở mã hoá lại phần tiếng. Mỗi bài nhạc nối được cắt thành 5 đoạn ngẫu nhiên dài 15–20 giây, rải đều khắp bài, và mỗi đoạn chỉ dùng ĐÚNG MỘT LẦN — các đoạn đã bốc được ghi ra file và nhớ qua các lần chạy. Chạy xong hiện popup tổng kết link nào đã hết lượt, link nào còn.",
 
   "_comment_video_ext": "Đuôi file được coi là video khi quét Kho Video.",
   "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v"],
@@ -15,8 +15,12 @@
   "image_fps": 30,
   "image_crf": 23,
 
-  "_comment_noi_parts": "Mỗi bài nhạc nối được cắt thành bao nhiêu phần bằng nhau. Đây CŨNG là số lần tối đa một bài được dùng, vì mỗi phần chỉ dùng đúng một lần. Đổi số này sau khi đã chạy vài mẻ sẽ làm lệch ý nghĩa các chỉ số phần đã ghi trong state_file — nếu đổi thì nên xoá luôn file đó.",
+  "_comment_noi_parts": "Mỗi bài nhạc nối được cắt thành bao nhiêu đoạn. Đây CŨNG là số lần tối đa một bài được dùng, vì mỗi đoạn chỉ dùng đúng một lần. Đổi số này sau khi đã chạy vài mẻ KHÔNG làm hỏng dữ liệu cũ: các đoạn đã bốc được lưu nguyên trong state_file kèm mốc thời gian, nên bài cũ giữ nguyên số đoạn cũ; chỉ bài gặp lần đầu từ đây trở đi mới cắt theo số mới.",
   "noi_parts": 5,
+
+  "_comment_part_seconds": "Độ dài mỗi đoạn nhạc nối, BỐC NGẪU NHIÊN trong khoảng [min, max] giây. Vị trí cũng ngẫu nhiên: bài được chia thành noi_parts ô bằng nhau và mỗi ô bốc một đoạn, nên các đoạn rải đều khắp bài và KHÔNG THỂ chồng lấn — bảo đảm bởi cấu trúc chứ không phải bởi vòng kiểm tra. Bài phải dài ít nhất noi_parts × part_max_seconds (mặc định 5 × 20 = 100 giây) mới đủ chỗ; ngắn hơn thì bị loại khỏi mẻ kèm log rõ, không tự giảm số đoạn. Điều kiện dùng max chứ không dùng độ dài vừa bốc, để một bài luôn cho cùng một kết quả đạt/không-đạt thay vì lúc được lúc không.",
+  "part_min_seconds": 15,
+  "part_max_seconds": 20,
 
   "_comment_default_noi_count": "Số bài nối ghép vào MỖI video, dùng khi ô trên giao diện để trống. Mỗi bài góp đúng một phần, nên số này cũng là số đoạn được thay thế.",
   "default_noi_count": 4,
@@ -28,7 +32,7 @@
   "loop_target_min_seconds": 10800,
   "loop_target_max_seconds": 11700,
 
-  "_comment_state_file": "Sổ ghi phần nào của bài nào đã dùng, đặt cạnh ffmpeg.exe trong bin/. Danh tính một bài là FILE ID của Google Drive chứ không phải tên bài — đổi tên bài trong bảng không làm mất lịch sử đã dùng. Xoá file này = cho phép dùng lại tất cả từ đầu.",
+  "_comment_state_file": "Sổ ghi các đoạn đã bốc của từng bài và đoạn nào đã dùng, đặt cạnh ffmpeg.exe trong bin/. Danh tính một bài là FILE ID của Google Drive chứ không phải tên bài — đổi tên bài trong bảng không làm mất lịch sử đã dùng. Đoạn được bốc MỘT LẦN lúc gặp bài lần đầu rồi lưu lại (mốc bắt đầu + độ dài), các lần sau chỉ tiêu dần; nhờ vậy 'mỗi đoạn dùng một lần' là thứ kiểm chứng được chứ không phải lời hứa. Sổ theo bản cũ (chia đều, chỉ ghi chỉ số phần) KHÔNG chuyển đổi được sang bản này vì cách cắt đã khác hẳn — app sẽ báo và cấp lại từ đầu. Xoá file này = cho phép dùng lại tất cả từ đầu.",
   "state_file": "claim_jazz_state.json",
 
   "_comment_audio": "Phần tiếng luôn được mã hoá lại (bắt buộc, vì phải cắt ghép nhiều nguồn). Hình thì không.",

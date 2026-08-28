@@ -3452,6 +3452,39 @@ class Api:
         return starts
 
     @staticmethod
+    def _jazz_make_parts(duration, n_parts, min_len, max_len, rng):
+        """Cat mot bai nhac noi thanh n_parts doan NGAU NHIEN dai min..max giay.
+
+        Dung lai dung thuat toan chia-o cua _jazz_pick_slots: bai duoc chia
+        thanh n_parts o bang nhau, moi o boc mot doan. Nho vay cac doan rai
+        deu khap bai va KHONG THE chong lan - bao dam boi cau truc, khong can
+        vong kiem tra va boc lai (boc tu do co the lap rat lau khi vung chat).
+
+        Chi goi MOT LAN cho moi bai, luc gap no lan dau; ket qua duoc ghi vao
+        so. Neu boc lai moi lan dung thi "moi doan dung dung mot lan" khong
+        con kiem chung duoc: hai lan boc khac nhau van co the trum len cung
+        mot doan nhac.
+
+        Dieu kien du cho dung max_len chu KHONG dung do dai vua boc, de mot
+        bai luon cho cung mot ket qua dat/khong-dat thay vi luc duoc luc khong.
+
+        Tra ve [{'start','len','used'}, ...] hoac None neu bai qua ngan.
+        """
+        if n_parts <= 0 or duration <= 0 or max_len <= 0:
+            return None
+        cell = duration / n_parts
+        if cell < max_len:
+            return None
+        lo_len, hi_len = min(min_len, max_len), max_len
+        out = []
+        for k in range(n_parts):
+            L = rng.uniform(lo_len, hi_len)
+            lo = k * cell
+            out.append({'start': round(rng.uniform(lo, lo + cell - L), 3),
+                        'len': round(L, 3), 'used': False})
+        return out
+
+    @staticmethod
     def _jazz_capacity(remaining, per_video):
         """Voi so luot con lai cua tung bai, lam duoc TOI DA bao nhieu video?
 
@@ -3500,17 +3533,51 @@ class Api:
         return True, ''
 
     def _jazz_load_state(self, path):
-        """Doc so dung nhac noi. Cau truc: {'used': {file_id: [chi so phan]}}."""
+        """Doc so dung nhac noi.
+
+        Cau truc (ban 2):
+            {'version': 2, 'songs': {file_id: {'name': str, 'parts': [
+                {'start': float, 'len': float, 'used': bool}, ...]}}}
+
+        Cac doan duoc boc MOT LAN roi luu lai, nen "moi doan dung dung mot
+        lan" la thu doc ra kiem chung duoc chu khong phai loi hua.
+
+        BAN 1 ghi {'used': {file_id: [chi so phan]}} voi cac phan CHIA DEU
+        het bai. Cach cat nay da doi han (doan ngau nhien 15-20s), nen chi so
+        cu tro sang lat nhac khac hoan toan - khong the chuyen doi. Bao ro
+        roi cap lai tu dau, thay vi im lang tinh sai.
+        """
         try:
             with open(path, 'r', encoding='utf-8') as fh:
                 data = json.load(fh)
-            used = data.get('used', {})
-            return {k: sorted(set(int(i) for i in v))
-                    for k, v in used.items() if isinstance(v, list)}
         except Exception:
             return {}
+        if not isinstance(data, dict):
+            return {}
+        if 'songs' not in data and data.get('used'):
+            n = len(data.get('used') or {})
+            self._log(f"So dung nhac noi theo ban cu ({n} bai): cach cat da"
+                      f" doi nen khong chuyen doi duoc, cap lai tu dau.",
+                      'info')
+            return {}
+        out = {}
+        for fid, ent in (data.get('songs') or {}).items():
+            if not isinstance(ent, dict):
+                continue
+            parts = []
+            for p in (ent.get('parts') or []):
+                try:
+                    parts.append({'start': float(p['start']),
+                                  'len': float(p['len']),
+                                  'used': bool(p.get('used'))})
+                except Exception:
+                    continue
+            if parts:
+                out[fid] = {'name': str(ent.get('name') or fid),
+                            'parts': parts}
+        return out
 
-    def _jazz_save_state(self, path, used):
+    def _jazz_save_state(self, path, songs):
         """Ghi so dung. Ghi ra .part roi os.replace de khong bao gio de lai
         file do dang neu app bi tat giua chung (cung cach _download_music_drive
         dang lam)."""
@@ -3518,11 +3585,20 @@ class Api:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(tmp, 'w', encoding='utf-8') as fh:
-                json.dump({'used': {k: sorted(v) for k, v in used.items()}},
-                          fh, ensure_ascii=False, indent=2)
+                json.dump({'version': 2, 'songs': songs}, fh,
+                          ensure_ascii=False, indent=2)
             os.replace(tmp, path)
         except Exception as e:
             self._log(f"Khong ghi duoc so dung nhac noi: {e}", 'err')
+
+    @staticmethod
+    def _jazz_left(ent, n_parts):
+        """So doan CON DUNG DUOC cua mot bai. Dem doan chua dung thay vi lay
+        n_parts tru di so da dung: bai cu trong so co the mang so doan khac
+        n_parts hien tai (nguoi dung doi noi_parts giua chung)."""
+        if not ent:
+            return n_parts
+        return sum(1 for p in ent['parts'] if not p['used'])
 
     def _jazz_build_filter(self, dur_goc, slots, seg_specs, has_cid):
         """Dung chuoi filter_complex thay the cac doan trong nhac goc.
@@ -3579,6 +3655,10 @@ class Api:
         aud_ext = [e.lower() for e in code.get(
             'audio_ext', ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'])]
         n_parts = max(1, int(code.get('noi_parts', 5)))
+        part_min = float(code.get('part_min_seconds', 15))
+        part_max = float(code.get('part_max_seconds', 20))
+        if part_max < part_min:
+            part_min, part_max = part_max, part_min
         insert_after = float(code.get('insert_after_seconds', 5400))
         sr = int(code.get('sample_rate', 44100))
         ch = int(code.get('channels', 2))
@@ -3664,16 +3744,63 @@ class Api:
         if not ready:
             self._log("Khong co bai nhac noi nao dung duoc.", 'err')
             return
-        self._log(f"Nhac noi san sang: {len(ready)} bai"
-                  f" (moi bai cat {n_parts} phan).", 'ok')
 
+        rng = random.Random()
         state_path = os.path.join(os.path.dirname(self.ffmpeg_path), state_name)
-        used = self._jazz_load_state(state_path)
+        state = self._jazz_load_state(state_path)
+
+        # Bai nao chua co trong so thi boc luon cac doan cua no MOT LAN roi
+        # ghi lai. Boc san o day (khong phai luc dung) chinh la thu lam cho
+        # "moi doan dung dung mot lan" kiem chung duoc, va cung la thu cho
+        # popup cuoi me biet bai nao con doan nao.
+        kept, min_need = [], n_parts * part_max
+        for r in ready:
+            ent = state.get(r['file_id'])
+            if ent is None:
+                parts = self._jazz_make_parts(r['dur'], n_parts,
+                                              part_min, part_max, rng)
+                if parts is None:
+                    self._log(f"  Bai qua ngan de cat {n_parts} doan"
+                              f" {part_max:.0f}s (dai {r['dur']:.0f}s, can it"
+                              f" nhat {min_need:.0f}s), bo qua: {r['name']}",
+                              'err')
+                    continue
+                ent = {'name': r['name'], 'parts': parts}
+                state[r['file_id']] = ent
+            else:
+                ent['name'] = r['name']   # doi ten trong bang thi popup theo
+            kept.append(r)
+        ready = kept
+        if not ready:
+            self._log("Khong co bai nhac noi nao dung duoc.", 'err')
+            return
+        self._jazz_save_state(state_path, state)
+        self._log(f"Nhac noi san sang: {len(ready)} bai (moi bai {n_parts}"
+                  f" doan ngau nhien {part_min:.0f}-{part_max:.0f}s).", 'ok')
+
+        def jazz_report():
+            """Tinh trang tung link, theo DUNG THU TU BANG cua nguoi dung -
+            khong sap xep lai, vi ho doi chieu voi bang minh vua dan."""
+            out = []
+            for r in ready:
+                parts = (state.get(r['file_id']) or {}).get('parts') or []
+                out.append({'name': r['name'], 'id': r['file_id'],
+                            'left': sum(1 for p in parts if not p['used']),
+                            'total': len(parts)})
+            return out
+
+        def show_jazz_report(rows, ok_n, total_n):
+            # Python goi thang ham JS toan cuc, dung tien le cua
+            # showUpdateDialog/showRetryDialog chu khong qua uiApi.
+            self._js("showJazzReport("
+                     + json.dumps(rows, ensure_ascii=False)
+                     + f", {ok_n}, {total_n})")
 
         # Kiem DU CHO CA ME truoc khi chay dong nao. Neu thieu thi dung han
         # va bao them link, thay vi chay duoc mot nua roi bao loi tung dong -
         # nua chung se de lai mot dong video do dang va da dot mat quota.
-        remaining = [n_parts - len(used.get(r['file_id'], [])) for r in ready]
+        remaining = [self._jazz_left(state.get(r['file_id']), n_parts)
+                     for r in ready]
         cap = self._jazz_capacity(remaining, n_noi)
         need = len(gocs)
         if cap < need:
@@ -3700,6 +3827,9 @@ class Api:
                           f" {fit} (voi so bai hien co thi du cho {need}"
                           f" video).", 'err')
             self._js("uiApi.setStatus('Dung: thieu nhac noi.')")
+            # Popup ngay ca khi DUNG: day dung la luc nguoi dung can biet
+            # link nao da can de di bo sung.
+            show_jazz_report(jazz_report(), 0, need)
             return
         self._log(f"Du cho {cap} video (Kho Nhac goc co {need} bai).", 'ok')
 
@@ -3709,7 +3839,6 @@ class Api:
                   f" | {workers} luong | ghep {n_noi} bai noi.", 'info')
 
         ok_count, done_count = [0], [0]
-        rng = random.Random()
         # Anh -> doan video ngan. Nho lai theo duong dan anh: mot anh duoc
         # boc cho nhieu bai nhac goc thi chi dung doan MOT lan cho ca me
         # (dung doan la phan dat nhat cua nhanh anh).
@@ -3737,27 +3866,28 @@ class Api:
             chua cung mot doan nhac."""
             with self._lock:
                 avail = [r for r in ready
-                         if len(used.get(r['file_id'], [])) < n_parts]
+                         if self._jazz_left(state.get(r['file_id']),
+                                            n_parts) > 0]
                 if len(avail) < k:
                     return None
                 picked = rng.sample(avail, k)
                 out = []
                 for r in picked:
-                    done = set(used.get(r['file_id'], []))
-                    free = [i for i in range(n_parts) if i not in done]
+                    parts = state[r['file_id']]['parts']
+                    free = [i for i, p in enumerate(parts) if not p['used']]
                     idx_part = rng.choice(free)
-                    used.setdefault(r['file_id'], []).append(idx_part)
+                    parts[idx_part]['used'] = True
                     out.append((r, idx_part))
-                self._jazz_save_state(state_path, used)
+                self._jazz_save_state(state_path, state)
                 return out
 
         def release(picked):
             with self._lock:
                 for r, idx_part in picked:
-                    lst = used.get(r['file_id'], [])
-                    if idx_part in lst:
-                        lst.remove(idx_part)
-                self._jazz_save_state(state_path, used)
+                    parts = state.get(r['file_id'], {}).get('parts') or []
+                    if 0 <= idx_part < len(parts):
+                        parts[idx_part]['used'] = False
+                self._jazz_save_state(state_path, state)
 
         def update(idx, success):
             with self._lock:
@@ -3797,7 +3927,7 @@ class Api:
 
             picked = reserve(n_noi)
             if picked is None:
-                left = sum(max(0, n_parts - len(used.get(r['file_id'], [])))
+                left = sum(self._jazz_left(state.get(r['file_id']), n_parts)
                            for r in ready)
                 self._log(f"[{idx + 1}] Khong du bai nhac noi con luot dung"
                           f" (can {n_noi} bai, con {left} phan tren"
@@ -3806,7 +3936,11 @@ class Api:
 
             tmp_files = []
             try:
-                lengths = [r['dur'] / n_parts for r, _ in picked]
+                # start/len cua mot doan la co dinh tu luc cap phat (truoc khi
+                # co thread nao chay), chi co co 'used' bi doi trong khoa -
+                # nen doc o day khong can khoa.
+                chosen = [state[r['file_id']]['parts'][ip] for r, ip in picked]
+                lengths = [p['len'] for p in chosen]
                 slots = self._jazz_pick_slots(insert_after, eff_goc, lengths,
                                               rng)
                 if slots is None:
@@ -3848,9 +3982,13 @@ class Api:
                 self._log(f"[{idx + 1}/{total}] {goc_name}"
                           f" | {kind}: {vid_name} x{n_rep}"
                           f" | CID: {cid_name}{loop_note}", 'info')
-                for (r, ip), st in zip(picked, slots):
-                    self._log(f"      noi: {r['name']} phan {ip + 1}/{n_parts}"
-                              f" -> dat o {self._fmt_seconds(int(st))}", 'info')
+                for (r, ip), p, st in zip(picked, chosen, slots):
+                    self._log(
+                        f"      noi: {r['name']} doan {ip + 1}"
+                        f"/{len(state[r['file_id']]['parts'])}"
+                        f" (tu {self._fmt_seconds(int(p['start']))}"
+                        f" dai {p['len']:.1f}s)"
+                        f" -> dat o {self._fmt_seconds(int(st))}", 'info')
 
                 def _mklist(path_in, times):
                     """File danh sach cho concat demuxer. Dung CACH NAY de lap
@@ -3867,9 +4005,8 @@ class Api:
 
                 vid_list = _mklist(vid_path, n_rep)
 
-                seg_specs = [(2 + i, ip * (r['dur'] / n_parts),
-                              r['dur'] / n_parts)
-                             for i, (r, ip) in enumerate(picked)]
+                seg_specs = [(2 + i, p['start'], p['len'])
+                             for i, p in enumerate(chosen)]
                 fc = self._jazz_build_filter(eff_goc, slots, seg_specs,
                                              dur_cid > 0)
 
@@ -3934,11 +4071,23 @@ class Api:
         except Exception:
             pass
 
-        left = sum(max(0, n_parts - len(used.get(r['file_id'], [])))
-                   for r in ready)
+        report = jazz_report()
+        left = sum(x['left'] for x in report)
+        n_out = sum(1 for x in report if x['left'] == 0)
+
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video"
-                  f" | nhac noi con {left} phan chua dung ===", 'ok')
+                  f" | nhac noi con {left} doan chua dung ===", 'ok')
+        for x in report:
+            tag = 'err' if x['left'] == 0 else 'info'
+            note = ' <- DA HET LUOT' if x['left'] == 0 else ''
+            self._log(f"      {x['name']}: con {x['left']}/{x['total']}"
+                      f" doan{note}", tag)
+        if n_out:
+            self._log(f"      {n_out} link da het luot, can them link moi"
+                      f" cho lan sau.", 'err')
+
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
+        show_jazz_report(report, ok_count[0], total)
 
     # ── Youtube Download ──
 

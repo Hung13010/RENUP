@@ -760,6 +760,21 @@ button[hidden] { display: none !important; }
   </div>
 </div>
 
+<!-- CLAIM JAZZ: tong ket nhac noi sau khi chay xong ca me (ADR-019).
+     Dung width chu khong dung max-width: .update-box da co width:400px co
+     dinh nen max-width khong noi rong duoc gi. -->
+<div class="update-overlay" id="jazzReportOverlay">
+  <div class="update-box" style="width:520px;">
+    <div class="update-icon">📋</div>
+    <div class="update-title">Tình trạng nhạc nối</div>
+    <div class="update-versions" id="jazzReportSummary"></div>
+    <div id="jazzReportList" style="text-align:left;max-height:280px;overflow-y:auto;margin-bottom:16px;font-size:12px;"></div>
+    <div class="update-btns">
+      <button class="btn-accent" id="jazzReportCloseBtn">Đóng</button>
+    </div>
+  </div>
+</div>
+
 <!-- Settings CHI hien o ban dev (setDevMode). Ban phat hanh khong co nut mo
      hop nay: khoa da duoc dong goi san vao bin/yt_api_key.txt luc build, nguoi
      dung cuoi khong phai nhap gi. -->
@@ -1294,6 +1309,58 @@ function hideRetryDialog() {
   document.getElementById('retryOverlay').classList.remove('show');
   document.onkeydown = null;
   document.getElementById('retryOverlay').onclick = null;
+}
+
+// Claim Jazz: tong ket nhac noi sau khi chay xong ca me. Python goi thang
+// ham nay (khong qua uiApi), giong showUpdateDialog/showRetryDialog.
+// Ten bai do NGUOI DUNG dan vao bang nen phai qua escHtml truoc khi ghep
+// vao innerHTML.
+function showJazzReport(rows, okCount, total) {
+  rows = rows || [];
+  const out = rows.filter(r => r.left === 0);
+  const live = rows.filter(r => r.left > 0);
+  const leftAll = live.reduce((s, r) => s + r.left, 0);
+
+  document.getElementById('jazzReportSummary').innerHTML =
+    'Đã dựng <strong>' + okCount + '/' + total + '</strong> video.<br>' +
+    'Còn lại <strong>' + leftAll + '</strong> đoạn trên <strong>' +
+    live.length + '</strong> link chưa dùng hết.';
+
+  // Giu THU TU BANG trong tung nhom - nguoi dung doi chieu voi bang vua dan.
+  const group = (title, items, color) => {
+    if (!items.length) return '';
+    let h = '<div style="font-weight:700;color:' + color +
+            ';margin:10px 0 4px;">' + title + ' (' + items.length + ')</div>';
+    items.forEach(r => {
+      h += '<div style="display:flex;justify-content:space-between;gap:10px;' +
+           'padding:3px 0;border-bottom:1px solid var(--border);">' +
+           '<span style="overflow:hidden;text-overflow:ellipsis;' +
+           'white-space:nowrap;" title="' + escHtml(r.id) + '">' +
+           escHtml(r.name) + '</span>' +
+           '<span style="flex:none;color:' + color + ';">' +
+           r.left + '/' + r.total + ' đoạn</span></div>';
+    });
+    return h;
+  };
+
+  // Nhom HET LUOT len truoc: do la thu can hanh dong (them link moi).
+  document.getElementById('jazzReportList').innerHTML =
+    group('❌ Đã dùng hết', out, 'var(--danger)') +
+    group('✅ Còn dùng được', live, 'var(--accent)') +
+    (rows.length ? '' : '<div style="color:var(--text-muted);">' +
+     'Không có link nhạc nối nào.</div>');
+
+  const overlay = document.getElementById('jazzReportOverlay');
+  const close = () => {
+    overlay.classList.remove('show');
+    document.onkeydown = null;
+    overlay.onclick = null;
+  };
+  document.getElementById('jazzReportCloseBtn').onclick = close;
+  document.onkeydown = e => { if (e.key === 'Escape') close(); };
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  overlay.classList.add('show');
+  document.getElementById('jazzReportCloseBtn').focus();
 }
 
 function toggleLog() {
