@@ -3707,31 +3707,45 @@ class Api:
             return n_parts
         return sum(1 for p in ent['parts'] if not p['used'])
 
-    def _jazz_build_filter(self, dur_goc, slots, seg_specs, has_cid):
-        """Dung chuoi filter_complex thay the cac doan trong nhac goc.
+    def _jazz_build_filter(self, dur_goc, slots, seg_specs, has_cid,
+                           base_input=1, audio_end=None):
+        """Dung chuoi filter_complex thay the cac doan trong nhac nen.
 
-        Quy uoc input: 0 = danh sach video (concat demuxer), 1 = nhac goc,
-        2..n = cac file nhac noi theo dung thu tu seg_specs, cuoi cung = CID.
+        base_input = input mang TIENG NEN:
+          1 (mac dinh) - che do thuong: 0 = danh sach video, 1 = nhac goc,
+                         2..n = nhac noi, cuoi cung = CID.
+          0            - che do "video da co san nhac": tieng lay ngay tu
+                         video, nen 0 = video (ca hinh lan tieng),
+                         1..n = nhac noi, cuoi cung = CID.
+        Mot tham so du cho ca hai vi cac input luon xep lien nhau: nhac noi
+        bat dau o base_input+1, CID o base_input+1+len(seg_specs).
+
+        audio_end = moc dung lay tieng nen (mac dinh = dur_goc). Che do
+        "video co san" dat no = dur_goc - do_dai_CID, vi o do CID THAY THE
+        doan cuoi chu khong noi them - giu dung do dai video goc.
 
         seg_specs: [(input_index, start_trong_bai_noi, do_dai), ...] doi ung
         1-1 voi slots (da sap tang dan).
         """
+        if audio_end is None:
+            audio_end = dur_goc
+        b = base_input
         parts, labels, cur = [], [], 0.0
         for i, (start, (inp, s_off, L)) in enumerate(zip(slots, seg_specs)):
             if start > cur + 0.001:
-                parts.append(f"[1:a]atrim={cur:.3f}:{start:.3f},"
+                parts.append(f"[{b}:a]atrim={cur:.3f}:{start:.3f},"
                              f"asetpts=PTS-STARTPTS[g{i}]")
                 labels.append(f"[g{i}]")
             parts.append(f"[{inp}:a]atrim={s_off:.3f}:{s_off + L:.3f},"
                          f"asetpts=PTS-STARTPTS[n{i}]")
             labels.append(f"[n{i}]")
             cur = start + L          # THAY THE: bo doan goc dai bang doan noi
-        if dur_goc > cur + 0.001:
-            parts.append(f"[1:a]atrim={cur:.3f}:{dur_goc:.3f},"
+        if audio_end > cur + 0.001:
+            parts.append(f"[{b}:a]atrim={cur:.3f}:{audio_end:.3f},"
                          f"asetpts=PTS-STARTPTS[gz]")
             labels.append("[gz]")
         if has_cid:
-            cid_idx = 2 + len(seg_specs)
+            cid_idx = b + 1 + len(seg_specs)
             parts.append(f"[{cid_idx}:a]asetpts=PTS-STARTPTS[cid]")
             labels.append("[cid]")
         parts.append(f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[aout]")
@@ -3775,6 +3789,14 @@ class Api:
         abr = str(code.get('audio_bitrate', '192k'))
         state_name = str(code.get('state_file', 'claim_jazz_state.json'))
         loop_goc = bool(params.get('jazzLoopGoc'))
+        # Che do "video da co san nhac": tieng nen lay ngay tu video, khong
+        # dung Kho Nhac goc va khong loop hinh. CID THAY THE doan cuoi chu
+        # khong noi them, nen do dai ra dung bang do dai video goc - nho vay
+        # hinh chay lien mach, khong co cu nhay quay ve dau o cuoi video.
+        # Bat bang checkbox chu khong phai "de trong Kho Nhac goc thi tu
+        # hieu": ADR-014 da bac bo kieu do vi khong ai biet app dang chay
+        # che do nao.
+        ready_video = bool(params.get('jazzReadyVideo'))
         loop_min = float(code.get('loop_target_min_seconds', 10800))
         loop_max = float(code.get('loop_target_max_seconds', 11700))
         if loop_max < loop_min:
@@ -3797,8 +3819,10 @@ class Api:
             if not path:
                 self._log(f"Chua chon {label}.", 'err')
                 return
-        for label, path in (("Kho Video", video_dir), ("Kho Nhac goc", goc_dir),
-                            ("Kho CID", cid_dir)):
+        need_dirs = [("Kho Video", video_dir), ("Kho CID", cid_dir)]
+        if not ready_video:
+            need_dirs.insert(1, ("Kho Nhac goc", goc_dir))
+        for label, path in need_dirs:
             if not os.path.isdir(path):
                 self._log(f"Khong thay {label}: {path}", 'err')
                 return
@@ -3811,13 +3835,17 @@ class Api:
 
         videos = sorted(f for f in os.listdir(video_dir)
                         if os.path.splitext(f)[1].lower() in vid_ext
-                        or os.path.splitext(f)[1].lower() in img_ext)
-        gocs = sorted(f for f in os.listdir(goc_dir)
-                      if os.path.splitext(f)[1].lower() in aud_ext)
+                        or (os.path.splitext(f)[1].lower() in img_ext
+                            and not ready_video))
+        gocs = ([] if ready_video else
+                sorted(f for f in os.listdir(goc_dir)
+                       if os.path.splitext(f)[1].lower() in aud_ext))
         cids = sorted(f for f in os.listdir(cid_dir)
                       if os.path.splitext(f)[1].lower() in aud_ext)
-        for label, lst in (("Kho Video", videos), ("Kho Nhac goc", gocs),
-                           ("Kho CID", cids)):
+        need_lists = [("Kho Video", videos), ("Kho CID", cids)]
+        if not ready_video:
+            need_lists.insert(1, ("Kho Nhac goc", gocs))
+        for label, lst in need_lists:
             if not lst:
                 self._log(f"{label} rong.", 'err')
                 return
@@ -3956,12 +3984,17 @@ class Api:
 
         run_items = self._begin_batch(videos)
         total = len(run_items)
-        self._log(f"Tim thay {len(videos)} file hinh/anh -> {len(videos)}"
-                  f" video | {len(gocs)} bai nhac goc | {workers} luong"
-                  f" | ghep {n_noi} bai noi.", 'info')
-        if len(gocs) < len(videos):
-            self._log(f"      Nhac goc it hon so video nen se dung lai:"
-                      f" {len(gocs)} bai cho {len(videos)} video.", 'info')
+        if ready_video:
+            self._log(f"Tim thay {len(videos)} video co san nhac"
+                      f" | {workers} luong | ghep {n_noi} bai noi"
+                      f" | CID thay the doan cuoi.", 'info')
+        else:
+            self._log(f"Tim thay {len(videos)} file hinh/anh -> {len(videos)}"
+                      f" video | {len(gocs)} bai nhac goc | {workers} luong"
+                      f" | ghep {n_noi} bai noi.", 'info')
+            if len(gocs) < len(videos):
+                self._log(f"      Nhac goc it hon so video nen se dung lai:"
+                          f" {len(gocs)} bai cho {len(videos)} video.", 'info')
 
         ok_count, done_count = [0], [0]
         # Anh -> doan video ngan, nho lai theo duong dan anh.
@@ -4030,8 +4063,18 @@ class Api:
             """Mot dong = MOT FILE TRONG KHO VIDEO. Nhac goc lay theo vong
             xoay, khong phai boc ngau nhien."""
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
-            goc_name = goc_cycle[idx % len(goc_cycle)]
-            goc_path = os.path.join(goc_dir, goc_name)
+            if ready_video:
+                # Tieng nen chinh la tieng cua video, khong co file rieng.
+                goc_name = vid_name
+                goc_path = os.path.join(video_dir, vid_name)
+                if not self._has_audio_stream(goc_path):
+                    self._log(f"[{idx + 1}] Video khong co tieng nen khong"
+                              f" dung duoc che do 'video da co san nhac':"
+                              f" {vid_name}", 'err')
+                    return False
+            else:
+                goc_name = goc_cycle[idx % len(goc_cycle)]
+                goc_path = os.path.join(goc_dir, goc_name)
             dur_goc = self._get_duration(goc_path)
             if dur_goc <= 0:
                 self._log(f"[{idx + 1}] Khong doc duoc thoi luong nhac goc:"
@@ -4042,15 +4085,18 @@ class Api:
             # ngau nhien trong [loop_min, loop_max]. Boc ngau nhien chu khong
             # lay tron 3 tieng: nhieu video ra cung dung mot do dai la dau
             # hieu de nhan.
+            # Che do "video co san" khong loop: do dai ra phai dung bang do
+            # dai video, do la ca diem cua che do nay.
             eff_goc, goc_rep = dur_goc, 1
-            if loop_goc and dur_goc < loop_min:
+            if loop_goc and not ready_video and dur_goc < loop_min:
                 eff_goc = rng.uniform(loop_min, loop_max)
                 goc_rep = int(eff_goc // dur_goc) + 1
 
             if eff_goc <= insert_after:
-                extra = ("" if loop_goc else
+                extra = ("" if (loop_goc or ready_video) else
                          " (tick 'Loop nhac goc' de tu keo dai)")
-                self._log(f"[{idx + 1}] Nhac goc chi dai {eff_goc / 60:.1f}"
+                what = "Video" if ready_video else "Nhac goc"
+                self._log(f"[{idx + 1}] {what} chi dai {eff_goc / 60:.1f}"
                           f" phut, ngan hon moc {insert_after / 60:.0f} phut"
                           f" nen khong co cho ghep{extra}: {goc_name}", 'err')
                 return False
@@ -4071,8 +4117,25 @@ class Api:
                 # nen doc o day khong can khoa.
                 chosen = [state[r['file_id']]['parts'][ip] for r, ip in picked]
                 lengths = [p['len'] for p in chosen]
-                slots = self._jazz_pick_slots(insert_after, eff_goc, lengths,
-                                              rng)
+
+                # CID phai biet TRUOC khi chon vi tri chen: o che do "video
+                # co san", CID thay the doan cuoi nen vung dat duoc phai
+                # dung lai truoc no, khong thi mot doan noi se roi vao chinh
+                # cho CID se de len.
+                cid_name = rng.choice(cids)
+                cid_path = os.path.join(cid_dir, cid_name)
+                dur_cid = max(0.0, self._get_duration(cid_path))
+                audio_end = eff_goc - dur_cid if ready_video else eff_goc
+                if audio_end <= insert_after:
+                    self._log(f"[{idx + 1}] Sau khi tru {dur_cid:.0f}s CID thi"
+                              f" khong con cho sau moc"
+                              f" {insert_after / 60:.0f} phut: {vid_name}",
+                              'err')
+                    release(picked)
+                    return False
+
+                slots = self._jazz_pick_slots(insert_after, audio_end,
+                                              lengths, rng)
                 if slots is None:
                     self._log(f"[{idx + 1}] Khong du cho de dat {n_noi} doan"
                               f" sau moc {insert_after / 60:.0f} phut:"
@@ -4080,9 +4143,6 @@ class Api:
                     release(picked)
                     return False
 
-                cid_name = rng.choice(cids)
-                cid_path = os.path.join(cid_dir, cid_name)
-                dur_cid = max(0.0, self._get_duration(cid_path))
                 # vid_name den tu dong bang, KHONG boc ngau nhien nua: moi
                 # file trong Kho Video ra dung mot output.
                 vid_path = os.path.join(video_dir, vid_name)
@@ -4103,8 +4163,13 @@ class Api:
                         release(picked)
                         return False
 
-                total_dur = eff_goc + dur_cid
-                n_rep = int(total_dur // dur_vid) + 1
+                # Che do "video co san": CID THAY THE doan cuoi nen do dai ra
+                # bang dung do dai video, va hinh khong phai lap lan nao.
+                if ready_video:
+                    total_dur, n_rep = eff_goc, 1
+                else:
+                    total_dur = eff_goc + dur_cid
+                    n_rep = int(total_dur // dur_vid) + 1
 
                 loop_note = ("" if goc_rep == 1 else
                              f" | loop nhac goc x{goc_rep}"
@@ -4112,9 +4177,15 @@ class Api:
                 kind = "anh" if is_img else "hinh"
                 # Dat {kind} len TRUOC: no la thu quyet dinh dong nay ton tai
                 # va la ten file ra, nen phai la thu doc thay dau tien.
-                self._log(f"[{idx + 1}/{total}] {kind}: {vid_name} x{n_rep}"
-                          f" | nhac goc: {goc_name}"
-                          f" | CID: {cid_name}{loop_note}", 'info')
+                if ready_video:
+                    self._log(f"[{idx + 1}/{total}] video co san:"
+                              f" {vid_name} ({self._fmt_seconds(int(eff_goc))})"
+                              f" | CID: {cid_name} thay the"
+                              f" {dur_cid:.0f}s cuoi", 'info')
+                else:
+                    self._log(f"[{idx + 1}/{total}] {kind}: {vid_name} x{n_rep}"
+                              f" | nhac goc: {goc_name}"
+                              f" | CID: {cid_name}{loop_note}", 'info')
                 for (r, ip), p, st in zip(picked, chosen, slots):
                     self._log(
                         f"      noi: {r['name']} doan {ip + 1}"
@@ -4136,20 +4207,30 @@ class Api:
                     tmp_files.append(p)
                     return p
 
-                vid_list = _mklist(vid_path, n_rep)
+                # Che do "video co san" khong lap nen khong can file danh
+                # sach: dua thang video lam input 0, no mang ca hinh lan tieng.
+                base_input = 0 if ready_video else 1
+                vid_list = None if ready_video else _mklist(vid_path, n_rep)
 
-                seg_specs = [(2 + i, p['start'], p['len'])
+                seg_specs = [(base_input + 1 + i, p['start'], p['len'])
                              for i, p in enumerate(chosen)]
                 fc = self._jazz_build_filter(eff_goc, slots, seg_specs,
-                                             dur_cid > 0)
+                                             dur_cid > 0,
+                                             base_input=base_input,
+                                             audio_end=audio_end)
 
-                cmd = [self.ffmpeg_path,
-                       '-f', 'concat', '-safe', '0', '-i', vid_list]
-                if goc_rep > 1:
-                    cmd += ['-f', 'concat', '-safe', '0', '-i',
-                            _mklist(goc_path, goc_rep)]
+                cmd = [self.ffmpeg_path]
+                if ready_video:
+                    # input 0 mang CA HINH LAN TIENG -> khong co input nhac
+                    # goc rieng, nhac noi bat dau ngay o input 1.
+                    cmd += ['-i', vid_path]
                 else:
-                    cmd += ['-i', goc_path]
+                    cmd += ['-f', 'concat', '-safe', '0', '-i', vid_list]
+                    if goc_rep > 1:
+                        cmd += ['-f', 'concat', '-safe', '0', '-i',
+                                _mklist(goc_path, goc_rep)]
+                    else:
+                        cmd += ['-i', goc_path]
                 for r, _ip in picked:
                     cmd += ['-i', r['path']]
                 if dur_cid > 0:
