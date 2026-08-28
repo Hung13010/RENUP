@@ -3912,7 +3912,9 @@ class Api:
         remaining = [self._jazz_left(state.get(r['file_id']), n_parts)
                      for r in ready]
         cap = self._jazz_capacity(remaining, n_noi)
-        need = len(gocs)
+        # SO OUTPUT = SO FILE TRONG KHO VIDEO. Moi file hinh/anh ra dung mot
+        # video; nhac goc duoc ghep vao chu khong quyet dinh so luong.
+        need = len(videos)
         if cap < need:
             short = n_noi * need - sum(min(r, need) for r in remaining)
             per_new = min(n_parts, need)
@@ -3920,8 +3922,8 @@ class Api:
             # Viet thanh tung dong ngan, moi dong mot y. Ban dau don het vao
             # mot cau va nguoi dung doc thanh "1 bai noi can 5 bai goc".
             self._log("DUNG: thieu nhac noi.", 'err')
-            self._log(f"      Kho Nhac goc co {need} bai -> se ra {need}"
-                      f" video (moi bai nhac goc = 1 video).", 'info')
+            self._log(f"      Kho Video co {need} file -> se ra {need}"
+                      f" video (moi file hinh/anh = 1 video).", 'info')
             self._log(f"      Moi video can {n_noi} bai noi KHAC NHAU"
                       f" (moi bai gop 1 doan).", 'info')
             self._log(f"      Ban co {len(ready)} bai noi, {sum(remaining)}"
@@ -3941,17 +3943,32 @@ class Api:
             # link nao da can de di bo sung.
             show_jazz_report(jazz_report(), 0, need)
             return
-        self._log(f"Du cho {cap} video (Kho Nhac goc co {need} bai).", 'ok')
+        self._log(f"Du cho {cap} video (Kho Video co {need} file).", 'ok')
 
-        run_items = self._begin_batch(gocs)
+        # Nhac goc XOAY VONG tren danh sach da xao tron: video thu i lay bai
+        # goc_cycle[i % len]. Moi bai deu duoc dung, so lan chenh nhau nhieu
+        # nhat la 1 - khac han viec boc ngau nhien moi lan, cach do co the
+        # goi mot bai ba lan trong khi mot bai khac khong bao gio duoc goi.
+        # Danh chi so theo idx GOC (khong phai vi tri trong run_items) de lan
+        # "chay lai dong loi" van ghep dung cap nhu lan truoc.
+        goc_cycle = list(gocs)
+        rng.shuffle(goc_cycle)
+
+        run_items = self._begin_batch(videos)
         total = len(run_items)
-        self._log(f"Tim thay {len(gocs)} bai nhac goc | {len(videos)} video"
-                  f" | {workers} luong | ghep {n_noi} bai noi.", 'info')
+        self._log(f"Tim thay {len(videos)} file hinh/anh -> {len(videos)}"
+                  f" video | {len(gocs)} bai nhac goc | {workers} luong"
+                  f" | ghep {n_noi} bai noi.", 'info')
+        if len(gocs) < len(videos):
+            self._log(f"      Nhac goc it hon so video nen se dung lai:"
+                      f" {len(gocs)} bai cho {len(videos)} video.", 'info')
 
         ok_count, done_count = [0], [0]
-        # Anh -> doan video ngan. Nho lai theo duong dan anh: mot anh duoc
-        # boc cho nhieu bai nhac goc thi chi dung doan MOT lan cho ca me
-        # (dung doan la phan dat nhat cua nhanh anh).
+        # Anh -> doan video ngan, nho lai theo duong dan anh.
+        # LUU Y: tu khi so output = so file trong Kho Video, moi anh chi xuat
+        # hien DUNG MOT LAN trong mot me, nen cai nho nay khong con trung lan
+        # nao. Giu lai vi no khong ton gi va van dung neu sau nay mot anh lai
+        # duoc dung cho nhieu dong (vi du them che do nhan doi output).
         clip_cache = {}
         clip_dir = tempfile.mkdtemp(prefix='renup_jazz_')
 
@@ -4009,8 +4026,11 @@ class Api:
             self._js(f"uiApi.setProgress({int(d / total * 100)}, '{d}/{total}')")
             self._js(f"uiApi.setStatus('Dang xu ly... {d}/{total} video')")
 
-        def make_one(idx, goc_name):
+        def make_one(idx, vid_name):
+            """Mot dong = MOT FILE TRONG KHO VIDEO. Nhac goc lay theo vong
+            xoay, khong phai boc ngau nhien."""
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            goc_name = goc_cycle[idx % len(goc_cycle)]
             goc_path = os.path.join(goc_dir, goc_name)
             dur_goc = self._get_duration(goc_path)
             if dur_goc <= 0:
@@ -4063,7 +4083,8 @@ class Api:
                 cid_name = rng.choice(cids)
                 cid_path = os.path.join(cid_dir, cid_name)
                 dur_cid = max(0.0, self._get_duration(cid_path))
-                vid_name = rng.choice(videos)
+                # vid_name den tu dong bang, KHONG boc ngau nhien nua: moi
+                # file trong Kho Video ra dung mot output.
                 vid_path = os.path.join(video_dir, vid_name)
                 is_img = os.path.splitext(vid_name)[1].lower() in img_ext
                 if is_img:
@@ -4089,8 +4110,10 @@ class Api:
                              f" | loop nhac goc x{goc_rep}"
                              f" -> {self._fmt_seconds(int(eff_goc))}")
                 kind = "anh" if is_img else "hinh"
-                self._log(f"[{idx + 1}/{total}] {goc_name}"
-                          f" | {kind}: {vid_name} x{n_rep}"
+                # Dat {kind} len TRUOC: no la thu quyet dinh dong nay ton tai
+                # va la ten file ra, nen phai la thu doc thay dau tien.
+                self._log(f"[{idx + 1}/{total}] {kind}: {vid_name} x{n_rep}"
+                          f" | nhac goc: {goc_name}"
                           f" | CID: {cid_name}{loop_note}", 'info')
                 for (r, ip), p, st in zip(picked, chosen, slots):
                     self._log(
@@ -4137,13 +4160,18 @@ class Api:
                         '-ar', str(sr), '-ac', str(ch),
                         '-t', f'{total_dur:.3f}',
                         '-movflags', '+faststart',
+                        # Ten file ra theo TEN FILE TRONG KHO VIDEO. Bat buoc
+                        # phai vay: mot bai nhac goc nay co the duoc dung cho
+                        # nhieu video (vong xoay), nen dat ten theo nhac goc
+                        # se lam cac dong ghi de len nhau. Ten file trong mot
+                        # thu muc thi he thong tep bao dam khong trung.
                         os.path.join(output_dir,
                                      self._safe_filename(
-                                         os.path.splitext(goc_name)[0])
+                                         os.path.splitext(vid_name)[0])
                                      + '.mp4'),
                         '-progress', 'pipe:1', '-nostats', '-y']
                 success, _ = self._run_ffmpeg_with_table(
-                    cmd, idx, total_dur, goc_name)
+                    cmd, idx, total_dur, vid_name)
                 if not success:
                     release(picked)
                 return success
