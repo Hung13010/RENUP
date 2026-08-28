@@ -3542,7 +3542,8 @@ class Api:
                 break
         return k
 
-    def _jazz_image_to_clip(self, img_path, out_path, secs, fps, crf):
+    def _jazz_image_to_clip(self, img_path, out_path, secs, fps, crf,
+                            use_gpu=False):
         """Bien mot ANH TINH thanh doan video ngan de dem di lap.
 
         KHONG ma hoa thang ra do dai cuoi cung: do that 2026-08-27 cho thay
@@ -3555,12 +3556,31 @@ class Api:
         encoder", khong phai canh bao. Rang buoc nay dung cho CA GPU: kich
         thuoc le lam h264_nvenc chet y het.
 
-        UU TIEN GPU qua _gpu_h264_args, tu lui ve CPU khi may khong co.
-        KHONG dung _swap_to_gpu o day: no chen '-hwaccel' truoc '-i', ma dau
-        vao la mot tam ANH chu khong phai luong video, nen co do chi lam
-        ffmpeg bao loi.
+        MAC DINH CPU, va day la NGOAI LE CO CHU Y giua luc moi cho ma hoa
+        video khac deu uu tien GPU. Dung "sua" no thanh GPU cho dong bo -
+        do la bat, va day la so do that (anh 1920x1080, doan 30 giay):
+
+            GPU h264_nvenc   20.5s -> 0.9 MB
+            CPU libx264      25.1s -> 0.4 MB
+
+        GPU nhanh hon ~20% nhung file TO GAP ~2.2 LAN, va rieng o day chenh
+        lech do bi NHAN LEN: doan nay duoc lap hang tram lan de phu het mot
+        video 3 tieng. Uoc tinh cho video 3h30 dung tu anh: luong hinh
+        378 MB (GPU) so voi 168 MB (CPU) - doi ~5 giay lay +210 MB MOI VIDEO.
+        Cac nhanh ma hoa video khac khong co van de nay vi chung ma hoa noi
+        dung that, khong lap lai mot doan.
+
+        Muon doi thi bat 'image_clip_gpu' trong preset, khong phai sua code.
+
+        KHONG dung _swap_to_gpu o day trong moi truong hop: no chen
+        '-hwaccel' truoc '-i', ma dau vao la mot tam ANH chu khong phai
+        luong video, nen co do chi lam ffmpeg bao loi.
         """
-        venc, tag = self._gpu_h264_args(crf)
+        if use_gpu:
+            venc, tag = self._gpu_h264_args(crf)
+        else:
+            venc = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', str(crf)]
+            tag = 'CPU libx264'
         cmd = [self.ffmpeg_path, '-v', 'error', '-y',
                '-loop', '1', '-framerate', str(fps), '-i', img_path,
                '-t', f'{secs:.3f}',
@@ -3696,6 +3716,9 @@ class Api:
         img_secs = float(code.get('image_clip_seconds', 30))
         img_fps = float(code.get('image_fps', 30))
         img_crf = int(code.get('image_crf', 23))
+        # Mac dinh CPU: xem docstring _jazz_image_to_clip - GPU nhanh hon 20%
+        # nhung file to gap 2.2 lan, ma doan nay bi lap hang tram lan.
+        img_gpu = bool(code.get('image_clip_gpu', False))
         aud_ext = [e.lower() for e in code.get(
             'audio_ext', ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'])]
         n_parts = max(1, int(code.get('noi_parts', 5)))
@@ -3896,7 +3919,7 @@ class Api:
                 return hit, ''
             out = os.path.join(clip_dir, f"{uuid.uuid4().hex}.mp4")
             ok, err = self._jazz_image_to_clip(img_path, out, img_secs,
-                                               img_fps, img_crf)
+                                               img_fps, img_crf, img_gpu)
             if not ok:
                 return None, err
             with self._lock:

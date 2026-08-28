@@ -15,6 +15,9 @@
   "image_fps": 30,
   "image_crf": 23,
 
+  "_comment_image_clip_gpu": "NGOẠI LỆ CÓ CHỦ Ý: mặc định false (CPU), trong khi mọi chỗ mã hoá video khác của app đều ưu tiên GPU. Đo thật 2026-08-28 trên ảnh 1920×1080, đoạn 30 giây — GPU h264_nvenc: 20,5 giây, file 0,9 MB; CPU libx264: 25,1 giây, file 0,4 MB. GPU nhanh hơn ~20% nhưng file to gấp ~2,2 lần, và riêng ở đây chênh lệch đó bị NHÂN LÊN vì đoạn được lặp hàng trăm lần để phủ hết video 3 tiếng: ước tính luồng hình 378 MB (GPU) so với 168 MB (CPU) cho video 3h30, tức đổi ~5 giây lấy +210 MB mỗi video. Bật true nếu máy bạn yếu CPU và dung lượng đĩa không phải vấn đề.",
+  "image_clip_gpu": false,
+
   "_comment_noi_parts": "Mỗi bài nhạc nối được cắt thành bao nhiêu đoạn. Đây CŨNG là số lần tối đa một bài được dùng, vì mỗi đoạn chỉ dùng đúng một lần. Đổi số này sau khi đã chạy vài mẻ KHÔNG làm hỏng dữ liệu cũ: các đoạn đã bốc được lưu nguyên trong state_file kèm mốc thời gian, nên bài cũ giữ nguyên số đoạn cũ; chỉ bài gặp lần đầu từ đây trở đi mới cắt theo số mới.",
   "noi_parts": 5,
 
