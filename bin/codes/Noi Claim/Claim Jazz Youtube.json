@@ -38,6 +38,9 @@
   "_comment_state_file": "Sổ ghi các đoạn đã bốc của từng bài và đoạn nào đã dùng, đặt cạnh ffmpeg.exe trong bin/. Danh tính một bài là FILE ID của Google Drive chứ không phải tên bài — đổi tên bài trong bảng không làm mất lịch sử đã dùng. Đoạn được bốc MỘT LẦN lúc gặp bài lần đầu rồi lưu lại (mốc bắt đầu + độ dài), các lần sau chỉ tiêu dần; nhờ vậy 'mỗi đoạn dùng một lần' là thứ kiểm chứng được chứ không phải lời hứa. Sổ theo bản cũ (chia đều, chỉ ghi chỉ số phần) KHÔNG chuyển đổi được sang bản này vì cách cắt đã khác hẳn — app sẽ báo và cấp lại từ đầu. Xoá file này = cho phép dùng lại tất cả từ đầu.",
   "state_file": "claim_jazz_state.json",
 
+  "_comment_delete_exhausted_noi": "Bật (mặc định) thì file cache của bài nhạc nối ĐÃ HẾT ĐOẠN sẽ bị xoá khỏi Folder nhạc nối. An toàn vì bài hết đoạn không bao giờ được bốc nữa, và nếu cần thì luôn tải lại được từ chính link trong bảng. Đi kèm một thay đổi quan trọng hơn: app nay ĐỌC SỔ TRƯỚC KHI TẢI, nên bài đã hết đoạn không bị tải lại nữa — trước đây nó tải hết rồi mới mở sổ, tức mỗi lần chạy tải thừa ~37 MB cho mỗi bài đã cạn (số đo trên file thật). Thứ tự này bắt buộc: nếu xoá file mà không có bước bỏ-qua thì lần sau tải về rồi lại xoá, thành vòng luẩn quẩn. Tắt (false) nếu bạn muốn giữ lại file nhạc dù đã dùng hết.",
+  "delete_exhausted_noi": true,
+
   "_comment_audio": "Phần tiếng luôn được mã hoá lại (bắt buộc, vì phải cắt ghép nhiều nguồn). Hình thì không.",
   "audio_bitrate": "192k",
   "sample_rate": 44100,

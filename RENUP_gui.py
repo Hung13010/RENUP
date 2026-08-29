@@ -3788,6 +3788,10 @@ class Api:
         ch = int(code.get('channels', 2))
         abr = str(code.get('audio_bitrate', '192k'))
         state_name = str(code.get('state_file', 'claim_jazz_state.json'))
+        # Xoa file cache cua bai da het doan. An toan vi luon tai lai duoc tu
+        # chinh link trong bang; va chi xoa SAU khi da co buoc bo-qua-khi-het
+        # o tren, khong thi lan sau se tai ve roi lai xoa - vong luan quan.
+        del_used = bool(code.get('delete_exhausted_noi', True))
         loop_goc = bool(params.get('jazzLoopGoc'))
         # Che do "video da co san nhac": tieng nen lay ngay tu video, khong
         # dung Kho Nhac goc va khong loop hinh. CID THAY THE doan cuoi chu
@@ -3859,15 +3863,84 @@ class Api:
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(noi_dir, exist_ok=True)
 
-        # --- Tai truoc toan bo nhac noi (cache theo file_id) ---
+        # DOC SO TRUOC KHI TAI. Truoc day tai het roi moi mo so ra xem, nen
+        # bai da het doan van bi tai lai MOI LAN CHAY roi bi bo qua - do that
+        # tren file cua nguoi dung la ~37 MB moi bai, va cang nhieu bai can
+        # thi cang phi.
+        rng = random.Random()
+        state_path = os.path.join(os.path.dirname(self.ffmpeg_path), state_name)
+        state = self._jazz_load_state(state_path)
+
+        def jazz_report():
+            """Tinh trang tung link, theo DUNG THU TU BANG cua nguoi dung -
+            khong sap xep lai, vi ho doi chieu voi bang minh vua dan.
+
+            Duyet noi_rows chu khong duyet `ready`: bai da het doan khong nam
+            trong `ready` (khong tai, khong dung) nhung VAN phai hien trong
+            popup - do chinh la thu nguoi dung can thay de di bo sung link.
+            Bai chua co trong so (tai fail ngay lan dau) thi bo qua, no da co
+            dong log loi rieng.
+            """
+            out = []
+            for r in noi_rows:
+                ent = state.get(r['file_id'])
+                if not ent:
+                    continue
+                parts = ent.get('parts') or []
+                out.append({'name': r['name'], 'id': r['file_id'],
+                            'left': sum(1 for p in parts if not p['used']),
+                            'total': len(parts)})
+            return out
+
+        def show_jazz_report(rows, ok_n, total_n):
+            # Python goi thang ham JS toan cuc, dung tien le cua
+            # showUpdateDialog/showRetryDialog chu khong qua uiApi.
+            self._js("showJazzReport("
+                     + json.dumps(rows, ensure_ascii=False)
+                     + f", {ok_n}, {total_n})")
+
+        def purge_noi_cache(file_id, name):
+            """Xoa file cache cua mot bai DA HET DOAN. Tra ve so MB da giai
+            phong. An toan: bai het doan thi khong bao gio duoc boc nua, va
+            neu can thi luon tai lai duoc tu chinh link trong bang."""
+            if not del_used:
+                return 0.0
+            dest = os.path.join(noi_dir, f"{file_id}.mp3")
+            if not os.path.exists(dest):
+                return 0.0
+            try:
+                mb = os.path.getsize(dest) / 1024 ** 2
+                os.remove(dest)
+                self._log(f"  Da xoa file cache ({mb:.0f} MB): {name}", 'ok')
+                return mb
+            except OSError as e:
+                self._log(f"  Khong xoa duoc file cache ({name}): {e}", 'err')
+                return 0.0
+
+        # --- Loai bai da het doan TRUOC khi tai ---
+        pending, n_done, freed = [], 0, 0.0
+        for row in noi_rows:
+            ent = state.get(row['file_id'])
+            if ent is not None and self._jazz_left(ent, n_parts) == 0:
+                n_done += 1
+                self._log(f"Da het doan, khong tai lai: {row['name']}", 'info')
+                freed += purge_noi_cache(row['file_id'], row['name'])
+                continue
+            pending.append(row)
+        if n_done:
+            extra = f", giai phong {freed:.0f} MB" if freed else ""
+            self._log(f"Bo qua {n_done} bai da het doan{extra}"
+                      f" ({len(pending)} bai con lai se tai/dung).", 'info')
+
+        # --- Tai nhac noi con dung duoc (cache theo file_id) ---
         self._js("uiApi.setStatus('Dang tai nhac noi tu Drive...')")
         ready = []
-        for i, row in enumerate(noi_rows):
+        for i, row in enumerate(pending):
             if self._stopped:
                 return
             dest = os.path.join(noi_dir, f"{row['file_id']}.mp3")
             if not os.path.exists(dest):
-                self._log(f"Tai nhac noi {i + 1}/{len(noi_rows)}:"
+                self._log(f"Tai nhac noi {i + 1}/{len(pending)}:"
                           f" {row['name']}", 'info')
                 if not self._download_music_drive(row['url'], dest):
                     self._log(f"  Tai fail, bo qua bai: {row['name']}", 'err')
@@ -3880,12 +3953,12 @@ class Api:
             row['path'], row['dur'] = dest, d
             ready.append(row)
         if not ready:
-            self._log("Khong co bai nhac noi nao dung duoc.", 'err')
+            self._log("Khong co bai nhac noi nao con dung duoc."
+                      + (f" Ca {n_done} bai trong bang deu da het doan -"
+                         f" hay them link moi." if n_done else ""), 'err')
+            self._js("uiApi.setStatus('Het nhac noi.')")
+            show_jazz_report(jazz_report(), 0, 0)
             return
-
-        rng = random.Random()
-        state_path = os.path.join(os.path.dirname(self.ffmpeg_path), state_name)
-        state = self._jazz_load_state(state_path)
 
         # Bai nao chua co trong so thi boc luon cac doan cua no MOT LAN roi
         # ghi lai. Boc san o day (khong phai luc dung) chinh la thu lam cho
@@ -3915,24 +3988,6 @@ class Api:
         self._jazz_save_state(state_path, state)
         self._log(f"Nhac noi san sang: {len(ready)} bai (moi bai {n_parts}"
                   f" doan ngau nhien {part_min:.0f}-{part_max:.0f}s).", 'ok')
-
-        def jazz_report():
-            """Tinh trang tung link, theo DUNG THU TU BANG cua nguoi dung -
-            khong sap xep lai, vi ho doi chieu voi bang minh vua dan."""
-            out = []
-            for r in ready:
-                parts = (state.get(r['file_id']) or {}).get('parts') or []
-                out.append({'name': r['name'], 'id': r['file_id'],
-                            'left': sum(1 for p in parts if not p['used']),
-                            'total': len(parts)})
-            return out
-
-        def show_jazz_report(rows, ok_n, total_n):
-            # Python goi thang ham JS toan cuc, dung tien le cua
-            # showUpdateDialog/showRetryDialog chu khong qua uiApi.
-            self._js("showJazzReport("
-                     + json.dumps(rows, ensure_ascii=False)
-                     + f", {ok_n}, {total_n})")
 
         # Kiem DU CHO CA ME truoc khi chay dong nao. Neu thieu thi dung han
         # va bao them link, thay vi chay duoc mot nua roi bao loi tung dong -
@@ -4293,6 +4348,13 @@ class Api:
         report = jazz_report()
         left = sum(x['left'] for x in report)
         n_out = sum(1 for x in report if x['left'] == 0)
+
+        # Bai VUA het doan trong me nay: don luon thay vi doi lan chay sau.
+        # Vong lap dau me van can giu - no bat cac bai het tu truoc, va bat
+        # ca truong hop nguoi dung bat co xoa sau khi da co bai can.
+        for x in report:
+            if x['left'] == 0:
+                purge_noi_cache(x['id'], x['name'])
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video"
                   f" | nhac noi con {left} doan chua dung ===", 'ok')
