@@ -485,24 +485,6 @@ button[hidden] { display: none !important; }
           <input type="text" id="jazzGocDir" placeholder="Mỗi bài ra 1 video...">
           <button class="browse-btn" onclick="pyApi.browseJazzGocFolder()">📂</button>
         </div>
-        <div class="field-label" style="margin-top:6px;">🔗 Bảng nhạc nối (Tab: Tên bài | Link Drive)</div>
-        <textarea id="jazzNoiTable" style="min-height:80px;"
-                  placeholder="Ten bai&#9;https://drive.google.com/file/d/.../view" spellcheck="false"></textarea>
-        <div class="field-label" style="margin-top:6px;">📁 Folder cache nhạc nối</div>
-        <div class="input-row">
-          <input type="text" id="jazzNoiDir" placeholder="Nơi lưu nhạc nối tải về...">
-          <button class="browse-btn" onclick="pyApi.browseJazzNoiFolder()">📂</button>
-        </div>
-        <div class="field-label" style="margin-top:6px;">🎧 Kho Nhạc CID lớn</div>
-        <div class="input-row">
-          <input type="text" id="jazzCidDir" placeholder="Mỗi video lấy ngẫu nhiên 1 bài...">
-          <button class="browse-btn" onclick="pyApi.browseJazzCidFolder()">📂</button>
-        </div>
-        <div class="field-label" style="margin-top:6px;">🔢 Số bài nối mỗi video</div>
-        <div class="settings-row">
-          <input type="text" id="jazzNoiCount" value="4" style="width:80px;">
-          <span style="font-size:11px; color:var(--text-muted);">bài · mỗi bài 1 đoạn</span>
-        </div>
         <div class="settings-row" style="margin-top:8px;">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input type="checkbox" id="jazzLoopGoc">
@@ -512,14 +494,37 @@ button[hidden] { display: none !important; }
         <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
           lặp tới độ dài ngẫu nhiên 3:00–3:15
         </div>
-        <div class="settings-row" style="margin-top:8px;">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="checkbox" id="jazzReadyVideo">
-            <span>🎬 Video đã có sẵn nhạc</span>
-          </label>
-        </div>
-        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
-          bỏ qua Kho Nhạc gốc, CID thay thế đoạn cuối · giữ nguyên độ dài video
+
+        <!-- Chi ban DAY DU dung: nhac noi + CID. Ban don gian an khoi nay di.
+             Chu so huu duy nhat cua #jazzNoiOnly la uiApi.showJazzNoiOnly. -->
+        <div id="jazzNoiOnly">
+          <div class="field-label" style="margin-top:6px;">🔗 Bảng nhạc nối (Tab: Tên bài | Link Drive)</div>
+          <textarea id="jazzNoiTable" style="min-height:80px;"
+                    placeholder="Ten bai&#9;https://drive.google.com/file/d/.../view" spellcheck="false"></textarea>
+          <div class="field-label" style="margin-top:6px;">📁 Folder cache nhạc nối</div>
+          <div class="input-row">
+            <input type="text" id="jazzNoiDir" placeholder="Nơi lưu nhạc nối tải về...">
+            <button class="browse-btn" onclick="pyApi.browseJazzNoiFolder()">📂</button>
+          </div>
+          <div class="field-label" style="margin-top:6px;">🎧 Kho Nhạc CID lớn</div>
+          <div class="input-row">
+            <input type="text" id="jazzCidDir" placeholder="Mỗi video lấy ngẫu nhiên 1 bài...">
+            <button class="browse-btn" onclick="pyApi.browseJazzCidFolder()">📂</button>
+          </div>
+          <div class="field-label" style="margin-top:6px;">🔢 Số bài nối mỗi video</div>
+          <div class="settings-row">
+            <input type="text" id="jazzNoiCount" value="4" style="width:80px;">
+            <span style="font-size:11px; color:var(--text-muted);">bài · mỗi bài 1 đoạn</span>
+          </div>
+          <div class="settings-row" style="margin-top:8px;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="checkbox" id="jazzReadyVideo">
+              <span>🎬 Video đã có sẵn nhạc</span>
+            </label>
+          </div>
+          <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+            bỏ qua Kho Nhạc gốc, CID thay thế đoạn cuối · giữ nguyên độ dài video
+          </div>
         </div>
       </div>
 
@@ -972,6 +977,16 @@ window.uiApi = {
     document.getElementById('claimJazzSection').style.display = show ? 'block' : 'none';
     NO_INPUT_DIR.claimjazz = show;
     _syncInputDirRow();
+  },
+
+  // Hai chuc nang Claim Jazz dung chung #claimJazzSection; ban don gian
+  // (claim_jazz_simple) khong co nhac noi lan CID nen an khoi nay di.
+  // Tach thanh callback rieng chu khong them tham so thu hai vao
+  // showClaimJazzSection: giu bat bien "mot show*Section = mot boolean", va
+  // moi element van co dung mot chu so huu. onFuncChanged goi CA HAI voi
+  // true/false o moi lan doi chuc nang nen khong the sot trang thai cu.
+  showJazzNoiOnly(show) {
+    document.getElementById('jazzNoiOnly').style.display = show ? 'block' : 'none';
   },
 
   setJazzFolder(key, path) {

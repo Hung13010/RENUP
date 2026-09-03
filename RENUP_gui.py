@@ -535,7 +535,14 @@ class Api:
         self._js(f"uiApi.showResizeSection({str(code_type == 'resize_image').lower()})")
         self._js(f"uiApi.showYoutubeSection({str(code_type == 'youtube_download').lower()})")
         self._js(f"uiApi.showYtThumbSection({str(code_type == 'youtube_thumbnail').lower()})")
-        self._js(f"uiApi.showClaimJazzSection({str(code_type == 'claim_jazz').lower()})")
+        # Hai chuc nang Claim Jazz dung CHUNG mot khu vuc; ban don gian chi
+        # an di phan nhac noi + CID. Moi element van co dung MOT chu:
+        # #claimJazzSection <- showClaimJazzSection, #jazzNoiOnly <-
+        # showJazzNoiOnly. Ca hai deu duoc goi voi true/false o MOI lan doi
+        # chuc nang nen khong the con sot trang thai cu.
+        is_jazz = code_type in ('claim_jazz', 'claim_jazz_simple')
+        self._js(f"uiApi.showClaimJazzSection({str(is_jazz).lower()})")
+        self._js(f"uiApi.showJazzNoiOnly({str(code_type == 'claim_jazz').lower()})")
 
     def addSeparator(self):
         self._js("document.getElementById('editor').value += '#\\n'; updateLineCount();")
@@ -862,6 +869,8 @@ class Api:
                     self._run_claim_tiktok(params, code)
                 elif code_type == 'claim_jazz':
                     self._run_claim_jazz(params, code)
+                elif code_type == 'claim_jazz_simple':
+                    self._run_claim_jazz_simple(params, code)
                 elif code_type == 'resize_image':
                     self._run_resize_image(params, code)
                 elif code_type == 'youtube_download':
@@ -4369,6 +4378,245 @@ class Api:
 
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
         show_jazz_report(report, ok_count[0], total)
+
+    def _run_claim_jazz_simple(self, params, code):
+        """Ban rut gon cua Claim Jazz: CHI loop hinh cho du mot bai nhac goc.
+        Khong nhac noi, khong CID, khong so han muc.
+
+        VI SAO VIET RIENG chu khong them mot co vao _run_claim_jazz: gan het
+        do dai ham kia la so han muc / tai Drive / kiem suc chua / giu cho /
+        dat doan / popup - khong cai nao ap dung o day. Them ~8 nhanh
+        "if not simple" vao mot ham 600 dong da qua ba ADR (019/020/021) va
+        dang chay on dinh la doi mot rui ro that lay vai chuc dong do lai.
+
+        Vi khong co gi de cat ghep nen o day KHONG can filter_complex - map
+        thang luong hinh voi luong tieng. Do la khac biet lon nhat so voi ham
+        kia, va no lam ca phan lenh ngan han.
+
+        Cai gia phai tra, noi thang de nguoi sau khong tuong la sot: doan
+        quet kho, vong xoay nhac goc, dung doan tu anh va cach lap bang
+        concat demuxer bi LAP LAI o hai handler. Sua mot ben thi phai nho ben
+        kia. Cho gom lai la task tach module .tasks/009.
+        """
+        folders = params.get('folders') or {}
+        video_dir = (folders.get('jazzVideo') or '').strip()
+        goc_dir = (folders.get('jazzGoc') or '').strip()
+        output_dir = (params.get('outputDir') or '').strip()
+        workers = max(1, int(params.get('workers') or 1))
+
+        vid_ext = [e.lower() for e in code.get(
+            'video_ext', ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v'])]
+        img_ext = [e.lower() for e in code.get(
+            'image_ext', ['.jpg', '.jpeg', '.png', '.webp', '.bmp'])]
+        aud_ext = [e.lower() for e in code.get(
+            'audio_ext', ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'])]
+        img_secs = float(code.get('image_clip_seconds', 30))
+        img_fps = float(code.get('image_fps', 30))
+        img_crf = int(code.get('image_crf', 23))
+        # Mac dinh CPU: xem docstring _jazz_image_to_clip - GPU nhanh hon 20%
+        # nhung file to gap 2.2 lan, ma doan nay bi lap hang tram lan.
+        img_gpu = bool(code.get('image_clip_gpu', False))
+        sr = int(code.get('sample_rate', 44100))
+        ch = int(code.get('channels', 2))
+        abr = str(code.get('audio_bitrate', '192k'))
+        loop_goc = bool(params.get('jazzLoopGoc'))
+        loop_min = float(code.get('loop_target_min_seconds', 10800))
+        loop_max = float(code.get('loop_target_max_seconds', 11700))
+        if loop_max < loop_min:
+            loop_max = loop_min
+
+        self._js("uiApi.setStatus('Dang chuan bi ghep hinh + nhac goc...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau Claim Jazz don gian (hinh + nhac goc) ===",
+                  'info')
+
+        for label, path in (("Kho Video", video_dir),
+                            ("Kho Nhac goc", goc_dir),
+                            ("Output", output_dir)):
+            if not path:
+                self._log(f"Chua chon {label}.", 'err')
+                return
+        for label, path in (("Kho Video", video_dir),
+                            ("Kho Nhac goc", goc_dir)):
+            if not os.path.isdir(path):
+                self._log(f"Khong thay {label}: {path}", 'err')
+                return
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+
+        videos = sorted(f for f in os.listdir(video_dir)
+                        if os.path.splitext(f)[1].lower() in vid_ext + img_ext)
+        gocs = sorted(f for f in os.listdir(goc_dir)
+                      if os.path.splitext(f)[1].lower() in aud_ext)
+        for label, lst in (("Kho Video", videos), ("Kho Nhac goc", gocs)):
+            if not lst:
+                self._log(f"{label} rong.", 'err')
+                return
+
+        os.makedirs(output_dir, exist_ok=True)
+        rng = random.Random()
+
+        # Nhac goc XOAY VONG tren danh sach da xao tron (ADR-021): moi bai
+        # deu duoc dung, so lan chenh nhau nhieu nhat la 1 - khac han viec
+        # boc ngau nhien moi lan, cach do co the goi mot bai ba lan trong khi
+        # mot bai khac khong bao gio duoc goi. Danh chi so theo idx GOC de lan
+        # "chay lai dong loi" van ghep dung cap nhu lan truoc.
+        goc_cycle = list(gocs)
+        rng.shuffle(goc_cycle)
+
+        run_items = self._begin_batch(videos)
+        total = len(run_items)
+        self._log(f"Tim thay {len(videos)} file hinh/anh -> {len(videos)}"
+                  f" video | {len(gocs)} bai nhac goc | {workers} luong"
+                  f" | khong nhac noi, khong CID.", 'info')
+        if len(gocs) < len(videos):
+            self._log(f"      Nhac goc it hon so video nen se dung lai:"
+                      f" {len(gocs)} bai cho {len(videos)} video.", 'info')
+
+        ok_count, done_count = [0], [0]
+        clip_dir = tempfile.mkdtemp(prefix='renup_jazz2_')
+
+        def update(idx, success):
+            with self._lock:
+                if success:
+                    ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            self._mark_row(idx, success)
+            self._js(f"uiApi.setProgress({int(d / total * 100)},"
+                     f" '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang xu ly... {d}/{total} video')")
+
+        def make_one(idx, vid_name):
+            """Mot dong = MOT FILE TRONG KHO VIDEO (ADR-021)."""
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            goc_name = goc_cycle[idx % len(goc_cycle)]
+            goc_path = os.path.join(goc_dir, goc_name)
+            dur_goc = self._get_duration(goc_path)
+            if dur_goc <= 0:
+                self._log(f"[{idx + 1}] Khong doc duoc thoi luong nhac goc:"
+                          f" {goc_name}", 'err')
+                return False
+
+            # Bai ngan hon nguong thi lap lai chinh no cho du mot do dai boc
+            # ngau nhien trong [loop_min, loop_max]. Khong tick thi bai ngan
+            # VAN CHAY, chi la video ra ngan bang bai nhac - o day khong co
+            # moc insert_after nhu ban day du nen khong co gi chan lai.
+            eff_goc, goc_rep = dur_goc, 1
+            if loop_goc and dur_goc < loop_min:
+                eff_goc = rng.uniform(loop_min, loop_max)
+                goc_rep = int(eff_goc // dur_goc) + 1
+
+            tmp_files = []
+            try:
+                vid_path = os.path.join(video_dir, vid_name)
+                is_img = os.path.splitext(vid_name)[1].lower() in img_ext
+                if is_img:
+                    # Khong nho lai doan da dung: moi file trong Kho Video
+                    # xuat hien DUNG MOT LAN trong mot me (do la dinh nghia
+                    # cua chuc nang) nen mot cai cache khong bao gio trung.
+                    clip = os.path.join(clip_dir, f"{uuid.uuid4().hex}.mp4")
+                    ok, err = self._jazz_image_to_clip(vid_path, clip,
+                                                       img_secs, img_fps,
+                                                       img_crf, img_gpu)
+                    if not ok:
+                        self._log(f"[{idx + 1}] Khong dung duoc doan video tu"
+                                  f" anh {vid_name}: {err}", 'err')
+                        return False
+                    vid_path, dur_vid = clip, img_secs
+                else:
+                    dur_vid = self._get_duration(vid_path)
+                    if dur_vid <= 0:
+                        self._log(f"[{idx + 1}] Khong doc duoc thoi luong"
+                                  f" video: {vid_name}", 'err')
+                        return False
+
+                n_rep = int(eff_goc // dur_vid) + 1
+
+                def _mklist(path_in, times):
+                    """File danh sach cho concat demuxer. Lap bang CACH NAY,
+                    KHONG dung -stream_loop: co do thoi lap ngay khi lenh co
+                    input thu hai (ADR-019), ma lenh nay luon co hai input."""
+                    p = os.path.join(output_dir,
+                                     f"_jazz_{uuid.uuid4().hex}.txt")
+                    with open(p, 'w', encoding='utf-8') as fh:
+                        for _ in range(times):
+                            fh.write("file '" + path_in.replace('\\', '/')
+                                     + "'\n")
+                    tmp_files.append(p)
+                    return p
+
+                loop_note = ("" if goc_rep == 1 else
+                             f" | loop nhac goc x{goc_rep}"
+                             f" -> {self._fmt_seconds(int(eff_goc))}")
+                kind = "anh" if is_img else "hinh"
+                self._log(f"[{idx + 1}/{total}] {kind}: {vid_name} x{n_rep}"
+                          f" | nhac goc: {goc_name}"
+                          f" ({self._fmt_seconds(int(eff_goc))}){loop_note}",
+                          'info')
+
+                cmd = [self.ffmpeg_path,
+                       '-f', 'concat', '-safe', '0', '-i',
+                       _mklist(vid_path, n_rep)]
+                if goc_rep > 1:
+                    cmd += ['-f', 'concat', '-safe', '0', '-i',
+                            _mklist(goc_path, goc_rep)]
+                else:
+                    cmd += ['-i', goc_path]
+                # Khong cat ghep gi -> khong can filter_complex, map thang.
+                # Tieng van ma hoa lai de chuan hoa sample rate/kenh va de
+                # chac chan bo vao vo mp4 duoc (mp3/flac/ogg copy thang vao
+                # mp4 la nguon loi).
+                cmd += ['-map', '0:v:0', '-map', '1:a:0',
+                        '-c:v', 'copy', '-c:a', 'aac', '-b:a', abr,
+                        '-ar', str(sr), '-ac', str(ch),
+                        # -t tuong minh, KHONG dung -shortest: -shortest doc
+                        # do dai GOC cua file nguon chu khong doc luong da
+                        # lap, roi cat phang dau ra (ADR-019).
+                        '-t', f'{eff_goc:.3f}',
+                        '-movflags', '+faststart',
+                        # Ten file ra theo TEN FILE TRONG KHO VIDEO (ADR-021):
+                        # mot bai nhac goc co the phuc vu nhieu dong (vong
+                        # xoay) nen dat ten theo nhac goc se lam cac dong ghi
+                        # de len nhau.
+                        os.path.join(output_dir,
+                                     self._safe_filename(
+                                         os.path.splitext(vid_name)[0])
+                                     + '.mp4'),
+                        '-progress', 'pipe:1', '-nostats', '-y']
+                success, _ = self._run_ffmpeg_with_table(
+                    cmd, idx, eff_goc, vid_name)
+                return success
+            except Exception as e:
+                self._log(f"[{idx + 1}] LOI: {e}", 'err')
+                return False
+            finally:
+                for p in tmp_files:
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, name in run_items:
+                if self._stopped:
+                    break
+                futures[ex.submit(make_one, i, name)] = i
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception as e:
+                    self._log(f"[{i + 1}] LOI: {e}", 'err')
+                    success = False
+                update(i, success)
+
+        shutil.rmtree(clip_dir, ignore_errors=True)
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
 
     # ── Youtube Download ──
 

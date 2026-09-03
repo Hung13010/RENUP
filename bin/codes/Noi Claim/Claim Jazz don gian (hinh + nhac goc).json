@@ -1,0 +1,29 @@
+{
+  "name": "Claim Jazz đơn giản (chỉ loop hình + nhạc gốc)",
+  "type": "claim_jazz_simple",
+  "description": "Bản rút gọn của Claim Jazz Youtube: mỗi file trong Kho Video ra một video, loop hình cho đủ thời lượng một bài trong Kho Nhạc gốc. KHÔNG có nhạc nối, KHÔNG có CID — nên không cần bảng link Drive, không cần folder cache, không có sổ hạn mức và không bao giờ bị chặn vì thiếu nhạc nối. Hình vẫn KHÔNG bị mã hoá lại (nối bằng concat demuxer, -c:v copy); chỉ phần tiếng được mã hoá lại để chuẩn hoá sample rate/kênh. Kho Video nhận cả ảnh tĩnh. Nhạc gốc xoay vòng như bản đầy đủ nên mọi bài đều được dùng, số lần chênh nhau nhiều nhất là 1.",
+
+  "_comment_video_ext": "Đuôi file được coi là video khi quét Kho Video.",
+  "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v"],
+
+  "_comment_audio_ext": "Đuôi file được coi là nhạc khi quét Kho Nhạc gốc.",
+  "audio_ext": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"],
+
+  "_comment_image": "Kho Video nhận CẢ ẢNH TĨNH. Ảnh được dựng thành một đoạn video dài image_clip_seconds rồi lặp đoạn đó bằng concat như với video thường. KHÔNG mã hoá thẳng ra độ dài cuối cùng: đo thật 2026-08-27 cho thấy mã hoá 300 giây từ ảnh mất 423 giây, tức một video 3 tiếng sẽ mất ~254 PHÚT; cách dựng đoạn ngắn chỉ mất ~1,8 phút và chi phí không tăng theo độ dài đầu ra. Ảnh có cạnh LẺ được tự làm tròn xuống số chẵn — bắt buộc, vì libx264 chết hẳn với kích thước lẻ chứ không phải chỉ cảnh báo.",
+  "image_ext": [".jpg", ".jpeg", ".png", ".webp", ".bmp"],
+  "image_clip_seconds": 30,
+  "image_fps": 30,
+  "image_crf": 23,
+
+  "_comment_image_clip_gpu": "NGOẠI LỆ CÓ CHỦ Ý: mặc định false (CPU), trong khi mọi chỗ mã hoá video khác của app đều ưu tiên GPU. Đo thật 2026-08-28 trên ảnh 1920×1080, đoạn 30 giây — GPU h264_nvenc: 20,5 giây, file 0,9 MB; CPU libx264: 25,1 giây, file 0,4 MB. GPU nhanh hơn ~20% nhưng file to gấp ~2,2 lần, và riêng ở đây chênh lệch đó bị NHÂN LÊN vì đoạn được lặp hàng trăm lần để phủ hết video 3 tiếng: ước tính luồng hình 378 MB (GPU) so với 168 MB (CPU) cho video 3h30, tức đổi ~5 giây lấy +210 MB mỗi video. Bật true nếu máy bạn yếu CPU và dung lượng đĩa không phải vấn đề.",
+  "image_clip_gpu": false,
+
+  "_comment_loop_target": "Chỉ dùng khi tick '🔁 Loop nhạc gốc nếu dưới 3 tiếng'. Bài ngắn hơn loop_target_min_seconds sẽ được lặp lại chính nó cho tới một độ dài BỐC NGẪU NHIÊN trong khoảng [min, max]. Bốc ngẫu nhiên chứ không lấy tròn 3 tiếng, vì hàng loạt video ra cùng đúng một độ dài là dấu hiệu dễ nhận. 10800 = 3 tiếng, 11700 = 3 tiếng 15 phút. KHÁC bản đầy đủ ở một điểm quan trọng: chức năng này KHÔNG có mốc insert_after_seconds, nên bài nhạc gốc ngắn tới đâu cũng chạy được — không tick thì đơn giản là video ra ngắn bằng bài nhạc.",
+  "loop_target_min_seconds": 10800,
+  "loop_target_max_seconds": 11700,
+
+  "_comment_audio": "Phần tiếng được mã hoá lại để chuẩn hoá sample rate/số kênh và bảo đảm bỏ vào vỏ mp4 được. Hình thì không mã hoá lại.",
+  "audio_bitrate": "192k",
+  "sample_rate": 44100,
+  "channels": 2
+}
