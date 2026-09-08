@@ -37,6 +37,7 @@ bin/*_state.json
 bin/claim_state.json
 bin/claim_jazz_state.json
 bin/_yt_thumb_cache/
+bin/_ovl_preview_cache/
 *.pyc
 
 # File tam cua build.bat (tao va xoa moi lan build)

@@ -437,6 +437,48 @@ button[hidden] { display: none !important; }
         </div>
       </div>
 
+      <div id="loopOvlSection" style="display:none;">
+        <div class="field-label">🎬 Kho video dọc</div>
+        <div class="input-row">
+          <input type="text" id="ovlVideoDir" placeholder="Thư mục video dọc...">
+          <button class="browse-btn" onclick="pyApi.browseOvlVideoFolder()">📂</button>
+        </div>
+
+        <div class="field-label" style="margin-top:6px;">🎵 File âm thanh</div>
+        <div class="input-row">
+          <input type="text" id="ovlAudio" placeholder="Chọn file nhạc...">
+          <button class="browse-btn" onclick="pyApi.browseOvlAudioFile()">📂</button>
+        </div>
+
+        <div class="field-label" style="margin-top:6px;">⏳ Video đếm ngược (đã tách nền)</div>
+        <div class="input-row">
+          <input type="text" id="ovlCountPath" placeholder="Chọn .mov / .webm nền trong suốt...">
+          <button class="browse-btn" onclick="pyApi.browseOvlCountFile()">📂</button>
+        </div>
+
+        <div class="field-label" style="margin-top:6px;">⏱ Loop tới thời lượng</div>
+        <div class="settings-row">
+          <input type="text" id="ovlTime" value="3:00:00" style="width:110px;">
+          <span style="font-size:11px; color:var(--text-muted);">hh:mm:ss · mm:ss · hoặc số giây</span>
+        </div>
+
+        <div class="settings-row" style="margin-top:8px;">
+          <button class="browse-btn" style="width:auto; padding:0 12px;"
+                  onclick="pyApi.ovlLoadPreview()">⤢ Xem trước &amp; căn chỉnh</button>
+          <span id="ovlPlaceLabel" style="font-size:11px; color:var(--text-muted);">chưa căn chỉnh</span>
+        </div>
+
+        <!-- Vi tri/co cua dem nguoc di qua o AN nay chu khong qua mot ham JS:
+             pyApi proxy doc MOI truong bang getFieldValue() nen giu duoc hinh
+             dang dong nhat, khong co loi goi ham nao co the tra undefined
+             (dung tien le #ytThumbSelected cua ADR-008). -->
+        <input type="hidden" id="ovlPlace" value="">
+
+        <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
+          có mã hoá lại (ghép overlay) · Output phải khác Kho video
+        </div>
+      </div>
+
       <div id="resizeSection" style="display:none;">
         <div class="field-label">📐 Kích thước resize (px)</div>
         <div class="settings-row">
@@ -847,6 +889,45 @@ button[hidden] { display: none !important; }
   </div>
 </div>
 
+<!-- LOOP + DEM NGUOC: khung keo tha de dat vi tri/co cua video dem nguoc.
+     Lam dang popup chu KHONG chiem cho bang tien trinh ben phai: khac
+     'Tai thumbnail Youtube' (ADR-008) noi moi dong chi ton ~10ms nen bang
+     tien trinh la nghi le thua, o day moi dong ton HANG PHUT nen bang do la
+     thu can nhat. Anh xem truoc doc tu file cuc bo (preview_mode 'file' cua
+     ADR-008 da chung minh chay duoc tren WebView2). -->
+<div class="update-overlay" id="ovlPreviewOverlay">
+  <div class="update-box" style="width:540px;">
+    <div class="update-icon">⤢</div>
+    <div class="update-title">Căn chỉnh video đếm ngược</div>
+    <div class="update-versions" id="ovlPreviewInfo"></div>
+
+    <div id="ovlStage" style="position:relative; margin:0 auto 12px; background:#000;
+         overflow:hidden; user-select:none; touch-action:none; border-radius:6px;">
+      <img id="ovlBaseImg" style="display:block; width:100%; height:100%;
+           object-fit:cover; pointer-events:none;" alt="">
+      <div id="ovlBox" style="position:absolute; left:0; top:0; cursor:move;
+           outline:2px solid var(--accent); outline-offset:-1px;">
+        <img id="ovlCntImg" style="display:block; width:100%; height:100%;
+             pointer-events:none;" alt="">
+        <div id="ovlHandle" style="position:absolute; right:-7px; bottom:-7px;
+             width:15px; height:15px; border-radius:3px; background:var(--accent);
+             border:2px solid #fff; cursor:nwse-resize;"></div>
+      </div>
+    </div>
+
+    <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
+      Kéo để đặt vị trí · kéo ô vuông góc dưới-phải để đổi cỡ<br>
+      <span id="ovlNumbers" style="font-family:monospace;"></span>
+    </div>
+
+    <div class="update-btns">
+      <button class="btn-accent" id="ovlApplyBtn">✓ Áp dụng</button>
+      <button class="btn-muted" id="ovlResetBtn">↺ Đặt lại</button>
+      <button class="btn-danger" id="ovlCancelBtn">✕ Hủy</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Globals ──
 let selectedRows = new Set();
@@ -935,6 +1016,131 @@ function onAudioSplitModeChanged() {
   document.getElementById('audioSplitSecondsRow').style.display = isParts ? 'none' : '';
 }
 
+// ══ LOOP + DEM NGUOC: khung keo tha ══════════════════════════════════════
+// Trang thai giu theo TI LE cua video goc, khong theo pixel cua khung xem
+// truoc. Hai ly do: khung xem truoc nho hon video that nhieu lan, va ca kho
+// video co the co do phan giai khac nhau - ti le la thu duy nhat dung cho ca
+// hai. Python quy doi nguoc ra pixel theo tung file.
+const OVL_STAGE_W = 460;          // be rong khung xem truoc, px
+let ovlState = null;              // {ar, cur:{x,y,w}}
+
+function ovlReadPlace() {
+  try {
+    const v = document.getElementById('ovlPlace').value;
+    if (!v) return null;
+    const o = JSON.parse(v);
+    if (typeof o.x === 'number' && typeof o.y === 'number'
+        && typeof o.w === 'number') return o;
+  } catch (e) { /* gia tri hong -> dung mac dinh, khong bao loi */ }
+  return null;
+}
+
+function ovlApplyToBox() {
+  if (!ovlState) return;
+  const stage = document.getElementById('ovlStage');
+  const box = document.getElementById('ovlBox');
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  const c = ovlState.cur;
+  const w = c.w * sw;
+  box.style.width = w + 'px';
+  box.style.height = (w * ovlState.ar) + 'px';
+  box.style.left = (c.x * sw) + 'px';
+  box.style.top = (c.y * sh) + 'px';
+  document.getElementById('ovlNumbers').textContent =
+    'x ' + (c.x * 100).toFixed(1) + '%   y ' + (c.y * 100).toFixed(1)
+    + '%   rộng ' + (c.w * 100).toFixed(1) + '%';
+}
+
+function ovlSetLabel(c) {
+  document.getElementById('ovlPlaceLabel').textContent = c
+    ? 'đã căn: ' + (c.x * 100).toFixed(0) + '% / ' + (c.y * 100).toFixed(0)
+      + '%, rộng ' + (c.w * 100).toFixed(0) + '%'
+    : 'chưa căn chỉnh';
+}
+
+function ovlClosePreview() {
+  const ov = document.getElementById('ovlPreviewOverlay');
+  ov.classList.remove('show');
+  document.onkeydown = null;
+  ov.onclick = null;
+}
+
+// Python goi thang ham toan cuc nay (khong qua uiApi) - dung tien le
+// showUpdateDialog / showRetryDialog / showJazzReport.
+function ovlShowPreview(p) {
+  const stage = document.getElementById('ovlStage');
+  stage.style.width = OVL_STAGE_W + 'px';
+  stage.style.height = Math.round(OVL_STAGE_W * p.baseH / p.baseW) + 'px';
+  document.getElementById('ovlBaseImg').src = p.baseUrl;
+  document.getElementById('ovlCntImg').src = p.cntUrl;
+  document.getElementById('ovlPreviewInfo').textContent =
+    p.baseName + ' · ' + p.baseW + '×' + p.baseH + ' · '
+    + p.nVideos + ' video trong kho · đếm ngược ' + p.cntDur + 's';
+
+  ovlState = {
+    ar: p.cntH / p.cntW,
+    cur: ovlReadPlace() || { x: 0.25, y: 0.60, w: 0.50 },
+  };
+  ovlApplyToBox();
+
+  const ov = document.getElementById('ovlPreviewOverlay');
+  ov.classList.add('show');
+  document.onkeydown = function (e) {
+    if (e.key === 'Escape') ovlClosePreview();
+  };
+  ov.onclick = function (e) { if (e.target === ov) ovlClosePreview(); };
+}
+
+(function ovlInitDrag() {
+  const stage = document.getElementById('ovlStage');
+  const box = document.getElementById('ovlBox');
+  const handle = document.getElementById('ovlHandle');
+  if (!stage || !box || !handle) return;
+  let mode = null, sx = 0, sy = 0, start = null;
+
+  function down(e, m) {
+    if (!ovlState) return;
+    mode = m; sx = e.clientX; sy = e.clientY;
+    start = { x: ovlState.cur.x, y: ovlState.cur.y, w: ovlState.cur.w };
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  box.addEventListener('mousedown', function (e) { down(e, 'move'); });
+  handle.addEventListener('mousedown', function (e) { down(e, 'size'); });
+
+  document.addEventListener('mousemove', function (e) {
+    if (!mode || !ovlState) return;
+    const sw = stage.clientWidth, sh = stage.clientHeight;
+    const dx = (e.clientX - sx) / sw, dy = (e.clientY - sy) / sh;
+    if (mode === 'move') {
+      // Cho phep tran ra ngoai mep mot phan: dat dem nguoc nam nua trong nua
+      // ngoai la mot bo cuc that, khong phai loi.
+      ovlState.cur.x = Math.min(Math.max(start.x + dx, -0.5), 1);
+      ovlState.cur.y = Math.min(Math.max(start.y + dy, -0.5), 1);
+    } else {
+      ovlState.cur.w = Math.min(Math.max(start.w + dx, 0.05), 2);
+    }
+    ovlApplyToBox();
+  });
+  document.addEventListener('mouseup', function () { mode = null; });
+
+  document.getElementById('ovlApplyBtn').onclick = function () {
+    if (ovlState) {
+      const c = ovlState.cur;
+      const v = { x: +c.x.toFixed(4), y: +c.y.toFixed(4), w: +c.w.toFixed(4) };
+      document.getElementById('ovlPlace').value = JSON.stringify(v);
+      ovlSetLabel(v);
+    }
+    ovlClosePreview();
+  };
+  document.getElementById('ovlResetBtn').onclick = function () {
+    if (!ovlState) return;
+    ovlState.cur = { x: 0.25, y: 0.60, w: 0.50 };
+    ovlApplyToBox();
+  };
+  document.getElementById('ovlCancelBtn').onclick = ovlClosePreview;
+})();
+
 // ── Called from Python ──
 window.uiApi = {
   setVersion(v) { document.getElementById('versionText').textContent = 'v' + v; },
@@ -976,6 +1182,19 @@ window.uiApi = {
   showLoopSection(show) {
     document.getElementById('loopSection').style.display = show ? 'block' : 'none';
     if (show) onLoopModeChanged();
+  },
+
+  showLoopOvlSection(show) {
+    document.getElementById('loopOvlSection').style.display = show ? 'block' : 'none';
+  },
+
+  // Ba o duong dan cua 'Loop Video + dem nguoc'. Mot ham nhan khoa thay vi
+  // ba ham rieng - giong setJazzFolder / setMultiFolder da co.
+  setOvlField(key, path) {
+    const el = document.getElementById({
+      video: 'ovlVideoDir', audio: 'ovlAudio', count: 'ovlCountPath',
+    }[key]);
+    if (el) el.value = path;
   },
 
   showResizeSection(show) {
@@ -1476,6 +1695,7 @@ const pyApi = new Proxy({}, {
             jazzVideo: getFieldValue('jazzVideoDir'),
             jazzGoc: getFieldValue('jazzGocDir'),
             jazzCid: getFieldValue('jazzCidDir'),
+            ovlVideo: getFieldValue('ovlVideoDir'),
           },
           jazzNoiDir: getFieldValue('jazzNoiDir'),
           jazzNoiTable: getFieldValue('jazzNoiTable'),
@@ -1504,6 +1724,10 @@ const pyApi = new Proxy({}, {
           loopMode: getFieldValue('loopMode'),
           loopTime: getFieldValue('loopTime'),
           loopCount: getFieldValue('loopCount'),
+          ovlAudio: getFieldValue('ovlAudio'),
+          ovlCount: getFieldValue('ovlCountPath'),
+          ovlTime: getFieldValue('ovlTime'),
+          ovlPlace: getFieldValue('ovlPlace'),
         }];
       }
       if (method === 'saveNoiTxt') args = [getFieldValue('editor')];

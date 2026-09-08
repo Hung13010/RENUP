@@ -1,0 +1,29 @@
+{
+  "name": "Loop Video + dem nguoc (hinh + tieng + overlay)",
+  "type": "loop_overlay",
+  "description": "Moi file trong Kho video doc ra mot output: lap hinh va lap tieng toi mot thoi luong dich, va de video dem nguoc (da tach nen) len tren. Vi tri va co cua dem nguoc chinh bang khung xem truoc keo tha.",
+
+  "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v", ".wmv", ".flv"],
+  "audio_ext": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"],
+
+  "default_time": "3:00:00",
+
+  "_ghi_chu_vi_tri": "x/y = goc tren-trai cua dem nguoc, tinh theo TI LE chieu rong/cao video goc. w = ti le chieu rong. Dung ti le chu khong dung pixel de mot khung canh chinh dung duoc cho ca kho video co do phan giai khac nhau.",
+  "default_place": { "x": 0.25, "y": 0.60, "w": 0.50 },
+
+  "_ghi_chu_chu_ky": "Ghep overlay BUOC BUOC ma hoa lai - khong the '-c copy' nhu Loop Video thuong. Do 2026-09-08 tren 1080x1920 voi h264_nvenc: 3,13x thoi gian thuc, tuc 58 PHUT cho mot video 3 tieng. Nen app ma hoa dung MOT chu ky roi lap ban da ma hoa bang concat demuxer + '-c:v copy' (776x thoi gian thuc). Chu ky = boi chung nho nhat cua so khung video goc va so khung dem nguoc, nen ca hai deu ve dung diem xuat phat o moi mo noi - khong co vet nhay. Tinh bang SO KHUNG (so nguyen) chu khong bang giay (so thuc) de khong tich luy sai so qua hang tram vong.",
+  "cycle_max_seconds": 1200,
+
+  "_ghi_chu_tieng": "Toan bo chi phi buoc lap nam o ma hoa AAC: chep luong hinh 776x, chep luong tieng 851x, nhung ma hoa AAC chi 7,9x (tu wav) den 15,1x (tu mp3). Nen ban nhac dai du moc duoc dung DUNG MOT LAN CHO CA ME roi chep luong vao tung video - ca me dung chung mot file nhac va mot moc thoi gian. Dung mot lan chu khong noi cac doan AAC da ma hoa: noi kieu do de lai vet lom bien do o moi cho noi (do duoc: RMS 2895 -> 1833).",
+  "audio_bitrate": "192k",
+  "sample_rate": 44100,
+  "channels": 2,
+
+  "crf": 20,
+
+  "_ghi_chu_alpha": "Da kiem chung tren ffmpeg 2018 di kem (2026-09-08): .mov QuickTime RLE va .mov ProRes 4444 deu ghep dung - overlay hien, nen lot qua vung trong suot. .webm VP8/VP9 alpha CHUA kiem chung duoc vi chinh ban ffmpeg nay khong tao noi file thu co alpha. Voi .webm app them '-c:v libvpx-vp9' truoc input do, vi bo giai ma vp9 goc cua ffmpeg bo kenh alpha con libvpx thi giu.",
+  "webm_decoder": "libvpx-vp9",
+
+  "preview_width": 420,
+  "cache_dir_name": "_ovl_preview_cache"
+}
