@@ -446,14 +446,17 @@ button[hidden] { display: none !important; }
 
         <div class="field-label" style="margin-top:6px;">🎵 File âm thanh</div>
         <div class="input-row">
-          <input type="text" id="ovlAudio" placeholder="Chọn file nhạc...">
+          <input type="text" id="ovlAudio" placeholder="Chọn file nhạc (hoặc thư mục chứa 1 file)...">
           <button class="browse-btn" onclick="pyApi.browseOvlAudioFile()">📂</button>
         </div>
 
-        <div class="field-label" style="margin-top:6px;">⏳ Video đếm ngược (đã tách nền)</div>
+        <div class="field-label" style="margin-top:6px;">⏳ Video đếm ngược</div>
         <div class="input-row">
-          <input type="text" id="ovlCountPath" placeholder="Chọn .mov / .webm nền trong suốt...">
+          <input type="text" id="ovlCountPath" placeholder="File .mov trong suốt, hoặc .mp4 nền đen...">
           <button class="browse-btn" onclick="pyApi.browseOvlCountFile()">📂</button>
+        </div>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+          nền trong suốt hoặc nền đen đều được — app tự nhận
         </div>
 
         <div class="field-label" style="margin-top:6px;">⏱ Loop tới thời lượng</div>
@@ -896,7 +899,10 @@ button[hidden] { display: none !important; }
      thu can nhat. Anh xem truoc doc tu file cuc bo (preview_mode 'file' cua
      ADR-008 da chung minh chay duoc tren WebView2). -->
 <div class="update-overlay" id="ovlPreviewOverlay">
-  <div class="update-box" style="width:540px;">
+  <!-- max-height + overflow: chot chan cuoi. Kich thuoc khung da duoc tinh
+       cho vua cua so (ovlStageSize), day chi la de neu tinh sai thi van con
+       cuon toi duoc cac nut chu khong mat hut. -->
+  <div class="update-box" style="width:540px; max-height:92vh; overflow-y:auto;">
     <div class="update-icon">⤢</div>
     <div class="update-title">Căn chỉnh video đếm ngược</div>
     <div class="update-versions" id="ovlPreviewInfo"></div>
@@ -1021,8 +1027,19 @@ function onAudioSplitModeChanged() {
 // truoc. Hai ly do: khung xem truoc nho hon video that nhieu lan, va ca kho
 // video co the co do phan giai khac nhau - ti le la thu duy nhat dung cho ca
 // hai. Python quy doi nguoc ra pixel theo tung file.
-const OVL_STAGE_W = 460;          // be rong khung xem truoc, px
+const OVL_STAGE_W = 460;          // be rong TOI DA cua khung xem truoc, px
 let ovlState = null;              // {ar, cur:{x,y,w}}
+
+// Kich thuoc khung xem truoc phai vua CA HAI chieu. Chi tinh theo chieu
+// rong la du cho video ngang, nhung video DOC 1080x1920 se ra 460x818 -
+// cao hon ca cua so app (751px), day tieu de va cac nut ra ngoai man hinh
+// va khong con bam duoc gi. Da xay ra 2026-09-08.
+function ovlStageSize(bw, bh) {
+  const maxH = Math.max(200, Math.min(520, window.innerHeight - 320));
+  let w = OVL_STAGE_W, h = Math.round(OVL_STAGE_W * bh / bw);
+  if (h > maxH) { h = maxH; w = Math.round(maxH * bw / bh); }
+  return [Math.max(80, w), Math.max(80, h)];
+}
 
 function ovlReadPlace() {
   try {
@@ -1069,8 +1086,9 @@ function ovlClosePreview() {
 // showUpdateDialog / showRetryDialog / showJazzReport.
 function ovlShowPreview(p) {
   const stage = document.getElementById('ovlStage');
-  stage.style.width = OVL_STAGE_W + 'px';
-  stage.style.height = Math.round(OVL_STAGE_W * p.baseH / p.baseW) + 'px';
+  const [sw, sh] = ovlStageSize(p.baseW, p.baseH);
+  stage.style.width = sw + 'px';
+  stage.style.height = sh + 'px';
   document.getElementById('ovlBaseImg').src = p.baseUrl;
   document.getElementById('ovlCntImg').src = p.cntUrl;
   document.getElementById('ovlPreviewInfo').textContent =

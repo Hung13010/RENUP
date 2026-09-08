@@ -613,11 +613,12 @@ class Api:
             self._js(f"uiApi.setOvlField('audio', {json.dumps(result[0])})")
 
     def browseOvlCountFile(self):
-        # .mov va .webm dung dau vi day la hai vo chua duoc kenh alpha. Van
-        # cho chon file khac: bao loi luc ghep de doc hon la khong chon duoc.
+        # .mov/.webm truoc vi la hai vo chua duoc kenh alpha, nhung .mp4 phai
+        # co trong danh sach: phan lon video "dem nguoc tach nen" tren mang
+        # thuc ra la .mp4 nen den, va app tach duoc mau den (xem _ovl_key_filter).
         result = self._window.create_file_dialog(
             webview.OPEN_DIALOG,
-            file_types=('Video da tach nen (*.mov;*.webm)',
+            file_types=('Video dem nguoc (*.mov;*.webm;*.mp4;*.mkv)',
                         'All files (*.*)'))
         if result and len(result) > 0:
             self._js(f"uiApi.setOvlField('count', {json.dumps(result[0])})")
@@ -653,10 +654,17 @@ class Api:
             pw = int(code.get('preview_width', 420))
 
             if not video_dir or not os.path.isdir(video_dir):
-                self._log("Chua chon Kho video doc.", 'err')
+                self._log("Chua chon Kho video doc"
+                          " (hoac thu muc khong ton tai).", 'err')
                 return
-            if not cnt_path or not os.path.isfile(cnt_path):
-                self._log("Chua chon video dem nguoc.", 'err')
+            cnt_path, err = self._ovl_resolve_file(
+                cnt_path,
+                [e.lower() for e in code.get(
+                    'count_ext', ['.mov', '.webm', '.mp4', '.mkv', '.avi',
+                                  '.m4v'])],
+                "video dem nguoc")
+            if err:
+                self._log(err, 'err')
                 return
 
             files = sorted(f for f in os.listdir(video_dir)
@@ -678,13 +686,12 @@ class Api:
             bw, bh, _bfps, bdur = binfo
             cw, ch, _cfps, cdur = cinfo
 
-            cache = os.path.join(
-                self.bin_dir,
-                str(code.get('cache_dir_name', '_ovl_preview_cache')))
-            os.makedirs(cache, exist_ok=True)
+            # File tam trong thu muc tam cua he thong, xoa ngay sau khi doc:
+            # anh di sang JS duoi dang data URI nen khong can giu lai gi.
             tag = uuid.uuid4().hex[:8]
-            base_png = os.path.join(cache, f'base_{tag}.png')
-            cnt_png = os.path.join(cache, f'cnt_{tag}.png')
+            tmpd = tempfile.gettempdir()
+            base_img = os.path.join(tmpd, f'_ovlp_b_{tag}.jpg')
+            cnt_png = os.path.join(tmpd, f'_ovlp_c_{tag}.png')
 
             ph = max(2, int(round(pw * bh / bw)))
             # Lay khung o GIUA chu khong phai khung dau: nhieu video mo dau
@@ -693,23 +700,54 @@ class Api:
             ok1, err1 = self._ffmpeg_quiet([
                 self.ffmpeg_path, '-ss', f'{bdur / 2:.3f}', '-i', base_path,
                 '-frames:v', '1', '-vf', f'scale={pw}:{ph}',
-                base_png, '-y'])
+                '-q:v', '4', base_img, '-y'])
+            # Ap dung DUNG doan loc tach nen ma luc chay se dung, neu khong
+            # khung xem truoc se hien mot hop den va nguoi dung khong the
+            # biet ket qua that ra sao.
+            key_f, key_msg, key_tag = self._ovl_key_filter(
+                cnt_path, self._probe_spec(cnt_path), cdur, code)
+            self._log(key_msg, key_tag)
+            vf = f'scale={pw}:-1' + (',' + key_f if key_f else '')
             ok2, err2 = self._ffmpeg_quiet(
                 [self.ffmpeg_path, '-ss', f'{cdur / 2:.3f}']
                 + self._ovl_cnt_input(cnt_path, code)
                 + ['-i', cnt_path, '-frames:v', '1',
-                   '-vf', f'scale={pw}:-1', '-pix_fmt', 'rgba',
-                   cnt_png, '-y'])
-            if not ok1 or not os.path.exists(base_png):
+                   '-vf', vf, '-pix_fmt', 'rgba', cnt_png, '-y'])
+            if not ok1 or not os.path.exists(base_img):
                 self._log(f"Khong trich duoc khung video doc: {err1}", 'err')
                 return
             if not ok2 or not os.path.exists(cnt_png):
                 self._log(f"Khong trich duoc khung dem nguoc: {err2}", 'err')
                 return
 
+            # DATA URI chu KHONG phai 'file://'. pywebview phuc vu index.html
+            # qua mot HTTP server cuc bo (webview/http.py start_server), nen
+            # trang co nguon goc http://127.0.0.1:<cong> va trinh duyet CHAN
+            # moi tai nguyen file:// - khung xem truoc se den si ma khong bao
+            # loi gi. ADR-008 da ghi day la rui ro chua xac minh va de san
+            # duong lui 'preview_mode: data'; preset 'Tai thumbnail Youtube'
+            # THUC TE da phai chuyen sang 'data' tu truoc. Bang chung nam san
+            # o file ben canh, va lan dau toi van dung file:// - nen doc xem
+            # chuc nang cu DANG CHAY BANG GI, dung tin gia tri mac dinh ghi
+            # trong tai lieu.
+            def _durl(path, mime):
+                with open(path, 'rb') as fh:
+                    return (f'data:{mime};base64,'
+                            + base64.b64encode(fh.read()).decode('ascii'))
+
+            try:
+                payload_imgs = {'baseUrl': _durl(base_img, 'image/jpeg'),
+                                'cntUrl': _durl(cnt_png, 'image/png')}
+            finally:
+                for p in (base_img, cnt_png):
+                    if os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+
             payload = {
-                'baseUrl': 'file:' + urllib.request.pathname2url(base_png),
-                'cntUrl': 'file:' + urllib.request.pathname2url(cnt_png),
+                **payload_imgs,
                 'baseName': files[0],
                 'baseW': bw, 'baseH': bh, 'baseDur': round(bdur, 2),
                 'cntW': cw, 'cntH': ch, 'cntDur': round(cdur, 2),
@@ -2868,6 +2906,125 @@ class Api:
                 return ['-c:v', dec]
         return []
 
+    def _ovl_resolve_file(self, path, exts, what):
+        """Nhan duong dan la FILE hoac THU MUC. Tra (duong_dan_file, loi).
+
+        Nguoi dung rat de dua vao mot thu muc: ba o cua chuc nang nay trong
+        giong het nhau ma o dau tien (Kho video doc) LA thu muc that. Da xay
+        ra 2026-09-08 - nguoi dung dat ca ba o thanh thu muc va nhan mot dong
+        bao "Chua chon" trong khi ro rang ho da chon.
+
+        Nen: thu muc co DUNG MOT file hop le thi tu lay, khong co gi phai
+        doan. Nhieu file thi bao ro va liet ke, khong tu boc bua.
+        """
+        if not path:
+            return None, f"Chua chon {what}."
+        if os.path.isfile(path):
+            return path, None
+        if not os.path.isdir(path):
+            return None, f"Khong tim thay {what}: {path}"
+        hits = sorted(f for f in os.listdir(path)
+                      if os.path.splitext(f)[1].lower() in exts
+                      and os.path.isfile(os.path.join(path, f)))
+        if not hits:
+            return None, (f"Thu muc {what} khong co file nao hop le:"
+                          f" {path} (chap nhan {', '.join(exts)})")
+        if len(hits) > 1:
+            return None, (f"Thu muc {what} co {len(hits)} file nen khong biet"
+                          f" chon cai nao - hay chon thang MOT FILE. Dang co:"
+                          f" {', '.join(hits[:5])}"
+                          f"{' ...' if len(hits) > 5 else ''}")
+        return os.path.join(path, hits[0]), None
+
+    @staticmethod
+    def _ovl_has_alpha(spec):
+        """Luong hinh co kenh alpha khong, doc tu pix_fmt.
+
+        Kiem theo DANH SACH TIEN TO chu khong tim chu 'a' trong chuoi: 'pal8'
+        co chu 'a' nhung khong phai alpha, con 'yuv420p' thi khong.
+        """
+        pf = str((spec or {}).get('pix_fmt') or '').lower()
+        return pf.startswith(('yuva', 'rgba', 'bgra', 'argb', 'abgr',
+                              'gbra', 'ya8', 'ya16', 'pal8'))
+
+    def _ovl_corner_color(self, path, dur):
+        """Mau trung binh 4 goc o mot khung GIUA file. None neu doc khong duoc.
+
+        Dung de biet nen cua dem nguoc co phai mau den dac hay khong.
+        """
+        png = os.path.join(tempfile.gettempdir(),
+                           f'_ovlkey_{uuid.uuid4().hex}.png')
+        try:
+            ok, _ = self._ffmpeg_quiet([
+                self.ffmpeg_path, '-ss', f'{max(0.0, dur / 2):.3f}',
+                '-i', path, '-frames:v', '1', '-vf', 'scale=160:-1',
+                png, '-y'])
+            if not ok or not os.path.exists(png):
+                return None
+            with Image.open(png) as im:
+                im = im.convert('RGB')
+                w, h = im.size
+                px = im.load()
+                pts = [px[2, 2], px[w - 3, 2], px[2, h - 3], px[w - 3, h - 3]]
+            return tuple(sum(p[i] for p in pts) // 4 for i in range(3))
+        except Exception:
+            return None
+        finally:
+            if os.path.exists(png):
+                try:
+                    os.remove(png)
+                except OSError:
+                    pass
+
+    def _ovl_key_filter(self, cnt_path, spec, dur, code):
+        """Doan loc tach nen cho luong dem nguoc + mot dong log giai thich.
+
+        Tra ('', ly_do, tag_log). Chuoi rong = khong tach gi.
+
+        Vi sao colorkey chu khong phai blend 'screen'/'lighten': do 2026-09-08
+        tren file that cua nguoi dung (dong ho trang tren nen den). colorkey
+        giu nguyen mau nen ben duoi (59,89,199) so voi goc (60,90,200) va chi
+        0,8% pixel bi lam toi; con blend lam HONG MAU (ra 190,24,255) vi no
+        tron tren tung mat phang YUV chu khong phai RGB.
+
+        colorkey chay TRUOC scale: thu tu nguoc lai thi bo phong to lam nhoe
+        bien den-trang thanh mau xam, ma nguong colorkey khong xoa het duoc
+        -> vien toi quanh chu.
+        """
+        mode = str(code.get('bg_mode', 'auto')).strip().lower()
+        sim = float(code.get('key_similarity', 0.10))
+        bl = float(code.get('key_blend', 0.10))
+
+        def ck(col):
+            return f'colorkey={col}:{sim}:{bl}'
+
+        if mode == 'alpha':
+            return '', "nen: preset ep dung kenh alpha san co", 'info'
+        if mode == 'black':
+            return ck('0x000000'), "nen: preset ep tach mau den", 'info'
+        if mode.startswith(('0x', '#')):
+            col = '0x' + mode.lstrip('#').removeprefix('0x')
+            return ck(col), f"nen: preset ep tach mau {col}", 'info'
+
+        # auto
+        if self._ovl_has_alpha(spec):
+            return '', (f"nen: file co kenh alpha"
+                        f" ({spec.get('pix_fmt')}), dung thang"), 'info'
+        col = self._ovl_corner_color(cnt_path, dur)
+        if col is None:
+            return '', "nen: khong doc duoc mau 4 goc, de nguyen", 'info'
+        thr = int(code.get('black_threshold', 24))
+        pf = (spec or {}).get('pix_fmt')
+        if max(col) <= thr:
+            msg = (f"nen: file KHONG co kenh alpha ({pf}), 4 goc deu toi"
+                   f" {col} -> tu dong tach mau den")
+            return ck('0x000000'), msg, 'ok'
+        msg = (f"nen: file KHONG co kenh alpha ({pf}) va 4 goc la {col},"
+               f" khong phai mau den -> KHONG tach duoc, dem nguoc se de KIN"
+               f" vung do. Hay dung file .mov nen trong suot, hoac dat"
+               f" 'bg_mode' trong preset thanh ma mau can tach (vd '0x00FF00').")
+        return '', msg, 'err'
+
     def _ovl_mklist(self, src, n, tag, out_dir):
         """File danh sach lap cho concat demuxer. Ben goi phai tu xoa."""
         path = os.path.join(out_dir, f"_ovl_{tag}_{uuid.uuid4().hex}.txt")
@@ -2875,6 +3032,62 @@ class Api:
             for _ in range(n):
                 fh.write("file '" + src.replace('\\', '/') + "'\n")
         return path
+
+    @staticmethod
+    def _ovl_fit_cycle(dur_base, dur_cnt, target, cap, tol, k_max=120):
+        """Tim chu ky L = k*dur_base ma dem nguoc vua khit dung m lan, cho
+        phep CHINH NHE toc do dem nguoc (he so nam trong 1 +/- tol).
+
+        Tra (L, m, he_so) hoac None.
+
+        VI SAO CAN: bang boi chung nho nhat CHINH XAC (_ovl_cycle_seconds),
+        chu ky chi ngan khi hai do dai tinh co chia het cho nhau. Do tren file
+        that cua nguoi dung 2026-09-08: video goc 20,00s va dem nguoc 59,72s
+        -> boi chung 4,3 TRIEU khung = 71.660 giay, tuc khong bao gio dung
+        duoc, va mot video 3 tieng phai ma hoa thang mat 4,6 GIO. Keo gian dem
+        nguoc 59,72s -> 60,00s (0,47%, khong the nhan ra bang mat) thi chu ky
+        con 60 giay va cung video do mat khoang MOT PHUT.
+
+        ADR-024 da LOAI huong nay voi ly do "sua noi dung cua nguoi dung ma
+        khong ai xin". Ly do do van dung, nhung cai gia cua viec khong lam chi
+        do duoc sau khi co file that. Nen: co nguong (tol), co the tat bang
+        preset, va PHAI ghi ro he so vao log moi lan dung.
+        """
+        if dur_base <= 0 or dur_cnt <= 0:
+            return None
+        for k in range(1, k_max + 1):
+            cycle = k * dur_base
+            if cycle > cap or cycle > target / 2:
+                return None
+            m = int(round(cycle / dur_cnt))
+            if m < 1:
+                continue
+            factor = (cycle / m) / dur_cnt
+            if abs(factor - 1.0) <= tol:
+                return cycle, m, factor
+        return None
+
+    def _ovl_prerender_countdown(self, cnt_path, code, key_f, pw, ph, out):
+        """Ban dem nguoc da TACH NEN va THU NHO san, dung chung cho ca me.
+
+        Ly do: file dem nguoc thuong la 4K, va no bi GIAI MA LAI o moi vong
+        lap cua moi video. Do 2026-09-08 tren file that (4K VP9, 60 giay):
+        doc thang 0,64x thoi gian thuc, doc ban dung san 1,61x - nhanh hon
+        2,5 lan voi chat luong do duoc y het (24,4% so voi 24,5% pixel dong
+        ho, vien toi 8,2% so voi 8,1%).
+
+        qtrle: khong mat mat va giu alpha. ProRes 4444 doc nhanh hon chut
+        (1,83x) nhung file to gap 5 lan (155 MB so voi 31 MB) - khong dang
+        cho mot file tam.
+        """
+        # scale TRUOC key: do duoc nhanh gap 3,2 lan (15,1s so voi 48,6s) voi
+        # chat luong y het. Thu tu nguoc lai la suy luan cua toi, va sai.
+        chain = f'scale={pw}:{ph}' + (',' + key_f if key_f else '')
+        return self._ffmpeg_quiet(
+            [self.ffmpeg_path]
+            + self._ovl_cnt_input(cnt_path, code)
+            + ['-i', cnt_path, '-vf', chain, '-an',
+               '-c:v', 'qtrle', out, '-y'])
 
     def _ovl_build_audio(self, audio_path, target, out_path, code):
         """Ban nhac dai dung `target` giay, ma hoa MOT LAN cho ca me.
@@ -2926,11 +3139,20 @@ class Api:
             self._log("Chua chon Kho video doc (hoac thu muc khong ton tai).",
                       'err')
             return
-        if not audio_path or not os.path.isfile(audio_path):
-            self._log("Chua chon file am thanh.", 'err')
+        aud_ext = [e.lower() for e in code.get(
+            'audio_ext', ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg',
+                          '.opus'])]
+        cnt_ext = [e.lower() for e in code.get(
+            'count_ext', ['.mov', '.webm', '.mp4', '.mkv', '.avi', '.m4v'])]
+        audio_path, err = self._ovl_resolve_file(audio_path, aud_ext,
+                                                 "file am thanh")
+        if err:
+            self._log(err, 'err')
             return
-        if not cnt_path or not os.path.isfile(cnt_path):
-            self._log("Chua chon video dem nguoc.", 'err')
+        cnt_path, err = self._ovl_resolve_file(cnt_path, cnt_ext,
+                                               "video dem nguoc")
+        if err:
+            self._log(err, 'err')
             return
         if not output_dir:
             self._log("Chua chon folder Output.", 'err')
@@ -2970,6 +3192,9 @@ class Api:
                   f" | {cnt_w}x{cnt_h} | {cnt_dur:.2f}s"
                   f" | dat o {place['x']*100:.0f}% / {place['y']*100:.0f}%,"
                   f" rong {place['w']*100:.0f}%", 'info')
+        key_f, key_msg, key_tag = self._ovl_key_filter(
+            cnt_path, self._probe_spec(cnt_path), cnt_dur, code)
+        self._log(key_msg, key_tag)
 
         files = sorted(f for f in os.listdir(video_dir)
                        if os.path.splitext(f)[1].lower() in vid_ext)
@@ -2984,6 +3209,69 @@ class Api:
         gpu_args, enc_tag = self._gpu_h264_args(code.get('crf', 20))
         self._log(f"Tim thay {len(files)} video | {workers} luong"
                   f" | {enc_tag}", 'info')
+
+        # --- Do thong so moi video TRUOC. Can cho ba viec: biet ban dem
+        #     nguoc dung san phai to bao nhieu, chon duong di cho tung dong,
+        #     va biet TONG so giay dem nguoc se phai giai ma. Moi file mot
+        #     lan goi ffprobe (~0,1s).
+        infos, plan = {}, {}
+        cap = float(code.get('cycle_max_seconds', 1200))
+        stretch_on = bool(code.get('stretch_countdown', True))
+        tol = float(code.get('stretch_tolerance', 0.02))
+        cnt_seconds = 0.0
+        for name in files:
+            info = self._ovl_probe(os.path.join(video_dir, name))
+            infos[name] = info
+            if not info:
+                continue
+            bdur, bfps = info[3], info[2]
+            fit = (self._ovl_fit_cycle(bdur, cnt_dur, target, cap, tol)
+                   if stretch_on else None)
+            if fit:
+                cycle, n_c, factor = fit
+            else:
+                cycle = self._ovl_cycle_seconds(bdur, cnt_dur, bfps, target,
+                                                cap)
+                n_c = max(1, int(round(cycle / cnt_dur))) if cycle else 0
+                factor = 1.0
+            plan[name] = (cycle, n_c, factor)
+            cnt_seconds += cycle if cycle else target
+
+        # --- Dem nguoc: dung san MOT ban da tach nen + thu nho cho ca me ---
+        # CHI dung san khi no duoc dung lai du nhieu. Dung san ton mot lan
+        # doc het file dem nguoc (do duoc: 112 giay cho 60 giay o 4K), nen
+        # voi mot me nho no LO chu khong lai - do 2026-09-08: dich 1 phut,
+        # mot video, tong chay 156 giay ma 112 giay trong so do la dung san.
+        # Nguong: tong so giay dem nguoc phai giai ma > 2 lan do dai cua no.
+        cnt_use, cnt_pre = cnt_path, None
+        widths = [i[0] for i in infos.values() if i]
+        worth = cnt_seconds > cnt_dur * 2
+        if widths and worth and (key_f or cnt_w > max(widths)):
+            pw = max(2, int(round(max(widths) * place['w'])) // 2 * 2)
+            pw = min(pw, cnt_w)
+            ph = max(2, int(round(pw * cnt_h / cnt_w)) // 2 * 2)
+            cnt_pre = os.path.join(output_dir,
+                                   f"_ovl_cnt_{uuid.uuid4().hex}.mov")
+            self._js("uiApi.setStatus('Dang dung san ban dem nguoc...')")
+            self._log(f"Dung san ban dem nguoc {cnt_w}x{cnt_h} ->"
+                      f" {pw}x{ph}"
+                      f"{' + tach nen' if key_f else ''}"
+                      f" (mot lan cho ca me)...", 'info')
+            ok_c, err_c = self._ovl_prerender_countdown(
+                cnt_path, code, key_f, pw, ph, cnt_pre)
+            if ok_c and os.path.exists(cnt_pre):
+                cnt_use = cnt_pre
+                key_f = ''      # da nung vao ban dung san roi
+                self._log(f"  xong: {os.path.getsize(cnt_pre)/1024/1024:.1f}"
+                          f" MB", 'ok')
+            else:
+                self._log(f"Khong dung san duoc ban dem nguoc, dung file goc"
+                          f" (se cham hon): {err_c}", 'info')
+                cnt_pre = None
+        elif widths and not worth:
+            self._log(f"Khong dung san ban dem nguoc: ca me chi can"
+                      f" {cnt_seconds:.0f}s dem nguoc, khong bu duoc chi phi"
+                      f" dung san.", 'info')
 
         # --- Nhac: dung MOT LAN cho ca me ---------------------------------
         # Day la ly do phan tieng gan nhu mien phi o tung dong: no da duoc ma
@@ -3019,7 +3307,7 @@ class Api:
         def make_one(idx, name):
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
             src = os.path.join(video_dir, name)
-            info = self._ovl_probe(src)
+            info = infos.get(name)
             if not info:
                 self._log(f"[{idx + 1}/{total}] Khong doc duoc video: {name}",
                           'err')
@@ -3040,35 +3328,47 @@ class Api:
             ox = int(round(bw * place['x']))
             oy = int(round(bh * place['y']))
 
-            fc = (f"[1:v]fps={bfps:.6f},scale={ow}:{oh}[ov];"
-                  f"[0:v][ov]overlay={ox}:{oy}[v]")
+            # Duong di da duoc chon o tren, cung luc voi viec quyet dinh co
+            # dung san ban dem nguoc hay khong - hai viec do phu thuoc nhau
+            # nen phai tinh mot cho.
+            cycle, n_c_cyc, factor = plan.get(name, (0, 0, 1.0))
 
-            cycle = self._ovl_cycle_seconds(
-                bdur, cnt_dur, bfps, target,
-                float(code.get('cycle_max_seconds', 1200)))
+            # setpts TRUOC fps: no doi dau thoi gian, fps moi lay mau lai.
+            # colorkey (neu chua nung vao ban dung san) dat SAU scale - do
+            # duoc nhanh gap 3,2 lan voi chat luong y het.
+            parts = []
+            if abs(factor - 1.0) > 1e-9:
+                parts.append(f"setpts=PTS*{factor:.9f}")
+            parts += [f"fps={bfps:.6f}", f"scale={ow}:{oh}"]
+            if key_f:
+                parts.append(key_f)
+            fc = f"[1:v]{','.join(parts)}[ov];[0:v][ov]overlay={ox}:{oy}[v]"
 
             tmp = []
             try:
                 if cycle:
                     # --- Duong CHU KY: ma hoa `cycle` giay roi chep lap ---
                     n_b = max(1, int(round(cycle / bdur)))
-                    n_c = max(1, int(round(cycle / cnt_dur)))
+                    n_c = max(1, n_c_cyc)
                     n_cyc = max(1, int(math.ceil(target / cycle)))
+                    adj = (f", dem nguoc {cnt_dur:.2f}s ->"
+                           f" {cnt_dur * factor:.2f}s ({(factor - 1) * 100:+.2f}%)"
+                           if abs(factor - 1.0) > 1e-9 else "")
                     self._log(f"[{idx + 1}/{total}] {name}"
                               f" ({self._fmt_seconds(bdur)}) | chu ky"
                               f" {self._fmt_seconds(cycle)}"
                               f" (hinh x{n_b}, dem nguoc x{n_c})"
-                              f" -> lap x{n_cyc}", 'info')
+                              f" -> lap x{n_cyc}{adj}", 'info')
 
                     lb = self._ovl_mklist(src, n_b, 'b', output_dir)
-                    lc = self._ovl_mklist(cnt_path, n_c, 'c', output_dir)
+                    lc = self._ovl_mklist(cnt_use, n_c, 'c', output_dir)
                     cyc_path = os.path.join(
                         output_dir, f"_ovl_cyc_{uuid.uuid4().hex}.mp4")
                     tmp += [lb, lc, cyc_path]
 
                     cmd = ([self.ffmpeg_path,
                             '-f', 'concat', '-safe', '0', '-i', lb]
-                           + self._ovl_cnt_input(cnt_path, code)
+                           + self._ovl_cnt_input(cnt_use, code)
                            + ['-f', 'concat', '-safe', '0', '-i', lc,
                               '-filter_complex', fc, '-map', '[v]', '-an',
                               '-t', f'{cycle:.3f}']
@@ -3103,11 +3403,11 @@ class Api:
                           f" (hinh x{n_b}, dem nguoc x{n_c})", 'info')
 
                 lb = self._ovl_mklist(src, n_b, 'b', output_dir)
-                lc = self._ovl_mklist(cnt_path, n_c, 'c', output_dir)
+                lc = self._ovl_mklist(cnt_use, n_c, 'c', output_dir)
                 tmp += [lb, lc]
                 cmd = ([self.ffmpeg_path,
                         '-f', 'concat', '-safe', '0', '-i', lb]
-                       + self._ovl_cnt_input(cnt_path, code)
+                       + self._ovl_cnt_input(cnt_use, code)
                        + ['-f', 'concat', '-safe', '0', '-i', lc,
                           '-i', aud_full,
                           '-filter_complex', fc,
@@ -3146,11 +3446,12 @@ class Api:
                         success = False
                     update(i, success)
         finally:
-            if os.path.exists(aud_full):
-                try:
-                    os.remove(aud_full)
-                except OSError:
-                    pass
+            for p in (aud_full, cnt_pre):
+                if p and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")

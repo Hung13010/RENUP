@@ -5,6 +5,15 @@
 
   "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v", ".wmv", ".flv"],
   "audio_ext": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"],
+  "count_ext": [".mov", ".webm", ".mp4", ".mkv", ".avi", ".m4v"],
+
+  "_ghi_chu_o_nhap": "Ba o File am thanh / Video dem nguoc nhan CA duong dan file LAN duong dan thu muc. Thu muc co dung MOT file hop le thi app tu lay; nhieu file thi bao ro va liet ke chu khong boc bua. Ly do: ba o trong giong het nhau ma o dau tien (Kho video doc) LA thu muc that, nen dua vao thu muc la phan xa rat tu nhien - da xay ra 2026-09-08.",
+
+  "_ghi_chu_tach_nen": "Phan lon video 'dem nguoc tach nen' tim duoc tren mang thuc ra la dong ho TRANG TREN NEN DEN trong mot file .mp4 - KHONG co kenh alpha. Ghep thang thi no de mot hop den kin len video. 'auto' se: (a) thay kenh alpha -> dung thang; (b) khong co alpha nhung 4 goc deu toi hon black_threshold -> tu tach mau den bang colorkey; (c) khong co alpha va nen khong phai den -> BAO LOI ro rang thay vi cho ra ket qua hong am tham. Dat 'alpha' de ep dung thang, 'black' de ep tach den, hoac mot ma mau ('0x00FF00') de tach phong nen xanh. Do 2026-09-08 tren file that: colorkey giu nguyen mau nen ben duoi (59,89,199 so voi goc 60,90,200) va chi 0,8% pixel bi lam toi; blend 'screen'/'lighten' thi LAM HONG MAU (ra 190,24,255) vi no tron tren tung mat phang YUV chu khong phai RGB - dung thu lai.",
+  "bg_mode": "auto",
+  "key_similarity": 0.10,
+  "key_blend": 0.10,
+  "black_threshold": 24,
 
   "default_time": "3:00:00",
 
@@ -13,6 +22,10 @@
 
   "_ghi_chu_chu_ky": "Ghep overlay BUOC BUOC ma hoa lai - khong the '-c copy' nhu Loop Video thuong. Do 2026-09-08 tren 1080x1920 voi h264_nvenc: 3,13x thoi gian thuc, tuc 58 PHUT cho mot video 3 tieng. Nen app ma hoa dung MOT chu ky roi lap ban da ma hoa bang concat demuxer + '-c:v copy' (776x thoi gian thuc). Chu ky = boi chung nho nhat cua so khung video goc va so khung dem nguoc, nen ca hai deu ve dung diem xuat phat o moi mo noi - khong co vet nhay. Tinh bang SO KHUNG (so nguyen) chu khong bang giay (so thuc) de khong tich luy sai so qua hang tram vong.",
   "cycle_max_seconds": 1200,
+
+  "_ghi_chu_keo_gian": "Chu ky chi ngan khi do dai video goc va do dai dem nguoc tinh co chia het cho nhau - ma ngoai doi thi hiem. Do tren file that 2026-09-08: video goc 20,00s va dem nguoc 59,72s cho boi chung 4,3 TRIEU khung, tuc khong bao gio dung duoc, va mot video 3 tieng phai ma hoa thang mat 4,6 GIO. Keo gian dem nguoc 59,72s -> 60,00s (0,47%, khong the nhan ra bang mat) thi chu ky con 60 giay va cung video do mat khoang MOT PHUT. Nen mac dinh BAT, nhung co nguong stretch_tolerance va LUON ghi he so vao log. Dat false neu dem nguoc cua ban la bo dem that su can dung tung giay.",
+  "stretch_countdown": true,
+  "stretch_tolerance": 0.02,
 
   "_ghi_chu_tieng": "Toan bo chi phi buoc lap nam o ma hoa AAC: chep luong hinh 776x, chep luong tieng 851x, nhung ma hoa AAC chi 7,9x (tu wav) den 15,1x (tu mp3). Nen ban nhac dai du moc duoc dung DUNG MOT LAN CHO CA ME roi chep luong vao tung video - ca me dung chung mot file nhac va mot moc thoi gian. Dung mot lan chu khong noi cac doan AAC da ma hoa: noi kieu do de lai vet lom bien do o moi cho noi (do duoc: RMS 2895 -> 1833).",
   "audio_bitrate": "192k",
@@ -24,6 +37,6 @@
   "_ghi_chu_alpha": "Da kiem chung tren ffmpeg 2018 di kem (2026-09-08): .mov QuickTime RLE va .mov ProRes 4444 deu ghep dung - overlay hien, nen lot qua vung trong suot. .webm VP8/VP9 alpha CHUA kiem chung duoc vi chinh ban ffmpeg nay khong tao noi file thu co alpha. Voi .webm app them '-c:v libvpx-vp9' truoc input do, vi bo giai ma vp9 goc cua ffmpeg bo kenh alpha con libvpx thi giu.",
   "webm_decoder": "libvpx-vp9",
 
-  "preview_width": 420,
-  "cache_dir_name": "_ovl_preview_cache"
+  "_ghi_chu_xem_truoc": "Anh xem truoc di sang giao dien duoi dang DATA URI nhung vao thang trang, KHONG phai duong dan 'file://'. pywebview phuc vu index.html qua mot HTTP server cuc bo nen trang co nguon goc http://127.0.0.1:<cong>, va trinh duyet chan moi tai nguyen file:// - khung xem truoc se den si ma khong bao loi gi. Preset 'Tai thumbnail Youtube' da phai chuyen sang 'data' vi dung ly do nay tu truoc.",
+  "preview_width": 420
 }
