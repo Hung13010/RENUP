@@ -407,6 +407,36 @@ button[hidden] { display: none !important; }
         </div>
       </div>
 
+      <div id="loopSection" style="display:none;">
+        <div class="field-label">🔁 Chế độ loop</div>
+        <div class="settings-row">
+          <select id="loopMode" style="width:180px;" onchange="onLoopModeChanged()">
+            <option value="time">Theo thời lượng</option>
+            <option value="count">Theo số lần</option>
+          </select>
+        </div>
+
+        <div id="loopTimeRow">
+          <div class="field-label" style="margin-top:6px;">⏱ Loop tới thời lượng</div>
+          <div class="settings-row">
+            <input type="text" id="loopTime" value="3:00:00" style="width:110px;">
+            <span style="font-size:11px; color:var(--text-muted);">hh:mm:ss · mm:ss · hoặc số giây</span>
+          </div>
+        </div>
+
+        <div id="loopCountRow" style="display:none;">
+          <div class="field-label" style="margin-top:6px;">🔢 Số lần lặp</div>
+          <div class="settings-row">
+            <input type="text" id="loopCount" value="2" style="width:80px;">
+            <span style="font-size:11px; color:var(--text-muted);">lần / video</span>
+          </div>
+        </div>
+
+        <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
+          không mã hoá lại · Output phải khác Input
+        </div>
+      </div>
+
       <div id="resizeSection" style="display:none;">
         <div class="field-label">📐 Kích thước resize (px)</div>
         <div class="settings-row">
@@ -893,6 +923,12 @@ function onYtSectionToggled() {
   document.getElementById('ytSectionRow').style.display = on ? '' : 'none';
 }
 
+function onLoopModeChanged() {
+  const isTime = document.getElementById('loopMode').value === 'time';
+  document.getElementById('loopTimeRow').style.display = isTime ? '' : 'none';
+  document.getElementById('loopCountRow').style.display = isTime ? 'none' : '';
+}
+
 function onAudioSplitModeChanged() {
   const isParts = document.getElementById('audioSplitMode').value === 'parts';
   document.getElementById('audioSplitPartsRow').style.display = isParts ? '' : 'none';
@@ -932,6 +968,14 @@ window.uiApi = {
   showAudioSplitSection(show) {
     document.getElementById('audioSplitSection').style.display = show ? 'block' : 'none';
     if (show) onAudioSplitModeChanged();
+  },
+
+  // Goi onLoopModeChanged() ngay khi bat section, giong het cap
+  // showAudioSplitSection/onAudioSplitModeChanged: neu khong thi hai o
+  // thoi luong/so lan co the hien sai ngay luc vua doi sang chuc nang nay.
+  showLoopSection(show) {
+    document.getElementById('loopSection').style.display = show ? 'block' : 'none';
+    if (show) onLoopModeChanged();
   },
 
   showResizeSection(show) {
@@ -1457,6 +1501,9 @@ const pyApi = new Proxy({}, {
           audioSplitMode: getFieldValue('audioSplitMode'),
           audioSplitParts: getFieldValue('audioSplitParts'),
           audioSplitSeconds: getFieldValue('audioSplitSeconds'),
+          loopMode: getFieldValue('loopMode'),
+          loopTime: getFieldValue('loopTime'),
+          loopCount: getFieldValue('loopCount'),
         }];
       }
       if (method === 'saveNoiTxt') args = [getFieldValue('editor')];

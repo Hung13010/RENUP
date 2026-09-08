@@ -528,6 +528,7 @@ class Api:
         self._js(f"uiApi.showGhepSection({str(code_type == 'concat').lower()})")
         self._js(f"uiApi.showSplitSection({str(code_type == 'split_video').lower()})")
         self._js(f"uiApi.showAudioSplitSection({str(code_type == 'split_audio').lower()})")
+        self._js(f"uiApi.showLoopSection({str(code_type == 'loop_video').lower()})")
         self._js(f"uiApi.showConvertSection({str(code_type == 'convert_video').lower()})")
         self._js(f"uiApi.showOverlaySection({str(code_type == 'overlay_corner').lower()})")
         self._js(f"uiApi.showMultiFolderSection({str(code_type == 'concat_multi_folder').lower()})")
@@ -859,6 +860,8 @@ class Api:
                     self._run_strip_metadata(params, code)
                 elif code_type == 'pad_duration':
                     self._run_pad_duration(params, code)
+                elif code_type == 'loop_video':
+                    self._run_loop_video(params, code)
                 elif code_type == 'convert_video':
                     self._run_convert_video(params, code)
                 elif code_type == 'overlay_corner':
@@ -2434,6 +2437,194 @@ class Api:
         except Exception:
             pass
         return {'width': 1920, 'height': 1080, 'fps': '30'}
+
+    def _run_loop_video(self, params, code):
+        """Lap lai moi video trong Input: toi mot THOI LUONG dich, hoac dung
+        SO LAN.
+
+        Lap bang concat demuxer voi file danh sach lap N lan + '-c copy':
+        KHONG ma hoa lai, nen nhanh gan bang toc do chep file va giu nguyen
+        100% chat luong ca hinh lan tieng.
+
+        VI SAO KHONG DUNG -stream_loop: o day lenh chi co MOT input nen
+        -stream_loop that ra chay dung (do that 2026-08-27: 2041/2040 khung).
+        Van khong dung, vi hai ly do. Mot: ca app da chuan hoa vao concat
+        demuxer (_run_concat, _run_claim_jazz, _run_claim_jazz_simple), them
+        co che lap thu hai la them mot thu phai nho. Hai, va quan trong hon:
+        nguoi sau chep doan nay sang mot cho co input thu hai se AM THAM chi
+        nhan duoc 14,7% so khung ma do dai ghi ra van dung - dang hong khong
+        the phat hien bang mat (ADR-019).
+
+        Khac 'Ghep Video': o kia noi cac file KHAC NHAU nen '-c copy' doi hoi
+        chung cung thong so va se hong neu lech. O day moi doan LA CUNG MOT
+        FILE nen dieu kien do luon thoa.
+        """
+        input_dir = (params.get('inputDir') or '').strip()
+        output_dir = (params.get('outputDir') or '').strip()
+        workers = max(1, int(params.get('workers') or 1))
+        vid_ext = [e.lower() for e in code.get(
+            'video_ext', ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v',
+                          '.wmv', '.flv'])]
+        trim = bool(code.get('trim_to_target', True))
+        mode = (str(params.get('loopMode') or '').strip().lower()
+                or str(code.get('default_mode', 'time')).strip().lower())
+
+        self._js("uiApi.setStatus('Dang chuan bi loop video...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau loop video ===", 'info')
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder.", 'err')
+            return
+        # Ten file ra GIU NGUYEN ten goc, nen Input trung Output nghia la moi
+        # file tu ghi de len chinh no - ffmpeg vua doc vua ghi mot file. Chan
+        # ca me chu khong loai tung file nhu _run_convert_video: o kia chi mot
+        # phan file bi anh huong, o day la TAT CA.
+        if (os.path.normcase(os.path.abspath(input_dir))
+                == os.path.normcase(os.path.abspath(output_dir))):
+            self._log("Folder Output phai KHAC folder Input: ten file ra giu"
+                      " nguyen ten goc nen moi file se tu ghi de len chinh no.",
+                      'err')
+            return
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+        if mode not in ('time', 'count'):
+            self._log(f"Che do loop khong hop le: {mode}", 'err')
+            return
+
+        target = 0.0
+        n_fixed = 0
+        if mode == 'time':
+            raw = (str(params.get('loopTime') or '').strip()
+                   or str(code.get('default_time', '3:00:00')))
+            target = self._parse_time_spec(raw) or 0.0
+            if target <= 0:
+                self._log(f"Thoi luong dich khong hop le: {raw}"
+                          f" (nhan 'hh:mm:ss', 'mm:ss', hoac so giay)", 'err')
+                return
+            # In ra CACH DA HIEU truoc khi xu ly file nao: so tran la thu de
+            # doc nham nhat ('90' la 90 giay chu khong phai 90 phut) - ADR-014.
+            self._log(f"Loop toi thoi luong: {self._fmt_seconds(target)}"
+                      f" ({int(target)} giay).", 'info')
+        else:
+            raw = (str(params.get('loopCount') or '').strip()
+                   or str(code.get('default_count', 2)))
+            try:
+                n_fixed = int(float(raw))
+            except ValueError:
+                n_fixed = 0
+            if n_fixed < 2:
+                self._log(f"So lan lap phai tu 2 tro len (dang nhap: {raw})."
+                          f" Lap 1 lan chi la chep lai file.", 'err')
+                return
+            self._log(f"Loop {n_fixed} lan moi video.", 'info')
+
+        files = sorted(f for f in os.listdir(input_dir)
+                       if os.path.splitext(f)[1].lower() in vid_ext)
+        if not files:
+            self._log("Khong tim thay video trong Input.", 'err')
+            return
+
+        os.makedirs(output_dir, exist_ok=True)
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        self._log(f"Tim thay {len(files)} video | {workers} luong"
+                  f" | khong ma hoa lai.", 'info')
+
+        ok_count, done_count = [0], [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success:
+                    ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            self._mark_row(idx, success)
+            self._js(f"uiApi.setProgress({int(d / total * 100)},"
+                     f" '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang loop... {d}/{total} video')")
+
+        def loop_one(idx, name):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            src = os.path.join(input_dir, name)
+            dur = self._get_duration(src)
+            if dur <= 0:
+                self._log(f"[{idx + 1}/{total}] Khong doc duoc thoi luong:"
+                          f" {name}", 'err')
+                return False
+
+            if mode == 'time':
+                # Video da dai hon moc thi day KHONG phai viec cua chuc nang
+                # loop. Cat bot no di se la mot ket qua sai am tham: nguoi
+                # dung xin "lap toi 3 tieng" va nhan ve mot video bi xen.
+                if dur >= target:
+                    self._log(f"[{idx + 1}/{total}] Video da dai"
+                              f" {self._fmt_seconds(dur)}, khong ngan hon moc"
+                              f" {self._fmt_seconds(target)} nen khong co gi"
+                              f" de lap (dung 'Chia nho Video' neu muon cat):"
+                              f" {name}", 'err')
+                    return False
+                # Lam tron LEN cho du phu het moc. Viet tuong minh thay vi
+                # math.ceil de khong phai them mot import cho mot phep tinh.
+                n_rep = int(target // dur)
+                if n_rep * dur < target:
+                    n_rep += 1
+                out_dur = target if trim else n_rep * dur
+            else:
+                n_rep = n_fixed
+                out_dur = n_rep * dur
+
+            list_path = os.path.join(output_dir,
+                                     f"_loop_{uuid.uuid4().hex}.txt")
+            try:
+                with open(list_path, 'w', encoding='utf-8') as fh:
+                    for _ in range(n_rep):
+                        fh.write("file '" + src.replace('\\', '/') + "'\n")
+
+                self._log(f"[{idx + 1}/{total}] {name}"
+                          f" ({self._fmt_seconds(dur)}) x{n_rep}"
+                          f" -> {self._fmt_seconds(out_dur)}", 'info')
+
+                out_path = os.path.join(output_dir, name)
+                cmd = [self.ffmpeg_path, '-f', 'concat', '-safe', '0',
+                       '-i', list_path, '-c', 'copy']
+                # Chi cat o che do 'time'. -c copy chi cat duoc o ranh gioi goi
+                # du lieu nen do dai ra co the lech moc vai phan muoi giay -
+                # dung ban chat nhu chuc nang 'Chia nho'.
+                if mode == 'time' and trim:
+                    cmd += ['-t', f'{target:.3f}']
+                cmd += [out_path, '-progress', 'pipe:1', '-nostats', '-y']
+                success, _ = self._run_ffmpeg_with_table(cmd, idx, out_dur,
+                                                        name)
+                return success
+            except Exception as e:
+                self._log(f"[{idx + 1}/{total}] LOI: {e}", 'err')
+                return False
+            finally:
+                if os.path.exists(list_path):
+                    try:
+                        os.remove(list_path)
+                    except OSError:
+                        pass
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, name in run_items:
+                if self._stopped:
+                    break
+                futures[ex.submit(loop_one, i, name)] = i
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception as e:
+                    self._log(f"[{i + 1}] LOI: {e}", 'err')
+                    success = False
+                update(i, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
 
     def _run_pad_duration(self, params, code):
         target = int(code.get('target_seconds', 162000))

@@ -1,0 +1,20 @@
+{
+  "name": "Loop Video (theo thời lượng hoặc số lần)",
+  "type": "loop_video",
+  "description": "Lặp lại mỗi video trong Input cho tới một thời lượng đích, hoặc lặp đúng N lần. KHÔNG mã hoá lại: nối bằng concat demuxer với -c copy nên nhanh gần bằng tốc độ chép file và giữ nguyên 100% chất lượng, cả hình lẫn tiếng. Tên file ra giữ nguyên tên và đuôi gốc — vì vậy thư mục Output BẮT BUỘC phải khác thư mục Input, nếu không mỗi file sẽ tự ghi đè lên chính nó.",
+
+  "_comment_mode": "Chế độ mặc định khi ô trên giao diện để trống: 'time' = lặp tới thời lượng đích, 'count' = lặp đúng N lần. Giá trị thực tế đến từ dropdown trên giao diện, preset chỉ giữ mặc định — cùng vai trò với default_mode của 'Chia nho nhac'.",
+  "default_mode": "time",
+
+  "_comment_default_time": "Thời lượng đích mặc định cho chế độ 'time'. Nhận ba dạng: 'hh:mm:ss', 'mm:ss', hoặc số trần = SỐ GIÂY. App in ra cách nó đã hiểu ở dòng log đầu tiên trước khi xử lý file nào — số trần là thứ dễ đọc nhầm nhất (ADR-014).",
+  "default_time": "3:00:00",
+
+  "_comment_default_count": "Số lần lặp mặc định cho chế độ 'count'. Tối thiểu 2: lặp 1 lần chỉ là chép lại file, và cho phép giá trị đó sẽ làm người dùng tưởng chức năng hỏng khi thấy file ra y hệt file vào.",
+  "default_count": 2,
+
+  "_comment_video_ext": "Đuôi file được quét trong Input. Thêm đuôi mới là sửa JSON, không sửa code. LƯU Ý: concat demuxer + -c copy chỉ ghép được khi mọi đoạn cùng thông số — ở đây mọi đoạn LÀ CÙNG MỘT FILE nên điều kiện đó luôn thoả, khác hẳn 'Ghép Video' vốn nối các file khác nhau.",
+  "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v", ".wmv", ".flv"],
+
+  "_comment_trim": "Chỉ có tác dụng ở chế độ 'time'. Sau khi lặp đủ số vòng phủ hết thời lượng đích, cắt bằng -t cho khớp mốc. Vì -c copy chỉ cắt được ở ranh giới gói dữ liệu nên độ dài ra có thể lệch mốc vài phần mười giây — đúng bản chất như chức năng 'Chia nho'. Đặt false nếu bạn muốn giữ trọn vòng lặp cuối (file ra sẽ DÀI HƠN mốc, tối đa thêm một lần độ dài video gốc).",
+  "trim_to_target": true
+}
