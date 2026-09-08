@@ -9,6 +9,14 @@
 
   "_ghi_chu_o_nhap": "Ba o File am thanh / Video dem nguoc nhan CA duong dan file LAN duong dan thu muc. Thu muc co dung MOT file hop le thi app tu lay; nhieu file thi bao ro va liet ke chu khong boc bua. Ly do: ba o trong giong het nhau ma o dau tien (Kho video doc) LA thu muc that, nen dua vao thu muc la phan xa rat tu nhien - da xay ra 2026-09-08.",
 
+  "_ghi_chu_tu_tao": "Che do 'Tu tao theo thoi luong dich' ve mot FILE dem nguoc nen trong suot (1 fps) roi day vao dung duong ong nhu file nguoi dung chon - nen khung keo tha can chinh dung duoc y nguyen. KHONG ve thang bang drawtext len tung khung: do 2026-09-08 tren video that 1080x1920 60fps, dau ra 3 tieng, drawtext ve thang mat 90 PHUT con tao file roi ghep chi mat 36 PHUT (nhanh gap 2,5 lan), vi drawtext phai dung chu cho 648.000 khung con file tao san chi co 10.800 khung. Khung ve duoc do THAT bang kenh alpha roi moi cat dung co, chu khong uoc luong be rong theo so ky tu - doan sai thi hoac cat mat chu hoac de thua vien trong suot lam khung keo tha to hon phan nhin thay. Bieu thuc dem nguoc da duoc doi chieu tung pixel voi anh tham chieu: khop 0 pixel sai o moi moc, ke ca cho doi gio. LUU Y: dem nguoc tu tao doi so moi giay suot ca video nen KHONG dung duoc thu thuat chu ky - buoc phai ma hoa het chieu dai. Dung file dem nguoc LAP LAI (vd dong ho 1 phut) thi nhanh hon nhieu.",
+  "gen_font": "arialbd.ttf",
+  "gen_font_size": 140,
+  "gen_color": "white",
+  "gen_shadow": true,
+  "gen_shadow_color": "black@0.6",
+  "gen_shadow_offset": 4,
+
   "_ghi_chu_tach_nen": "Phan lon video 'dem nguoc tach nen' tim duoc tren mang thuc ra la dong ho TRANG TREN NEN DEN trong mot file .mp4 - KHONG co kenh alpha. Ghep thang thi no de mot hop den kin len video. 'auto' se: (a) thay kenh alpha -> dung thang; (b) khong co alpha nhung 4 goc deu toi hon black_threshold -> tu tach mau den bang colorkey; (c) khong co alpha va nen khong phai den -> BAO LOI ro rang thay vi cho ra ket qua hong am tham. Dat 'alpha' de ep dung thang, 'black' de ep tach den, hoac mot ma mau ('0x00FF00') de tach phong nen xanh. Do 2026-09-08 tren file that: colorkey giu nguyen mau nen ben duoi (59,89,199 so voi goc 60,90,200) va chi 0,8% pixel bi lam toi; blend 'screen'/'lighten' thi LAM HONG MAU (ra 190,24,255) vi no tron tren tung mat phang YUV chu khong phai RGB - dung thu lai.",
   "bg_mode": "auto",
   "key_similarity": 0.10,

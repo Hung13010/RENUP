@@ -450,13 +450,25 @@ button[hidden] { display: none !important; }
           <button class="browse-btn" onclick="pyApi.browseOvlAudioFile()">📂</button>
         </div>
 
-        <div class="field-label" style="margin-top:6px;">⏳ Video đếm ngược</div>
-        <div class="input-row">
-          <input type="text" id="ovlCountPath" placeholder="File .mov trong suốt, hoặc .mp4 nền đen...">
-          <button class="browse-btn" onclick="pyApi.browseOvlCountFile()">📂</button>
+        <div class="field-label" style="margin-top:6px;">⏳ Đếm ngược</div>
+        <div class="settings-row">
+          <select id="ovlCountSrc" style="width:100%;" onchange="onOvlCountSrcChanged()">
+            <option value="auto">Tự tạo theo thời lượng đích</option>
+            <option value="file">Dùng file có sẵn</option>
+          </select>
         </div>
-        <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
-          nền trong suốt hoặc nền đen đều được — app tự nhận
+
+        <div id="ovlCountFileRow" style="display:none;">
+          <div class="input-row" style="margin-top:6px;">
+            <input type="text" id="ovlCountPath" placeholder="File .mov trong suốt, hoặc .mp4 nền đen...">
+            <button class="browse-btn" onclick="pyApi.browseOvlCountFile()">📂</button>
+          </div>
+          <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+            nền trong suốt hoặc nền đen đều được — app tự nhận
+          </div>
+        </div>
+        <div id="ovlCountAutoNote" style="font-size:11px; color:var(--text-muted); margin-top:2px;">
+          đếm từ đúng thời lượng bạn nhập bên dưới về 00:00
         </div>
 
         <div class="field-label" style="margin-top:6px;">⏱ Loop tới thời lượng</div>
@@ -1022,6 +1034,12 @@ function onAudioSplitModeChanged() {
   document.getElementById('audioSplitSecondsRow').style.display = isParts ? 'none' : '';
 }
 
+function onOvlCountSrcChanged() {
+  const auto = document.getElementById('ovlCountSrc').value === 'auto';
+  document.getElementById('ovlCountFileRow').style.display = auto ? 'none' : '';
+  document.getElementById('ovlCountAutoNote').style.display = auto ? '' : 'none';
+}
+
 // ══ LOOP + DEM NGUOC: khung keo tha ══════════════════════════════════════
 // Trang thai giu theo TI LE cua video goc, khong theo pixel cua khung xem
 // truoc. Hai ly do: khung xem truoc nho hon video that nhieu lan, va ca kho
@@ -1204,6 +1222,7 @@ window.uiApi = {
 
   showLoopOvlSection(show) {
     document.getElementById('loopOvlSection').style.display = show ? 'block' : 'none';
+    if (show) onOvlCountSrcChanged();
   },
 
   // Ba o duong dan cua 'Loop Video + dem nguoc'. Mot ham nhan khoa thay vi
@@ -1743,6 +1762,7 @@ const pyApi = new Proxy({}, {
           loopTime: getFieldValue('loopTime'),
           loopCount: getFieldValue('loopCount'),
           ovlAudio: getFieldValue('ovlAudio'),
+          ovlCountSrc: getFieldValue('ovlCountSrc'),
           ovlCount: getFieldValue('ovlCountPath'),
           ovlTime: getFieldValue('ovlTime'),
           ovlPlace: getFieldValue('ovlPlace'),

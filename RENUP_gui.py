@@ -643,7 +643,12 @@ class Api:
                 "document.getElementById('ovlVideoDir').value") or ''
             cnt_path = self._window.evaluate_js(
                 "document.getElementById('ovlCountPath').value") or ''
+            cnt_src = self._window.evaluate_js(
+                "document.getElementById('ovlCountSrc').value") or 'auto'
+            raw_time = self._window.evaluate_js(
+                "document.getElementById('ovlTime').value") or ''
             video_dir, cnt_path = video_dir.strip(), cnt_path.strip()
+            auto_cnt = str(cnt_src).strip().lower() == 'auto'
 
             code = next((c for c in (self._code_map or {}).values()
                          if isinstance(c, dict)
@@ -657,15 +662,16 @@ class Api:
                 self._log("Chua chon Kho video doc"
                           " (hoac thu muc khong ton tai).", 'err')
                 return
-            cnt_path, err = self._ovl_resolve_file(
-                cnt_path,
-                [e.lower() for e in code.get(
-                    'count_ext', ['.mov', '.webm', '.mp4', '.mkv', '.avi',
-                                  '.m4v'])],
-                "video dem nguoc")
-            if err:
-                self._log(err, 'err')
-                return
+            if not auto_cnt:
+                cnt_path, err = self._ovl_resolve_file(
+                    cnt_path,
+                    [e.lower() for e in code.get(
+                        'count_ext', ['.mov', '.webm', '.mp4', '.mkv', '.avi',
+                                      '.m4v'])],
+                    "video dem nguoc")
+                if err:
+                    self._log(err, 'err')
+                    return
 
             files = sorted(f for f in os.listdir(video_dir)
                            if os.path.splitext(f)[1].lower() in vid_ext)
@@ -675,16 +681,10 @@ class Api:
             base_path = os.path.join(video_dir, files[0])
 
             binfo = self._ovl_probe(base_path)
-            cinfo = self._ovl_probe(cnt_path)
             if not binfo:
                 self._log(f"Khong doc duoc video: {files[0]}", 'err')
                 return
-            if not cinfo:
-                self._log(f"Khong doc duoc video dem nguoc:"
-                          f" {os.path.basename(cnt_path)}", 'err')
-                return
             bw, bh, _bfps, bdur = binfo
-            cw, ch, _cfps, cdur = cinfo
 
             # File tam trong thu muc tam cua he thong, xoa ngay sau khi doc:
             # anh di sang JS duoi dang data URI nen khong can giu lai gi.
@@ -701,24 +701,52 @@ class Api:
                 self.ffmpeg_path, '-ss', f'{bdur / 2:.3f}', '-i', base_path,
                 '-frames:v', '1', '-vf', f'scale={pw}:{ph}',
                 '-q:v', '4', base_img, '-y'])
-            # Ap dung DUNG doan loc tach nen ma luc chay se dung, neu khong
-            # khung xem truoc se hien mot hop den va nguoi dung khong the
-            # biet ket qua that ra sao.
-            key_f, key_msg, key_tag = self._ovl_key_filter(
-                cnt_path, self._probe_spec(cnt_path), cdur, code)
-            self._log(key_msg, key_tag)
-            vf = f'scale={pw}:-1' + (',' + key_f if key_f else '')
-            ok2, err2 = self._ffmpeg_quiet(
-                [self.ffmpeg_path, '-ss', f'{cdur / 2:.3f}']
-                + self._ovl_cnt_input(cnt_path, code)
-                + ['-i', cnt_path, '-frames:v', '1',
-                   '-vf', vf, '-pix_fmt', 'rgba', cnt_png, '-y'])
             if not ok1 or not os.path.exists(base_img):
                 self._log(f"Khong trich duoc khung video doc: {err1}", 'err')
                 return
-            if not ok2 or not os.path.exists(cnt_png):
-                self._log(f"Khong trich duoc khung dem nguoc: {err2}", 'err')
-                return
+
+            if auto_cnt:
+                # Che do tu tao: ve DUNG MOT khung o gia tri bat dau. Khong
+                # dung ca file dai hang tieng chi de xem truoc.
+                total = self._parse_time_spec(
+                    raw_time.strip()
+                    or str(code.get('default_time', '3:00:00'))) or 0.0
+                if total <= 0:
+                    self._log(f"Thoi luong dich khong hop le: {raw_time}"
+                              f" (nhan 'hh:mm:ss', 'mm:ss', hoac so giay)",
+                              'err')
+                    return
+                size, err = self._ovl_gen_countdown(total, cnt_png, code,
+                                                    one_frame=True)
+                if err:
+                    self._log(f"Khong tao duoc dem nguoc: {err}", 'err')
+                    return
+                cw, ch, cdur = size[0], size[1], total
+                cname = f"tu tao ({self._fmt_seconds(total)} -> 00:00)"
+            else:
+                cinfo = self._ovl_probe(cnt_path)
+                if not cinfo:
+                    self._log(f"Khong doc duoc video dem nguoc:"
+                              f" {os.path.basename(cnt_path)}", 'err')
+                    return
+                cw, ch, _cfps, cdur = cinfo
+                cname = os.path.basename(cnt_path)
+                # Ap dung DUNG doan loc tach nen ma luc chay se dung, neu
+                # khong khung xem truoc se hien mot hop den va nguoi dung
+                # khong the biet ket qua that ra sao.
+                key_f, key_msg, key_tag = self._ovl_key_filter(
+                    cnt_path, self._probe_spec(cnt_path), cdur, code)
+                self._log(key_msg, key_tag)
+                vf = f'scale={pw}:-1' + (',' + key_f if key_f else '')
+                ok2, err2 = self._ffmpeg_quiet(
+                    [self.ffmpeg_path, '-ss', f'{cdur / 2:.3f}']
+                    + self._ovl_cnt_input(cnt_path, code)
+                    + ['-i', cnt_path, '-frames:v', '1',
+                       '-vf', vf, '-pix_fmt', 'rgba', cnt_png, '-y'])
+                if not ok2 or not os.path.exists(cnt_png):
+                    self._log(f"Khong trich duoc khung dem nguoc: {err2}",
+                              'err')
+                    return
 
             # DATA URI chu KHONG phai 'file://'. pywebview phuc vu index.html
             # qua mot HTTP server cuc bo (webview/http.py start_server), nen
@@ -754,7 +782,7 @@ class Api:
                 'nVideos': len(files),
             }
             self._log(f"Xem truoc: {files[0]} ({bw}x{bh}) +"
-                      f" {os.path.basename(cnt_path)} ({cw}x{ch})", 'ok')
+                      f" {cname} ({cw}x{ch})", 'ok')
             self._js(f"ovlShowPreview({json.dumps(payload)})")
         except Exception as e:
             self._log(f"Loi khi dung anh xem truoc: {e}", 'err')
@@ -3033,6 +3061,132 @@ class Api:
                 fh.write("file '" + src.replace('\\', '/') + "'\n")
         return path
 
+    # ---- Tu tao dem nguoc (khong can file co san) ------------------------
+    # Tao mot FILE dem nguoc nen trong suot roi day vao dung duong ong da co,
+    # thay vi ve thang bang drawtext len tung khung. Do 2026-09-08 tren video
+    # that (1080x1920, 60fps), dau ra 3 tieng:
+    #     drawtext ve thang        2,00x thoi gian thuc -> 90 phut
+    #     tao file roi ghep        85s tao + 5,21x      -> 36 phut
+    # Nhanh gap 2,5 lan, vi drawtext phai dung chu cho ca 648.000 khung con
+    # file tao san chi co 10.800 khung (1 fps) va ghep alpha thi re. Va no
+    # tai dung nguyen khung keo tha can chinh da co.
+    #
+    # LUU Y: dem nguoc tu tao doi so moi giay suot ca video nen KHONG dung
+    # duoc thu thuat chu ky - buoc phai ma hoa het chieu dai. Dieu nay tu roi
+    # ra dung: _ovl_fit_cycle se khong tim duoc chu ky nao vi dur_cnt = target.
+
+    def _ovl_font_path(self, code):
+        """Duong dan font cho drawtext. None neu khong tim thay.
+
+        Lay tu %WINDIR% chu khong ghi cung ky tu o dia (quy tac CLAUDE.md).
+        """
+        name = str(code.get('gen_font', 'arialbd.ttf')).strip()
+        if os.path.isabs(name):
+            return name if os.path.isfile(name) else None
+        windir = os.environ.get('WINDIR')
+        if not windir:
+            return None
+        p = os.path.join(windir, 'Fonts', name)
+        return p if os.path.isfile(p) else None
+
+    @staticmethod
+    def _ovl_countdown_expr(total):
+        """Chuoi 'text=' dem nguoc tu `total` giay ve 0.
+
+        Dinh dang hh:mm:ss khi dich tu 1 tieng tro len, mm:ss khi ngan hon.
+        Dung HANG SO chu khong dung bien T cua ffmpeg: T la thoi luong cua
+        input, ma input o day la mot danh sach concat nen T khong phai cai
+        ta muon.
+
+        Da doi chieu tung pixel voi anh tham chieu 2026-09-08: khop 0 pixel
+        sai o moi moc, ke ca cho doi gio (3599,5s -> 01:00:00, 3601,5s ->
+        00:59:58).
+        """
+        s = str(int(total))
+        if total >= 3600:
+            return (r"%{eif\:trunc((" + s + r"-t)/3600)\:d\:2}\:"
+                    r"%{eif\:trunc(mod((" + s + r"-t)/60\,60))\:d\:2}\:"
+                    r"%{eif\:trunc(mod(" + s + r"-t\,60))\:d\:2}")
+        return (r"%{eif\:trunc((" + s + r"-t)/60)\:d\:2}\:"
+                r"%{eif\:trunc(mod(" + s + r"-t\,60))\:d\:2}")
+
+    def _ovl_draw_filter(self, code, text, font, cx, cy):
+        """Doan drawtext. `text` da duoc thoat san."""
+        size = int(code.get('gen_font_size', 140))
+        color = str(code.get('gen_color', 'white'))
+        f = font.replace('\\', '/').replace(':', r'\:')
+        out = (f"drawtext=fontfile='{f}':text='{text}'"
+               f":fontcolor={color}:fontsize={size}:x={cx}:y={cy}")
+        if bool(code.get('gen_shadow', True)):
+            sh = int(code.get('gen_shadow_offset', 4))
+            out += (f":shadowcolor={code.get('gen_shadow_color', 'black@0.6')}"
+                    f":shadowx={sh}:shadowy={sh}")
+        return out
+
+    def _ovl_gen_countdown(self, total, out_path, code, one_frame=False):
+        """File dem nguoc nen trong suot, dai dung `total` giay, 1 fps.
+
+        one_frame=True: chi ve MOT khung o gia tri bat dau, ra PNG. Dung cho
+        khung xem truoc - khong dung ca file dai hang tieng chi de xem.
+
+        Hai buoc: ve thu MOT khung tren khung ve rong rai roi do vung chu
+        THAT SU chiem bang kenh alpha, sau do moi tao file dung kich thuoc.
+        Do that thay vi uoc luong be rong theo so ky tu: be rong mot chu so
+        phu thuoc font, va doan sai thi hoac cat mat chu hoac de thua mot
+        vien trong suot lam khung keo tha to hon phan nhin thay duoc.
+        """
+        font = self._ovl_font_path(code)
+        if not font:
+            return None, (f"Khong tim thay font"
+                          f" '{code.get('gen_font', 'arialbd.ttf')}'"
+                          f" trong thu muc Fonts cua Windows")
+        size = int(code.get('gen_font_size', 140))
+        expr = self._ovl_countdown_expr(total)
+        pad = max(4, size // 10)
+        cw, ch = size * 10, size * 2      # khung ve rong rai
+
+        probe_png = os.path.join(tempfile.gettempdir(),
+                                 f'_ovlgen_{uuid.uuid4().hex}.png')
+        try:
+            ok, err = self._ffmpeg_quiet([
+                self.ffmpeg_path, '-f', 'lavfi',
+                '-i', f'color=c=black@0.0:s={cw}x{ch}:d=1,format=rgba',
+                '-vf', self._ovl_draw_filter(code, expr, font,
+                                             '(w-text_w)/2', '(h-text_h)/2'),
+                '-frames:v', '1', '-pix_fmt', 'rgba', probe_png, '-y'])
+            if not ok or not os.path.exists(probe_png):
+                return None, f"khong ve thu duoc chu dem nguoc: {err}"
+            with Image.open(probe_png) as im:
+                box = im.convert('RGBA').getchannel('A').getbbox()
+            if not box:
+                return None, ("ve ra khung trong - font co the khong co chu so")
+        finally:
+            if os.path.exists(probe_png):
+                try:
+                    os.remove(probe_png)
+                except OSError:
+                    pass
+
+        x0, y0, x1, y1 = box
+        w = max(2, (x1 - x0 + pad * 2) // 2 * 2)
+        h = max(2, (y1 - y0 + pad * 2) // 2 * 2)
+        draw = self._ovl_draw_filter(code, expr, font,
+                                     '(w-text_w)/2', '(h-text_h)/2')
+        if one_frame:
+            cmd = [self.ffmpeg_path, '-f', 'lavfi',
+                   '-i', f'color=c=black@0.0:s={w}x{h}:d=1,format=rgba',
+                   '-vf', draw, '-frames:v', '1', '-pix_fmt', 'rgba',
+                   out_path, '-y']
+        else:
+            cmd = [self.ffmpeg_path, '-f', 'lavfi',
+                   '-i', (f'color=c=black@0.0:s={w}x{h}'
+                          f':d={total:.3f}:r=1,format=rgba'),
+                   '-vf', draw, '-c:v', 'qtrle', '-an', out_path, '-y']
+        ok, err = self._ffmpeg_quiet(cmd)
+        if not ok or not os.path.exists(out_path):
+            return None, f"khong tao duoc file dem nguoc: {err}"
+        return (w, h), None
+
     @staticmethod
     def _ovl_fit_cycle(dur_base, dur_cnt, target, cap, tol, k_max=120):
         """Tim chu ky L = k*dur_base ma dem nguoc vua khit dung m lan, cho
@@ -3149,11 +3303,16 @@ class Api:
         if err:
             self._log(err, 'err')
             return
-        cnt_path, err = self._ovl_resolve_file(cnt_path, cnt_ext,
-                                               "video dem nguoc")
-        if err:
-            self._log(err, 'err')
-            return
+        # Dem nguoc duoc giai quyet SAU khi biet `target` - che do tu tao can
+        # con so do de biet dem nguoc tu dau.
+        auto_cnt = (str(params.get('ovlCountSrc') or 'auto').strip().lower()
+                    == 'auto')
+        if not auto_cnt:
+            cnt_path, err = self._ovl_resolve_file(cnt_path, cnt_ext,
+                                                   "video dem nguoc")
+            if err:
+                self._log(err, 'err')
+                return
         if not output_dir:
             self._log("Chua chon folder Output.", 'err')
             return
@@ -3181,10 +3340,45 @@ class Api:
         self._log(f"Loop toi thoi luong: {self._fmt_seconds(target)}"
                   f" ({int(target)} giay).", 'info')
 
+        # Quet kho TRUOC khi tao dem nguoc: tao xong roi moi phat hien kho
+        # rong thi phai di don mot file tam vua dung mat gan mot phut.
+        files = sorted(f for f in os.listdir(video_dir)
+                       if os.path.splitext(f)[1].lower() in vid_ext)
+        if not files:
+            self._log("Khong tim thay video trong Kho video doc.", 'err')
+            return
+
+        # --- Dem nguoc: tu tao, hoac dung file nguoi dung chon --------------
+        cnt_gen = None
+        if auto_cnt:
+            os.makedirs(output_dir, exist_ok=True)
+            cnt_gen = os.path.join(output_dir,
+                                   f"_ovl_gen_{uuid.uuid4().hex}.mov")
+            self._js("uiApi.setStatus('Dang tao dem nguoc...')")
+            self._log(f"Tu tao dem nguoc dem tu"
+                      f" {self._fmt_seconds(target)} ve 00:00...", 'info')
+            size, err = self._ovl_gen_countdown(target, cnt_gen, code)
+            if err:
+                self._log(f"Khong tao duoc dem nguoc: {err}", 'err')
+                if os.path.exists(cnt_gen):
+                    try:
+                        os.remove(cnt_gen)
+                    except OSError:
+                        pass
+                return
+            cnt_path = cnt_gen
+            self._log(f"  xong: {size[0]}x{size[1]},"
+                      f" {os.path.getsize(cnt_gen)/1024/1024:.1f} MB", 'ok')
+
         cnt_info = self._ovl_probe(cnt_path)
         if not cnt_info:
             self._log(f"Khong doc duoc video dem nguoc: "
                       f"{os.path.basename(cnt_path)}", 'err')
+            if cnt_gen and os.path.exists(cnt_gen):
+                try:
+                    os.remove(cnt_gen)
+                except OSError:
+                    pass
             return
         cnt_w, cnt_h, _cnt_fps, cnt_dur = cnt_info
         place = self._ovl_parse_place(params.get('ovlPlace'), code)
@@ -3195,12 +3389,6 @@ class Api:
         key_f, key_msg, key_tag = self._ovl_key_filter(
             cnt_path, self._probe_spec(cnt_path), cnt_dur, code)
         self._log(key_msg, key_tag)
-
-        files = sorted(f for f in os.listdir(video_dir)
-                       if os.path.splitext(f)[1].lower() in vid_ext)
-        if not files:
-            self._log("Khong tim thay video trong Kho video doc.", 'err')
-            return
 
         os.makedirs(output_dir, exist_ok=True)
         run_items = self._begin_batch(files)
@@ -3284,11 +3472,12 @@ class Api:
                                                 code)
         if not ok_aud or not os.path.exists(aud_full):
             self._log(f"Khong dung duoc ban nhac: {err_aud}", 'err')
-            if os.path.exists(aud_full):
-                try:
-                    os.remove(aud_full)
-                except OSError:
-                    pass
+            for p in (aud_full, cnt_pre, cnt_gen):
+                if p and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
             return
 
         ok_count, done_count = [0], [0]
@@ -3446,7 +3635,7 @@ class Api:
                         success = False
                     update(i, success)
         finally:
-            for p in (aud_full, cnt_pre):
+            for p in (aud_full, cnt_pre, cnt_gen):
                 if p and os.path.exists(p):
                     try:
                         os.remove(p)
