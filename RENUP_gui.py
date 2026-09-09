@@ -3735,19 +3735,34 @@ class Api:
                       f" dung san.", 'info')
 
         # --- Nhac: ghep bai cho tung video, roi dung ban dai du moc --------
-        # Ghep theo THU TU TEN, khong xao tron (khac ADR-021). O day so bai
-        # thuong bang so video, nen ghep co thu tu la thu nguoi dung dieu
-        # khien duoc bang cach dat ten - va lan "chay lai dong loi" cua
-        # ADR-007 tai tao dung cap cu, thu ma xao tron khong lam duoc.
+        # XAO TRON roi xoay vong (ADR-027). Ban dau ghep theo thu tu ten de
+        # nguoi dung dieu khien cap bang cach dat ten (ADR-026), nhung cach
+        # do co mot hong lon khi kho nhac NHIEU HON so video: no lay dung N
+        # bai dau bang chu cai, MAI MAI - 20 bai cho 10 video thi 10 bai
+        # cuoi khong bao gio duoc dung, ke ca khi chay lai. Xao tron sua
+        # dung cho do va khong danh doi gi khi so luong bang nhau (luc ay
+        # moi bai deu duoc dung o ca hai cach, chi khac video nao lay bai
+        # nao). Duong ve thu tu ten: preset "audio_order": "name".
+        #
+        # KHONG seed: seed suy tu danh sach dau vao se tai tao dung mot bo
+        # N bai cho cung mot thu muc, tuc lap lai chinh loi vua sua.
+        #
         # Danh chi so theo vi tri trong `files` (chi so goc), khong theo vi
-        # tri trong `run_items`, chinh de cap khong doi khi chay lai.
-        pair = {name: aud_list[i % len(aud_list)]
+        # tri trong `run_items` - de trong CUNG mot me, dong duoc chay lai
+        # va dong chay lan dau cung tra ve mot cach ghep.
+        aud_cycle = list(aud_list)
+        by_name = str(code.get('audio_order', 'random')).strip().lower() == 'name'
+        if not by_name and len(aud_cycle) > 1:
+            random.Random().shuffle(aud_cycle)
+        pair = {name: aud_cycle[i % len(aud_cycle)]
                 for i, name in enumerate(files)}
         if len(aud_list) > 1:
             unused = len(aud_list) - len(set(pair.values()))
             self._log(f"Nhac: {len(aud_list)} bai cho {len(files)} video ->"
-                      f" moi video mot bai, xoay vong theo thu tu ten."
-                      + (f" {unused} bai khong duoc dung."
+                      f" moi video mot bai,"
+                      + (" xoay vong theo thu tu ten." if by_name else
+                         " boc ngau nhien (moi lan chay mot khac).")
+                      + (f" Lan nay {unused} bai khong duoc dung."
                          if unused else ''), 'info')
 
         # Dung MOT ban dai cho MOI bai duoc dung den (khong phai moi dong):

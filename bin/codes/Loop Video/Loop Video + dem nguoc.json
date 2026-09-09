@@ -5,6 +5,9 @@
 
   "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v", ".wmv", ".flv"],
   "audio_ext": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"],
+
+  "_ghi_chu_thu_tu_nhac": "Chi co tac dung khi o Nhac tro vao mot THU MUC (moi video mot bai). 'random' (mac dinh) xao tron kho roi xoay vong, nen kho 20 bai cho 10 video thi moi lan chay boc mot bo 10 bai khac nhau - bai nao cung co co hoi. 'name' ghep theo thu tu ten, tuc luon lay N bai dau bang chu cai: nguoi dung dieu khien duoc cap ghep bang cach dat ten, doi lai la nhung bai cuoi kho KHONG BAO GIO duoc dung neu kho nhieu bai hon so video (ADR-026 chon cach nay truoc, ADR-027 doi lai vi dung ly do do). Khi so bai bang so video thi hai cach cho ket qua tuong duong - deu dung het moi bai, chi khac video nao lay bai nao.",
+  "audio_order": "random",
   "count_ext": [".mov", ".webm", ".mp4", ".mkv", ".avi", ".m4v"],
 
   "_ghi_chu_o_nhap": "Hai o Nhac / Video dem nguoc nhan CA duong dan file LAN duong dan thu muc. Ly do: ba o trong giong het nhau ma o dau tien (Kho video doc) LA thu muc that, nen dua vao thu muc la phan xa rat tu nhien - da xay ra 2026-09-08. Nhung THU MUC NHIEU FILE thi hai o hieu KHAC nhau, va khac co ly do: voi NHAC, nhieu file nghia la moi video mot bai, xoay vong theo thu tu ten (ADR-026); voi DEM NGUOC thi van la loi, vi ca me chi ghep duoc mot dem nguoc nen boc bua la doan mo.",
