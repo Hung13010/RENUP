@@ -339,12 +339,36 @@ button[hidden] { display: none !important; }
 .retry-btns { flex-direction: column; }
 .retry-btns button { width: 100%; }
 
-/* ── LOOP + DEM NGUOC: bang kieu chu trong khung xem truoc ── */
+/* ── LOOP + DEM NGUOC: khung xem truoc + bang kieu chu ──
+   Hop nay KHONG dung .update-box mac dinh (400px, padding 28/32): no co lai
+   vua noi dung nen bang kieu chu bi bo trong 250px trong khi cua so 1200px
+   con thua hon 600px trong. Va phan chrome cua hop (icon 36px + le 28px x2)
+   an mat cua khung anh gan 50px chieu cao - voi video DOC thi chieu cao moi
+   la thu quyet dinh co anh xem truoc. */
+#ovlPreviewBox { width: auto; min-width: 620px; max-width: 94vw; padding: 20px 26px; }
+#ovlPreviewBox .update-icon { font-size: 22px; margin-bottom: 2px; }
+#ovlPreviewBox .update-title { margin-bottom: 4px; }
+#ovlPreviewBox .update-versions { margin-bottom: 10px; }
+/* Cot trai duoc dat be rong dung bang khung anh (JS dat): neu de no tu co
+   gian thi dong chu chu thich (dai hon khung anh) se keo cot rong ra va
+   tran sang duoi bang kieu chu. */
+#ovlStageCol { flex: none; }
+#ovlStageCol .ovl-hint { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+
+#ovlStylePanel { width: 300px; flex: none; text-align: left; }
 .ovl-strow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; }
-.ovl-strow > span:first-child { width: 62px; flex: none; color: var(--text-muted); }
+.ovl-strow > span:first-child { width: 56px; flex: none; color: var(--text-muted); }
 .ovl-strow > b { width: 38px; flex: none; text-align: right; font-family: monospace; font-weight: 400; }
-.ovl-strow input[type=color] { width: 34px; height: 24px; padding: 1px; flex: none; cursor: pointer; }
-.ovl-strow input[type=number], .ovl-strow select { height: 24px; font-size: 12px; }
+.ovl-strow input[type=color] { width: 34px; height: 26px; padding: 1px; flex: none; cursor: pointer; }
+.ovl-strow input[type=number], .ovl-strow select {
+  height: 26px; font-size: 12px; padding: 0 6px; min-width: 0;
+}
+/* Hai o co noi dung dai (ten phong, ten kieu so) duoc nhan RIENG mot dong
+   va an tren, de chung luon co tron be rong bang - khong bao gio bi cat
+   chu du bang co hep di. */
+.ovl-stack { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; font-size: 12px; }
+.ovl-stack > span { color: var(--text-muted); }
+.ovl-stack select { width: 100%; height: 26px; font-size: 12px; padding: 0 6px; }
 </style>
 </head>
 <body>
@@ -925,15 +949,14 @@ button[hidden] { display: none !important; }
   <!-- max-height + overflow: chot chan cuoi. Kich thuoc khung da duoc tinh
        cho vua cua so (ovlStageSize), day chi la de neu tinh sai thi van con
        cuon toi duoc cac nut chu khong mat hut. -->
-  <div class="update-box" id="ovlPreviewBox" style="width:auto; max-width:94vw;
-       max-height:92vh; overflow-y:auto;">
+  <div class="update-box" id="ovlPreviewBox" style="max-height:92vh; overflow-y:auto;">
     <div class="update-icon">⤢</div>
     <div class="update-title">Căn chỉnh &amp; kiểu chữ đếm ngược</div>
     <div class="update-versions" id="ovlPreviewInfo"></div>
 
-    <div style="display:flex; gap:16px; align-items:flex-start; justify-content:center;">
-      <div>
-        <div id="ovlStage" style="position:relative; margin:0 auto 10px; background:#000;
+    <div style="display:flex; gap:18px; align-items:flex-start; justify-content:center;">
+      <div id="ovlStageCol">
+        <div id="ovlStage" style="position:relative; margin:0 auto 8px; background:#000;
              overflow:hidden; user-select:none; touch-action:none; border-radius:6px;">
           <img id="ovlBaseImg" style="display:block; width:100%; height:100%;
                object-fit:cover; pointer-events:none;" alt="">
@@ -946,18 +969,18 @@ button[hidden] { display: none !important; }
                  border:2px solid #fff; cursor:nwse-resize;"></div>
           </div>
         </div>
-        <div style="font-size:11px; color:var(--text-muted); text-align:center;">
-          Kéo để đặt vị trí · kéo ô góc dưới-phải để đổi cỡ<br>
+        <div class="ovl-hint">
+          Kéo để đặt vị trí · kéo ô góc để đổi cỡ<br>
           <span id="ovlNumbers" style="font-family:monospace;"></span>
         </div>
       </div>
 
       <!-- Bang kieu chu. Chi hien o che do TU TAO: voi file nguoi dung tu
            chon thi khong co gi de ve lai. -->
-      <div id="ovlStylePanel" style="width:250px; text-align:left; flex:none;">
+      <div id="ovlStylePanel">
         <div class="field-label" style="margin-top:0;">🎨 Kiểu chữ đếm ngược</div>
 
-        <select id="ovlStPreset" class="ovl-st" style="width:100%; margin-bottom:8px;">
+        <select id="ovlStPreset" class="ovl-st" style="width:100%; height:28px; margin-bottom:10px;">
           <option value="">— kiểu mẫu —</option>
           <option value="plain">Trắng trơn</option>
           <option value="outline">Trắng viền đen</option>
@@ -967,14 +990,14 @@ button[hidden] { display: none !important; }
           <option value="neon">Xanh neon</option>
         </select>
 
-        <div class="ovl-strow"><span>Phông</span>
-          <select id="ovlStFont" class="ovl-st" style="flex:1;"></select></div>
+        <div class="ovl-stack"><span>Phông chữ</span>
+          <select id="ovlStFont" class="ovl-st"></select></div>
 
-        <div class="ovl-strow"><span>Kiểu số</span>
-          <select id="ovlStFmt" class="ovl-st" style="flex:1;">
-            <option value="auto">Tự động</option>
-            <option value="mmss">phút:giây</option>
-            <option value="hhmmss">giờ:phút:giây</option>
+        <div class="ovl-stack"><span>Kiểu hiển thị số</span>
+          <select id="ovlStFmt" class="ovl-st">
+            <option value="auto">Tự động theo thời lượng</option>
+            <option value="mmss">phút : giây</option>
+            <option value="hhmmss">giờ : phút : giây</option>
             <option value="ss">chỉ số giây</option>
           </select></div>
 
@@ -987,19 +1010,22 @@ button[hidden] { display: none !important; }
 
         <div class="ovl-strow"><span>Viền</span>
           <input type="number" id="ovlStBorder" class="ovl-st" min="0" max="40" value="0"
-                 style="width:56px;">
-          <input type="color" id="ovlStBorderColor" class="ovl-st" value="#000000"></div>
+                 style="width:58px;">
+          <input type="color" id="ovlStBorderColor" class="ovl-st" value="#000000">
+          <span style="font-size:10px; color:var(--text-muted);">0 = tắt</span></div>
 
         <div class="ovl-strow"><span>Bóng</span>
           <input type="number" id="ovlStShadow" class="ovl-st" min="0" max="40" value="0"
-                 style="width:56px;">
-          <input type="color" id="ovlStShadowColor" class="ovl-st" value="#000000"></div>
+                 style="width:58px;">
+          <input type="color" id="ovlStShadowColor" class="ovl-st" value="#000000">
+          <span style="font-size:10px; color:var(--text-muted);">0 = tắt</span></div>
 
         <div class="ovl-strow"><span>Nền</span>
-          <input type="checkbox" id="ovlStBox" class="ovl-st">
+          <input type="checkbox" id="ovlStBox" class="ovl-st" style="flex:none;">
           <input type="color" id="ovlStBoxColor" class="ovl-st" value="#000000">
           <input type="number" id="ovlStBoxPad" class="ovl-st" min="0" max="120" value="24"
-                 title="đệm quanh chữ (px)" style="width:56px;"></div>
+                 title="đệm quanh chữ (px)" style="width:58px;">
+          <span style="font-size:10px; color:var(--text-muted);">đệm</span></div>
 
         <div class="ovl-strow"><span>Đậm nền</span>
           <input type="range" id="ovlStBoxOpacity" min="0" max="100" step="5" value="45"
@@ -1007,15 +1033,15 @@ button[hidden] { display: none !important; }
 
         <div class="ovl-strow"><span>Độ nét</span>
           <input type="number" id="ovlStSize" class="ovl-st" min="60" max="400" step="20"
-                 value="140" style="width:56px;">
-          <span style="font-size:10px; color:var(--text-muted);">px khi vẽ</span></div>
+                 value="140" style="width:58px;">
+          <span style="font-size:10px; color:var(--text-muted);">px khi vẽ, không đổi cỡ hiển thị</span></div>
 
         <div id="ovlStBusy" style="font-size:11px; color:var(--text-muted);
              margin-top:8px; min-height:15px;"></div>
       </div>
     </div>
 
-    <div class="update-btns" style="margin-top:12px;">
+    <div class="update-btns" style="margin-top:14px;">
       <button class="btn-accent" id="ovlApplyBtn">✓ Áp dụng</button>
       <button class="btn-muted" id="ovlResetBtn">↺ Đặt lại</button>
       <button class="btn-danger" id="ovlCancelBtn">✕ Hủy</button>
@@ -1130,11 +1156,14 @@ let ovlState = null;              // {ar, cur:{x,y,w}}
 // cao hon ca cua so app (751px), day tieu de va cac nut ra ngoai man hinh
 // va khong con bam duoc gi. Da xay ra 2026-09-08.
 function ovlStageSize(bw, bh, panel) {
-  const maxH = Math.max(200, Math.min(520, window.innerHeight - 320));
-  // Tru cho bang kieu chu ben canh (250px + khoang cach + le hop thoai),
-  // neu khong tren cua so hep bang do se bi day ra ngoai.
+  // Voi video DOC thi chieu CAO moi la thu quyet dinh, khong phai chieu
+  // rong: 460px be rong tren ti le 9:16 ra 818px cao, vuot ca cua so.
+  // 300 = phan chrome cua hop da do sau khi thu gon o CSS (le 40, icon 24,
+  // tieu de 28, dong thong tin 32, chu thich 34, hang nut 54, du phong).
+  const maxH = Math.max(200, Math.min(560, window.innerHeight - 300));
+  // Tru cho bang kieu chu ben canh (300px + khoang cach + le hop thoai).
   const maxW = Math.max(180, Math.min(OVL_STAGE_W,
-    window.innerWidth - (panel ? 360 : 90)));
+    window.innerWidth - (panel ? 400 : 110)));
   let w = maxW, h = Math.round(maxW * bh / bw);
   if (h > maxH) { h = maxH; w = Math.round(maxH * bw / bh); }
   return [Math.max(80, w), Math.max(80, h)];
@@ -1156,6 +1185,10 @@ function ovlApplyToBox() {
   const stage = document.getElementById('ovlStage');
   const box = document.getElementById('ovlBox');
   const sw = stage.clientWidth, sh = stage.clientHeight;
+  // Khung anh chua duoc hien thi thi clientWidth la 0, va ghi tiep se dat o
+  // keo tha thanh 0x0 o goc tren-trai - gan nhu vo hinh, chi con cai nut
+  // goc tho ra vai pixel. Bo qua thay vi ghi so 0 vao.
+  if (!sw || !sh) return;
   const c = ovlState.cur;
   const w = c.w * sw;
   box.style.width = w + 'px';
@@ -1372,9 +1405,17 @@ function ovlShowPreview(p) {
   ovlStAuto = !!p.auto;
   document.getElementById('ovlStylePanel').style.display =
     ovlStAuto ? '' : 'none';
+  // An bang kieu chu thi hop khong can rong nua - be rong toi thieu chi de
+  // bang do co du cho, khong phai de hop luc nao cung to.
+  document.getElementById('ovlPreviewBox').style.minWidth =
+    ovlStAuto ? '' : '0';
   const [sw, sh] = ovlStageSize(p.baseW, p.baseH, ovlStAuto);
   stage.style.width = sw + 'px';
   stage.style.height = sh + 'px';
+  // Cot trai duoc ghim dung be rong khung anh. De no tu co gian thi dong
+  // chu thich (dai hon khung anh) keo cot rong ra, va phan thua chui xuong
+  // duoi bang kieu chu roi bi che mat - da xay ra 2026-09-09.
+  document.getElementById('ovlStageCol').style.width = sw + 'px';
   document.getElementById('ovlBaseImg').src = p.baseUrl;
   const cimg = document.getElementById('ovlCntImg');
   cimg.src = p.cntUrl;
@@ -1384,14 +1425,22 @@ function ovlShowPreview(p) {
     p.baseName + ' · ' + p.baseW + '×' + p.baseH + ' · '
     + p.nVideos + ' video trong kho · đếm ngược ' + p.cntDur + 's';
 
+  // HIEN lop phu TRUOC khi dat o keo tha. ovlApplyToBox() doc
+  // stage.clientWidth, ma phan tu con nam trong mot khoi 'display:none' thi
+  // gia tri do la 0 - o keo tha se duoc dat 0x0 o goc tren-trai va gan nhu
+  // vo hinh. No chi song day khi nguoi dung keo, vi trinh xu ly keo goi lai
+  // chinh ham nay; nen trieu chung la "mo xem truoc lan dau khong thay dem
+  // nguoc dau ca". Loi nay co tu ban dau va chi lo ra khi chup that bang
+  // trinh duyet - 2026-09-09.
+  const ov = document.getElementById('ovlPreviewOverlay');
+  ov.classList.add('show');
+
   ovlState = {
     ar: p.cntH / p.cntW,
     cur: ovlReadPlace() || { x: 0.25, y: 0.60, w: 0.50 },
   };
   ovlApplyToBox();
 
-  const ov = document.getElementById('ovlPreviewOverlay');
-  ov.classList.add('show');
   document.onkeydown = function (e) {
     if (e.key === 'Escape') ovlClosePreview();
   };
