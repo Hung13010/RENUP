@@ -1,5 +1,5 @@
 {
-  "name": "Loop Video + dem nguoc (hinh + tieng + overlay)",
+  "name": "Loop Video + Gắn đếm ngược",
   "type": "loop_overlay",
   "description": "Moi file trong Kho video doc ra mot output: lap hinh va lap tieng toi mot thoi luong dich, va de video dem nguoc (da tach nen) len tren. Vi tri va co cua dem nguoc chinh bang khung xem truoc keo tha.",
 
