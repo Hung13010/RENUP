@@ -475,10 +475,11 @@ button[hidden] { display: none !important; }
           <button class="browse-btn" onclick="pyApi.browseOvlVideoFolder()">📂</button>
         </div>
 
-        <div class="field-label" style="margin-top:6px;">🎵 File âm thanh</div>
+        <div class="field-label" style="margin-top:6px;">🎵 Nhạc — 1 file dùng chung, hoặc 1 thư mục thì mỗi video một bài</div>
         <div class="input-row">
-          <input type="text" id="ovlAudio" placeholder="Chọn file nhạc (hoặc thư mục chứa 1 file)...">
-          <button class="browse-btn" onclick="pyApi.browseOvlAudioFile()">📂</button>
+          <input type="text" id="ovlAudio" placeholder="Chọn 1 file nhạc, hoặc cả thư mục nhạc...">
+          <button class="browse-btn" onclick="pyApi.browseOvlAudioFile()" title="Chọn MỘT file nhạc — cả mẻ dùng chung bài này">🎵</button>
+          <button class="browse-btn" onclick="pyApi.browseOvlAudioFolder()" title="Chọn cả THƯ MỤC nhạc — mỗi video một bài, xoay vòng theo thứ tự tên">📂</button>
         </div>
 
         <div class="field-label" style="margin-top:6px;">⏳ Đếm ngược</div>

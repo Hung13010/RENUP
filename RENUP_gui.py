@@ -619,6 +619,18 @@ class Api:
         if result and len(result) > 0:
             self._js(f"uiApi.setOvlField('audio', {json.dumps(result[0])})")
 
+    def browseOvlAudioFolder(self):
+        """Chon ca THU MUC nhac: moi video mot bai, xoay vong theo ten.
+
+        Nut rieng chu khong tai dung nut chon file: hop thoai cua Windows
+        khong the vua chon file vua chon thu muc, va o nhap thi chi hien ra
+        mot duong dan nen nhin vao khong biet duoc no la file hay thu muc.
+        Hai nut lam y dinh hien ngay tren giao dien.
+        """
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            self._js(f"uiApi.setOvlField('audio', {json.dumps(result[0])})")
+
     def browseOvlCountFile(self):
         # .mov/.webm truoc vi la hai vo chua duoc kenh alpha, nhung .mp4 phai
         # co trong danh sach: phan lon video "dem nguoc tach nen" tren mang
@@ -3028,6 +3040,29 @@ class Api:
                           f"{' ...' if len(hits) > 5 else ''}")
         return os.path.join(path, hits[0]), None
 
+    def _ovl_resolve_audio(self, path, exts):
+        """Nhac: nhan FILE (mot bai cho ca me) hoac THU MUC (xoay vong).
+
+        Khac `_ovl_resolve_file` o dung mot cho, va co chu y: thu muc nhieu
+        file KHONG con la loi. Voi dem nguoc thi nhieu file van la loi vi ca
+        me chi ghep duoc mot dem nguoc, nen boc bua la doan mo. Voi nhac thi
+        nhieu file co nghia ro rang - moi video mot bai - nen khong con gi
+        phai doan.
+        """
+        if not path:
+            return [], "Chua chon file am thanh."
+        if os.path.isfile(path):
+            return [path], None
+        if not os.path.isdir(path):
+            return [], f"Khong tim thay file am thanh: {path}"
+        hits = sorted(f for f in os.listdir(path)
+                      if os.path.splitext(f)[1].lower() in exts
+                      and os.path.isfile(os.path.join(path, f)))
+        if not hits:
+            return [], (f"Thu muc nhac khong co file nao hop le: {path}"
+                        f" (chap nhan {', '.join(exts)})")
+        return [os.path.join(path, f) for f in hits], None
+
     @staticmethod
     def _ovl_has_alpha(spec):
         """Luong hinh co kenh alpha khong, doc tu pix_fmt.
@@ -3516,8 +3551,7 @@ class Api:
                           '.opus'])]
         cnt_ext = [e.lower() for e in code.get(
             'count_ext', ['.mov', '.webm', '.mp4', '.mkv', '.avi', '.m4v'])]
-        audio_path, err = self._ovl_resolve_file(audio_path, aud_ext,
-                                                 "file am thanh")
+        aud_list, err = self._ovl_resolve_audio(audio_path, aud_ext)
         if err:
             self._log(err, 'err')
             return
@@ -3700,18 +3734,59 @@ class Api:
                       f" {cnt_seconds:.0f}s dem nguoc, khong bu duoc chi phi"
                       f" dung san.", 'info')
 
-        # --- Nhac: dung MOT LAN cho ca me ---------------------------------
-        # Day la ly do phan tieng gan nhu mien phi o tung dong: no da duoc ma
-        # hoa xong tu truoc, moi dong chi con chep luong.
+        # --- Nhac: ghep bai cho tung video, roi dung ban dai du moc --------
+        # Ghep theo THU TU TEN, khong xao tron (khac ADR-021). O day so bai
+        # thuong bang so video, nen ghep co thu tu la thu nguoi dung dieu
+        # khien duoc bang cach dat ten - va lan "chay lai dong loi" cua
+        # ADR-007 tai tao dung cap cu, thu ma xao tron khong lam duoc.
+        # Danh chi so theo vi tri trong `files` (chi so goc), khong theo vi
+        # tri trong `run_items`, chinh de cap khong doi khi chay lai.
+        pair = {name: aud_list[i % len(aud_list)]
+                for i, name in enumerate(files)}
+        if len(aud_list) > 1:
+            unused = len(aud_list) - len(set(pair.values()))
+            self._log(f"Nhac: {len(aud_list)} bai cho {len(files)} video ->"
+                      f" moi video mot bai, xoay vong theo thu tu ten."
+                      + (f" {unused} bai khong duoc dung."
+                         if unused else ''), 'info')
+
+        # Dung MOT ban dai cho MOI bai duoc dung den (khong phai moi dong):
+        # nhieu video dung chung mot bai thi chi ton mot lan ma hoa. Chay
+        # song song vi day la khau dat nhat - ma hoa AAC chi 7,9-15x thoi
+        # gian thuc, trong khi chep luong la 851x (ADR-024).
+        need = sorted({pair[n] for _, n in run_items})
         self._js("uiApi.setStatus('Dang dung ban nhac dai du moc...')")
-        self._log(f"Dung ban nhac dai {self._fmt_seconds(target)} (mot lan cho"
-                  f" ca me): {os.path.basename(audio_path)}", 'info')
-        aud_full = os.path.join(output_dir, f"_ovl_aud_{uuid.uuid4().hex}.m4a")
-        ok_aud, err_aud = self._ovl_build_audio(audio_path, target, aud_full,
-                                                code)
-        if not ok_aud or not os.path.exists(aud_full):
-            self._log(f"Khong dung duoc ban nhac: {err_aud}", 'err')
-            for p in (aud_full, cnt_pre, cnt_gen):
+        self._log(f"Dung {len(need)} ban nhac dai"
+                  f" {self._fmt_seconds(target)}"
+                  + (" (dung chung ca me)" if len(need) == 1 else
+                     f" ({workers} luong)") + "...", 'info')
+
+        def build_aud(src):
+            out = os.path.join(output_dir,
+                               f"_ovl_aud_{uuid.uuid4().hex}.m4a")
+            ok, err = self._ovl_build_audio(src, target, out, code)
+            if ok and os.path.exists(out):
+                return src, out, None
+            if os.path.exists(out):
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+            return src, None, err
+
+        aud_map = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for src, out, err_a in ex.map(build_aud, need):
+                if out:
+                    aud_map[src] = out
+                else:
+                    # Mot bai hong chi lam hong nhung dong dung no, khong
+                    # dung ca me - dung pattern per-row isolation cua app.
+                    self._log(f"Khong dung duoc ban nhac"
+                              f" ({os.path.basename(src)}): {err_a}", 'err')
+        if not aud_map:
+            self._log("Khong dung duoc ban nhac nao, dung.", 'err')
+            for p in (cnt_pre, cnt_gen):
                 if p and os.path.exists(p):
                     try:
                         os.remove(p)
@@ -3735,6 +3810,14 @@ class Api:
         def make_one(idx, name):
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
             src = os.path.join(video_dir, name)
+            aud_full = aud_map.get(pair.get(name))
+            if not aud_full:
+                self._log(f"[{idx + 1}/{total}] Khong co ban nhac dung duoc"
+                          f" cho dong nay: {name}", 'err')
+                return False
+            if len(aud_list) > 1:
+                self._log(f"[{idx + 1}/{total}] {name}  <-  nhac:"
+                          f" {os.path.basename(pair[name])}", 'info')
             info = infos.get(name)
             if not info:
                 self._log(f"[{idx + 1}/{total}] Khong doc duoc video: {name}",
@@ -3876,7 +3959,7 @@ class Api:
                         success = False
                     update(i, success)
         finally:
-            for p in (aud_full, cnt_pre, cnt_gen):
+            for p in list(aud_map.values()) + [cnt_pre, cnt_gen]:
                 if p and os.path.exists(p):
                     try:
                         os.remove(p)
