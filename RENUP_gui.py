@@ -531,6 +531,13 @@ class Api:
         self._js(f"uiApi.showAudioSplitSection({str(code_type == 'split_audio').lower()})")
         self._js(f"uiApi.showLoopSection({str(code_type == 'loop_video').lower()})")
         self._js(f"uiApi.showLoopOvlSection({str(code_type == 'loop_overlay').lower()})")
+        if code_type == 'loop_overlay':
+            # Danh sach font + mac dinh kieu chu chi day sang khi that su mo
+            # chuc nang nay: doc thu muc Fonts ton thoi gian, va moi lan doi
+            # chuc nang deu chay qua day.
+            self._js("uiApi.setOvlStyleDefaults("
+                     + json.dumps(self._ovl_font_list(code)) + ", "
+                     + json.dumps(self._ovl_style(code)) + ")")
         self._js(f"uiApi.showConvertSection({str(code_type == 'convert_video').lower()})")
         self._js(f"uiApi.showOverlaySection({str(code_type == 'overlay_corner').lower()})")
         self._js(f"uiApi.showMultiFolderSection({str(code_type == 'concat_multi_folder').lower()})")
@@ -647,6 +654,8 @@ class Api:
                 "document.getElementById('ovlCountSrc').value") or 'auto'
             raw_time = self._window.evaluate_js(
                 "document.getElementById('ovlTime').value") or ''
+            raw_style = self._window.evaluate_js(
+                "document.getElementById('ovlStyle').value") or ''
             video_dir, cnt_path = video_dir.strip(), cnt_path.strip()
             auto_cnt = str(cnt_src).strip().lower() == 'auto'
 
@@ -657,6 +666,7 @@ class Api:
                 'video_ext', ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v',
                               '.wmv', '.flv'])]
             pw = int(code.get('preview_width', 420))
+            st = self._ovl_style(code, raw_style)
 
             if not video_dir or not os.path.isdir(video_dir):
                 self._log("Chua chon Kho video doc"
@@ -717,7 +727,7 @@ class Api:
                               'err')
                     return
                 size, err = self._ovl_gen_countdown(total, cnt_png, code,
-                                                    one_frame=True)
+                                                    style=st, one_frame=True)
                 if err:
                     self._log(f"Khong tao duoc dem nguoc: {err}", 'err')
                     return
@@ -758,14 +768,10 @@ class Api:
             # o file ben canh, va lan dau toi van dung file:// - nen doc xem
             # chuc nang cu DANG CHAY BANG GI, dung tin gia tri mac dinh ghi
             # trong tai lieu.
-            def _durl(path, mime):
-                with open(path, 'rb') as fh:
-                    return (f'data:{mime};base64,'
-                            + base64.b64encode(fh.read()).decode('ascii'))
-
             try:
-                payload_imgs = {'baseUrl': _durl(base_img, 'image/jpeg'),
-                                'cntUrl': _durl(cnt_png, 'image/png')}
+                payload_imgs = {
+                    'baseUrl': self._ovl_data_uri(base_img, 'image/jpeg'),
+                    'cntUrl': self._ovl_data_uri(cnt_png, 'image/png')}
             finally:
                 for p in (base_img, cnt_png):
                     if os.path.exists(p):
@@ -779,13 +785,71 @@ class Api:
                 'baseName': files[0],
                 'baseW': bw, 'baseH': bh, 'baseDur': round(bdur, 2),
                 'cntW': cw, 'cntH': ch, 'cntDur': round(cdur, 2),
-                'nVideos': len(files),
+                'nVideos': len(files), 'auto': auto_cnt,
+                # Do mo di sang JS de dat bang CSS chu khong ve vao anh:
+                # keo thanh truot la thay ngay, khong phai cho ffmpeg ve lai.
+                # Python van ap dung con so nay o buoc ghep that.
+                'opacity': round(st['opacity'], 3),
             }
             self._log(f"Xem truoc: {files[0]} ({bw}x{bh}) +"
                       f" {cname} ({cw}x{ch})", 'ok')
             self._js(f"ovlShowPreview({json.dumps(payload)})")
         except Exception as e:
             self._log(f"Loi khi dung anh xem truoc: {e}", 'err')
+
+    @staticmethod
+    def _ovl_data_uri(path, mime):
+        with open(path, 'rb') as fh:
+            return (f'data:{mime};base64,'
+                    + base64.b64encode(fh.read()).decode('ascii'))
+
+    def ovlRestyle(self):
+        """Ve lai RIENG anh dem nguoc trong khung xem truoc theo kieu chu
+        vua chinh. Khong tham so - tu doc cac truong bang evaluate_js, dung
+        tien le ovlLoadPreview()/refreshVideos().
+
+        Tach khoi ovlLoadPreview vi re hon han: khong trich lai khung video
+        nen, khong quet lai thu muc, chi mot lan drawtext cho MOT khung.
+        """
+        if self.is_running:
+            return
+        threading.Thread(target=self._ovl_restyle_work, daemon=True).start()
+
+    def _ovl_restyle_work(self):
+        png = None
+        try:
+            raw_time = self._window.evaluate_js(
+                "document.getElementById('ovlTime').value") or ''
+            raw_style = self._window.evaluate_js(
+                "document.getElementById('ovlStyle').value") or ''
+            code = next((c for c in (self._code_map or {}).values()
+                         if isinstance(c, dict)
+                         and c.get('type') == 'loop_overlay'), {})
+            st = self._ovl_style(code, raw_style)
+            total = self._parse_time_spec(
+                str(raw_time).strip()
+                or str(code.get('default_time', '3:00:00'))) or 0.0
+            if total <= 0:
+                return
+            png = os.path.join(tempfile.gettempdir(),
+                               f'_ovlst_{uuid.uuid4().hex[:8]}.png')
+            size, err = self._ovl_gen_countdown(total, png, code, style=st,
+                                                one_frame=True)
+            if err:
+                self._log(f"Khong ve duoc dem nguoc: {err}", 'err')
+                return
+            self._js("ovlSetCntImg(" + json.dumps({
+                'cntUrl': self._ovl_data_uri(png, 'image/png'),
+                'cntW': size[0], 'cntH': size[1],
+                'opacity': round(st['opacity'], 3)}) + ")")
+        except Exception as e:
+            self._log(f"Loi khi ve lai dem nguoc: {e}", 'err')
+        finally:
+            if png and os.path.exists(png):
+                try:
+                    os.remove(png)
+                except OSError:
+                    pass
 
     def browseKichBanFolder(self):
         result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
@@ -3075,12 +3139,47 @@ class Api:
     # duoc thu thuat chu ky - buoc phai ma hoa het chieu dai. Dieu nay tu roi
     # ra dung: _ovl_fit_cycle se khong tim duoc chu ky nao vi dur_cnt = target.
 
-    def _ovl_font_path(self, code):
+    # ── Kieu chu cua dem nguoc tu tao ───────────────────────────────────
+    # Moi tham so trinh bay di qua MOT o an #ovlStyle dang JSON, theo dung
+    # tien le #ovlPlace (va #ytThumbSelected cua ADR-008): pyApi proxy doc
+    # bang getFieldValue() nen giu duoc hinh dang dong nhat, khong co loi
+    # goi ham JS nao co the tra undefined. Gia tri hong -> lay mac dinh cua
+    # preset chu KHONG chan ca me: day la tham so trinh bay, khong dang de
+    # dung mot me chay hang tieng.
+
+    # Danh sach CHON LOC chu khong quet ca thu muc Fonts: may thu nghiem co
+    # hon 400 font, do het ra mot dropdown thi khong ai dung duoc, va doc
+    # ten dep cua tung file bang PIL ton mot hai giay moi lan mo. Preset van
+    # nhan bat ky ten file hoac duong dan tuyet doi nao qua 'gen_font'.
+    OVL_FONTS = [
+        ('arialbd.ttf', 'Arial Bold'),
+        ('ariblk.ttf', 'Arial Black'),
+        ('impact.ttf', 'Impact'),
+        ('bahnschrift.ttf', 'Bahnschrift'),
+        ('segoeuib.ttf', 'Segoe UI Bold'),
+        ('seguibl.ttf', 'Segoe UI Black'),
+        ('tahomabd.ttf', 'Tahoma Bold'),
+        ('verdanab.ttf', 'Verdana Bold'),
+        ('trebucbd.ttf', 'Trebuchet MS Bold'),
+        ('calibrib.ttf', 'Calibri Bold'),
+        ('framd.ttf', 'Franklin Gothic Medium'),
+        ('georgiab.ttf', 'Georgia Bold'),
+        ('timesbd.ttf', 'Times New Roman Bold'),
+        ('consolab.ttf', 'Consolas Bold'),
+        ('courbd.ttf', 'Courier New Bold'),
+        ('lucon.ttf', 'Lucida Console'),
+        ('comicbd.ttf', 'Comic Sans MS Bold'),
+    ]
+
+    @staticmethod
+    def _ovl_font_path(name):
         """Duong dan font cho drawtext. None neu khong tim thay.
 
         Lay tu %WINDIR% chu khong ghi cung ky tu o dia (quy tac CLAUDE.md).
         """
-        name = str(code.get('gen_font', 'arialbd.ttf')).strip()
+        name = str(name or '').strip()
+        if not name:
+            return None
         if os.path.isabs(name):
             return name if os.path.isfile(name) else None
         windir = os.environ.get('WINDIR')
@@ -3089,11 +3188,107 @@ class Api:
         p = os.path.join(windir, 'Fonts', name)
         return p if os.path.isfile(p) else None
 
+    def _ovl_font_list(self, code):
+        """[{file,label}] cac font trong OVL_FONTS THAT SU co tren may.
+
+        Kem font dang dat trong preset neu no khong nam trong danh sach, de
+        dropdown luon hien dung gia tri hien tai chu khong am tham nhay sang
+        font khac.
+        """
+        if getattr(self, '_ovl_font_cache', None) is not None:
+            return self._ovl_font_cache
+        out = [{'file': f, 'label': lb} for f, lb in self.OVL_FONTS
+               if self._ovl_font_path(f)]
+        cur = str((code or {}).get('gen_font', '')).strip()
+        if cur and not any(o['file'].lower() == cur.lower() for o in out):
+            if self._ovl_font_path(cur):
+                out.insert(0, {'file': cur, 'label': cur})
+        self._ovl_font_cache = out
+        return out
+
     @staticmethod
-    def _ovl_countdown_expr(total):
+    def _ovl_color(raw, fallback, keep_alpha=True):
+        """Mot mau hop le cho ffmpeg, hoac `fallback` neu khong doc duoc.
+
+        Chuoi nay di THANG vao doi so cua bo loc drawtext, nen phai CHAN chu
+        khong chi lam sach: mot dau ':' hay dau nhay lot vao la vo ca chuoi
+        loc. Chi nhan hex ('#RRGGBB' - dang <input type=color> gui len -
+        hoac '0xRRGGBB') va ten mau bang chu cai, kem tuy chon '@<do mo>'.
+        """
+        s = str(raw or '').strip()
+        m = re.fullmatch(r'(?:#|0[xX])([0-9A-Fa-f]{6})(@[01](?:\.\d+)?)?', s)
+        if not m:
+            m = re.fullmatch(r'([A-Za-z]{3,20})(@[01](?:\.\d+)?)?', s)
+            if not m:
+                return fallback
+            head = m.group(1).lower()
+        else:
+            head = '0x' + m.group(1).upper()
+        return head + (m.group(2) or '') if keep_alpha else head
+
+    def _ovl_style(self, code, raw=None):
+        """Kieu chu dem nguoc: mac dinh preset, ghi de boi o an #ovlStyle."""
+        def num(v, lo, hi, d):
+            try:
+                return min(max(float(v), lo), hi)
+            except (TypeError, ValueError):
+                return d
+
+        st = {
+            'font': str(code.get('gen_font', 'arialbd.ttf')).strip()
+                    or 'arialbd.ttf',
+            'size': num(code.get('gen_font_size', 140), 16, 600, 140),
+            'color': self._ovl_color(code.get('gen_color'), 'white'),
+            # Do mo KHONG dat o drawtext: do 2026-09-09 tren chinh ffmpeg di
+            # kem, ca 'alpha=' lan 'fontcolor=...@' deu BINH PHUONG gia tri
+            # (0,5 -> 64 thay vi 128) vi chung vua ap vao chu vua tron len
+            # khung ve von da trong suot. Ta ap bang colorchannelmixer=aa o
+            # buoc GHEP: tuyen tinh (0,5 -> 128) va con dung duoc cho ca file
+            # dem nguoc nguoi dung tu chon.
+            'opacity': num(code.get('gen_opacity', 1.0), 0.05, 1.0, 1.0),
+            'border': num(code.get('gen_border_width', 0), 0, 40, 0),
+            'border_color': self._ovl_color(code.get('gen_border_color'),
+                                            'black'),
+            'shadow': (num(code.get('gen_shadow_offset', 4), 0, 40, 4)
+                       if code.get('gen_shadow', False) else 0.0),
+            'shadow_color': self._ovl_color(code.get('gen_shadow_color'),
+                                            'black@0.6'),
+            'box': bool(code.get('gen_box', False)),
+            'box_color': self._ovl_color(code.get('gen_box_color'), 'black',
+                                         keep_alpha=False),
+            'box_opacity': num(code.get('gen_box_opacity', 0.45), 0, 1, 0.45),
+            'box_pad': num(code.get('gen_box_pad', 24), 0, 120, 24),
+            'fmt': str(code.get('gen_format', 'auto')).strip().lower(),
+        }
+        try:
+            got = json.loads(raw) if raw else None
+        except (ValueError, TypeError):
+            got = None
+        if isinstance(got, dict):
+            for k, lo, hi in (('size', 16, 600), ('opacity', 0.05, 1.0),
+                              ('border', 0, 40), ('shadow', 0, 40),
+                              ('box_pad', 0, 120), ('box_opacity', 0, 1)):
+                if k in got:
+                    st[k] = num(got[k], lo, hi, st[k])
+            for k, keep in (('color', True), ('border_color', True),
+                            ('shadow_color', True), ('box_color', False)):
+                if k in got:
+                    st[k] = self._ovl_color(got[k], st[k], keep_alpha=keep)
+            if got.get('font') and self._ovl_font_path(got['font']):
+                st['font'] = str(got['font']).strip()
+            if 'box' in got:
+                st['box'] = bool(got['box'])
+            if got.get('fmt'):
+                st['fmt'] = str(got['fmt']).strip().lower()
+        if st['fmt'] not in ('auto', 'mmss', 'hhmmss', 'ss'):
+            st['fmt'] = 'auto'
+        st['size'] = int(st['size'])
+        return st
+
+    @staticmethod
+    def _ovl_countdown_expr(total, fmt='auto'):
         """Chuoi 'text=' dem nguoc tu `total` giay ve 0.
 
-        Dinh dang hh:mm:ss khi dich tu 1 tieng tro len, mm:ss khi ngan hon.
         Dung HANG SO chu khong dung bien T cua ffmpeg: T la thoi luong cua
         input, ma input o day la mot danh sach concat nen T khong phai cai
         ta muon.
@@ -3103,27 +3298,45 @@ class Api:
         00:59:58).
         """
         s = str(int(total))
-        if total >= 3600:
+        if fmt == 'auto':
+            fmt = 'hhmmss' if total >= 3600 else 'mmss'
+        if fmt == 'ss':
+            return r"%{eif\:trunc(" + s + r"-t)\:d}"
+        if fmt == 'hhmmss':
             return (r"%{eif\:trunc((" + s + r"-t)/3600)\:d\:2}\:"
                     r"%{eif\:trunc(mod((" + s + r"-t)/60\,60))\:d\:2}\:"
                     r"%{eif\:trunc(mod(" + s + r"-t\,60))\:d\:2}")
+        # mm:ss - phut KHONG bi chia du 60, nen dich 90 phut ra '90:00'
         return (r"%{eif\:trunc((" + s + r"-t)/60)\:d\:2}\:"
                 r"%{eif\:trunc(mod(" + s + r"-t\,60))\:d\:2}")
 
-    def _ovl_draw_filter(self, code, text, font, cx, cy):
-        """Doan drawtext. `text` da duoc thoat san."""
-        size = int(code.get('gen_font_size', 140))
-        color = str(code.get('gen_color', 'white'))
+    def _ovl_draw_filter(self, st, text, font):
+        """Doan drawtext theo kieu chu `st`. `text` da duoc thoat san.
+
+        Be day cua bien / bong / dem hop nen deu duoc nhan theo co chu (moc
+        140px), de doi 'gen_font_size' chi doi DO NET chu khong doi kieu
+        dang - neu khong, tang co chu de net hon se lam bien mong di.
+        """
+        k = st['size'] / 140.0
         f = font.replace('\\', '/').replace(':', r'\:')
         out = (f"drawtext=fontfile='{f}':text='{text}'"
-               f":fontcolor={color}:fontsize={size}:x={cx}:y={cy}")
-        if bool(code.get('gen_shadow', True)):
-            sh = int(code.get('gen_shadow_offset', 4))
-            out += (f":shadowcolor={code.get('gen_shadow_color', 'black@0.6')}"
+               f":fontcolor={st['color']}:fontsize={st['size']}"
+               f":x=(w-text_w)/2:y=(h-text_h)/2")
+        if st['border'] > 0:
+            out += (f":borderw={max(1, int(round(st['border'] * k)))}"
+                    f":bordercolor={st['border_color']}")
+        if st['shadow'] > 0:
+            sh = max(1, int(round(st['shadow'] * k)))
+            out += (f":shadowcolor={st['shadow_color']}"
                     f":shadowx={sh}:shadowy={sh}")
+        if st['box']:
+            out += (f":box=1:boxcolor={st['box_color']}"
+                    f"@{st['box_opacity']:.2f}"
+                    f":boxborderw={int(round(st['box_pad'] * k))}")
         return out
 
-    def _ovl_gen_countdown(self, total, out_path, code, one_frame=False):
+    def _ovl_gen_countdown(self, total, out_path, code, style=None,
+                           one_frame=False):
         """File dem nguoc nen trong suot, dai dung `total` giay, 1 fps.
 
         one_frame=True: chi ve MOT khung o gia tri bat dau, ra PNG. Dung cho
@@ -3135,15 +3348,20 @@ class Api:
         phu thuoc font, va doan sai thi hoac cat mat chu hoac de thua mot
         vien trong suot lam khung keo tha to hon phan nhin thay duoc.
         """
-        font = self._ovl_font_path(code)
+        st = style or self._ovl_style(code)
+        font = self._ovl_font_path(st['font'])
         if not font:
-            return None, (f"Khong tim thay font"
-                          f" '{code.get('gen_font', 'arialbd.ttf')}'"
+            return None, (f"Khong tim thay font '{st['font']}'"
                           f" trong thu muc Fonts cua Windows")
-        size = int(code.get('gen_font_size', 140))
-        expr = self._ovl_countdown_expr(total)
+        size = st['size']
+        expr = self._ovl_countdown_expr(total, st['fmt'])
+        draw = self._ovl_draw_filter(st, expr, font)
         pad = max(4, size // 10)
-        cw, ch = size * 10, size * 2      # khung ve rong rai
+        # Khung ve thu phai rong rai hon phan chu nhieu: hop nen day nhat
+        # (dem 120px @140) cong bien 40px cong bong 40px co the doi hoi hon
+        # gap doi chieu cao cua chinh dong chu. Do 2026-09-09: bien 20 +
+        # dem 40 van chi chiem 480..919 / 48..231 trong khung 1400x280.
+        cw, ch = size * 12, size * 4
 
         probe_png = os.path.join(tempfile.gettempdir(),
                                  f'_ovlgen_{uuid.uuid4().hex}.png')
@@ -3151,8 +3369,7 @@ class Api:
             ok, err = self._ffmpeg_quiet([
                 self.ffmpeg_path, '-f', 'lavfi',
                 '-i', f'color=c=black@0.0:s={cw}x{ch}:d=1,format=rgba',
-                '-vf', self._ovl_draw_filter(code, expr, font,
-                                             '(w-text_w)/2', '(h-text_h)/2'),
+                '-vf', draw,
                 '-frames:v', '1', '-pix_fmt', 'rgba', probe_png, '-y'])
             if not ok or not os.path.exists(probe_png):
                 return None, f"khong ve thu duoc chu dem nguoc: {err}"
@@ -3170,8 +3387,6 @@ class Api:
         x0, y0, x1, y1 = box
         w = max(2, (x1 - x0 + pad * 2) // 2 * 2)
         h = max(2, (y1 - y0 + pad * 2) // 2 * 2)
-        draw = self._ovl_draw_filter(code, expr, font,
-                                     '(w-text_w)/2', '(h-text_h)/2')
         if one_frame:
             cmd = [self.ffmpeg_path, '-f', 'lavfi',
                    '-i', f'color=c=black@0.0:s={w}x{h}:d=1,format=rgba',
@@ -3221,8 +3436,11 @@ class Api:
                 return cycle, m, factor
         return None
 
-    def _ovl_prerender_countdown(self, cnt_path, code, key_f, pw, ph, out):
+    def _ovl_prerender_countdown(self, cnt_path, code, post_f, pw, ph, out):
         """Ban dem nguoc da TACH NEN va THU NHO san, dung chung cho ca me.
+
+        `post_f` la phan loc nung san vao ban nay (tach nen, do mo) - nung o
+        day thi ca me chi tra mot lan thay vi tra o moi vong lap.
 
         Ly do: file dem nguoc thuong la 4K, va no bi GIAI MA LAI o moi vong
         lap cua moi video. Do 2026-09-08 tren file that (4K VP9, 60 giay):
@@ -3236,7 +3454,7 @@ class Api:
         """
         # scale TRUOC key: do duoc nhanh gap 3,2 lan (15,1s so voi 48,6s) voi
         # chat luong y het. Thu tu nguoc lai la suy luan cua toi, va sai.
-        chain = f'scale={pw}:{ph}' + (',' + key_f if key_f else '')
+        chain = f'scale={pw}:{ph}' + (',' + post_f if post_f else '')
         return self._ffmpeg_quiet(
             [self.ffmpeg_path]
             + self._ovl_cnt_input(cnt_path, code)
@@ -3349,6 +3567,14 @@ class Api:
             return
 
         # --- Dem nguoc: tu tao, hoac dung file nguoi dung chon --------------
+        style = self._ovl_style(code, params.get('ovlStyle'))
+        # Do mo ap o BUOC GHEP chu khong ve vao chu, vi hai ly do do duoc
+        # 2026-09-09: (a) 'alpha=' va 'fontcolor=...@' cua drawtext binh
+        # phuong gia tri khi ve len nen trong suot (0,5 -> 64 thay vi 128),
+        # (b) dat o day thi no ap duoc cho ca file dem nguoc nguoi dung tu
+        # chon, khong chi cho ban tu tao.
+        opac_f = ('' if style['opacity'] >= 0.999 else
+                  f"format=rgba,colorchannelmixer=aa={style['opacity']:.3f}")
         cnt_gen = None
         if auto_cnt:
             os.makedirs(output_dir, exist_ok=True)
@@ -3356,8 +3582,18 @@ class Api:
                                    f"_ovl_gen_{uuid.uuid4().hex}.mov")
             self._js("uiApi.setStatus('Dang tao dem nguoc...')")
             self._log(f"Tu tao dem nguoc dem tu"
-                      f" {self._fmt_seconds(target)} ve 00:00...", 'info')
-            size, err = self._ovl_gen_countdown(target, cnt_gen, code)
+                      f" {self._fmt_seconds(target)} ve 00:00"
+                      f" | {style['font']} {style['size']}px"
+                      f" | mau {style['color']}"
+                      + (f" | vien {int(style['border'])}px"
+                         if style['border'] else '')
+                      + (f" | bong {int(style['shadow'])}px"
+                         if style['shadow'] else '')
+                      + (" | co nen mo" if style['box'] else '')
+                      + (f" | do mo {style['opacity']*100:.0f}%"
+                         if opac_f else '') + "...", 'info')
+            size, err = self._ovl_gen_countdown(target, cnt_gen, code,
+                                                style=style)
             if err:
                 self._log(f"Khong tao duoc dem nguoc: {err}", 'err')
                 if os.path.exists(cnt_gen):
@@ -3434,7 +3670,7 @@ class Api:
         cnt_use, cnt_pre = cnt_path, None
         widths = [i[0] for i in infos.values() if i]
         worth = cnt_seconds > cnt_dur * 2
-        if widths and worth and (key_f or cnt_w > max(widths)):
+        if widths and worth and (key_f or opac_f or cnt_w > max(widths)):
             pw = max(2, int(round(max(widths) * place['w'])) // 2 * 2)
             pw = min(pw, cnt_w)
             ph = max(2, int(round(pw * cnt_h / cnt_w)) // 2 * 2)
@@ -3444,12 +3680,15 @@ class Api:
             self._log(f"Dung san ban dem nguoc {cnt_w}x{cnt_h} ->"
                       f" {pw}x{ph}"
                       f"{' + tach nen' if key_f else ''}"
+                      f"{' + do mo' if opac_f else ''}"
                       f" (mot lan cho ca me)...", 'info')
             ok_c, err_c = self._ovl_prerender_countdown(
-                cnt_path, code, key_f, pw, ph, cnt_pre)
+                cnt_path, code,
+                ','.join(x for x in (key_f, opac_f) if x),
+                pw, ph, cnt_pre)
             if ok_c and os.path.exists(cnt_pre):
                 cnt_use = cnt_pre
-                key_f = ''      # da nung vao ban dung san roi
+                key_f = opac_f = ''   # da nung vao ban dung san roi
                 self._log(f"  xong: {os.path.getsize(cnt_pre)/1024/1024:.1f}"
                           f" MB", 'ok')
             else:
@@ -3531,6 +3770,8 @@ class Api:
             parts += [f"fps={bfps:.6f}", f"scale={ow}:{oh}"]
             if key_f:
                 parts.append(key_f)
+            if opac_f:
+                parts.append(opac_f)
             fc = f"[1:v]{','.join(parts)}[ov];[0:v][ov]overlay={ox}:{oy}[v]"
 
             tmp = []

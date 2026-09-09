@@ -10,12 +10,30 @@
   "_ghi_chu_o_nhap": "Ba o File am thanh / Video dem nguoc nhan CA duong dan file LAN duong dan thu muc. Thu muc co dung MOT file hop le thi app tu lay; nhieu file thi bao ro va liet ke chu khong boc bua. Ly do: ba o trong giong het nhau ma o dau tien (Kho video doc) LA thu muc that, nen dua vao thu muc la phan xa rat tu nhien - da xay ra 2026-09-08.",
 
   "_ghi_chu_tu_tao": "Che do 'Tu tao theo thoi luong dich' ve mot FILE dem nguoc nen trong suot (1 fps) roi day vao dung duong ong nhu file nguoi dung chon - nen khung keo tha can chinh dung duoc y nguyen. KHONG ve thang bang drawtext len tung khung: do 2026-09-08 tren video that 1080x1920 60fps, dau ra 3 tieng, drawtext ve thang mat 90 PHUT con tao file roi ghep chi mat 36 PHUT (nhanh gap 2,5 lan), vi drawtext phai dung chu cho 648.000 khung con file tao san chi co 10.800 khung. Khung ve duoc do THAT bang kenh alpha roi moi cat dung co, chu khong uoc luong be rong theo so ky tu - doan sai thi hoac cat mat chu hoac de thua vien trong suot lam khung keo tha to hon phan nhin thay. Bieu thuc dem nguoc da duoc doi chieu tung pixel voi anh tham chieu: khop 0 pixel sai o moi moc, ke ca cho doi gio. LUU Y: dem nguoc tu tao doi so moi giay suot ca video nen KHONG dung duoc thu thuat chu ky - buoc phai ma hoa het chieu dai. Dung file dem nguoc LAP LAI (vd dong ho 1 phut) thi nhanh hon nhieu.",
+  "_ghi_chu_kieu_chu": "Day chi la MAC DINH. Moi tham so o duoi deu chinh duoc ngay trong khung 'Xem truoc & can chinh' (bang kieu chu ben phai), roi di sang Python qua o an #ovlStyle dang JSON - dung tien le #ovlPlace. Gia tri hong thi lay lai mac dinh o day chu KHONG chan ca me: day la tham so trinh bay, khong dang de dung mot me chay hang tieng. Be day cua vien/bong/dem nen deu duoc nhan theo co chu (moc 140px), nen doi gen_font_size chi doi DO NET chu khong doi kieu dang.",
   "gen_font": "arialbd.ttf",
   "gen_font_size": 140,
   "gen_color": "white",
-  "gen_shadow": true,
+
+  "_ghi_chu_bong": "TAT tu 2026-09-09 theo yeu cau nguoi dung. Luu y kem: khong bong va khong vien thi chu trang se KHO DOC tren nen sang. Neu gap canh do, bat vien den mong (gen_border_width 4-6) doc hon han bong lech - do la cach cac dai truyen hinh van dung. Kieu mau 'Trang vien den' trong khung xem truoc lam san dieu nay bang mot cu nhan.",
+  "gen_shadow": false,
   "gen_shadow_color": "black@0.6",
   "gen_shadow_offset": 4,
+
+  "gen_border_width": 0,
+  "gen_border_color": "black",
+
+  "_ghi_chu_hop_nen": "Hop nen mo la cach de doc nhat tren nen roi ram. gen_box_pad tinh bang px o moc co chu 140.",
+  "gen_box": false,
+  "gen_box_color": "black",
+  "gen_box_opacity": 0.45,
+  "gen_box_pad": 24,
+
+  "_ghi_chu_do_mo": "Do mo KHONG duoc ve vao chu ma ap o BUOC GHEP bang colorchannelmixer=aa. Hai ly do, ca hai do duoc 2026-09-09 tren chinh ffmpeg di kem: (a) 'alpha=' va 'fontcolor=...@' cua drawtext BINH PHUONG gia tri khi ve len nen trong suot - yeu cau 0,5 ra alpha 64 chu khong phai 128, tuc thanh truot 50% cho ra 25%; colorchannelmixer thi tuyen tinh chuan (0,75->191, 0,5->128, 0,25->64). (b) Dat o buoc ghep thi no ap duoc cho CA file dem nguoc nguoi dung tu chon, khong chi cho ban tu tao.",
+  "gen_opacity": 1.0,
+
+  "_ghi_chu_dinh_dang": "auto = hh:mm:ss neu dich tu 1 tieng tro len, khong thi mm:ss. 'mmss' ep mm:ss ke ca khi dai hon 1 tieng (90 phut ra '90:00' chu khong phai '01:30:00'). 'ss' chi hien so giay con lai.",
+  "gen_format": "auto",
 
   "_ghi_chu_tach_nen": "Phan lon video 'dem nguoc tach nen' tim duoc tren mang thuc ra la dong ho TRANG TREN NEN DEN trong mot file .mp4 - KHONG co kenh alpha. Ghep thang thi no de mot hop den kin len video. 'auto' se: (a) thay kenh alpha -> dung thang; (b) khong co alpha nhung 4 goc deu toi hon black_threshold -> tu tach mau den bang colorkey; (c) khong co alpha va nen khong phai den -> BAO LOI ro rang thay vi cho ra ket qua hong am tham. Dat 'alpha' de ep dung thang, 'black' de ep tach den, hoac mot ma mau ('0x00FF00') de tach phong nen xanh. Do 2026-09-08 tren file that: colorkey giu nguyen mau nen ben duoi (59,89,199 so voi goc 60,90,200) va chi 0,8% pixel bi lam toi; blend 'screen'/'lighten' thi LAM HONG MAU (ra 190,24,255) vi no tron tren tung mat phang YUV chu khong phai RGB - dung thu lai.",
   "bg_mode": "auto",

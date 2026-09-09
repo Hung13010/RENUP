@@ -338,6 +338,13 @@ button[hidden] { display: none !important; }
 /* ── RETRY FAILED ROWS DIALOG (ADR-007) — reuses .update-overlay/.update-box, only stacks buttons full-width because label text is longer ("Chay lai N dong loi") than the 140px default ── */
 .retry-btns { flex-direction: column; }
 .retry-btns button { width: 100%; }
+
+/* ── LOOP + DEM NGUOC: bang kieu chu trong khung xem truoc ── */
+.ovl-strow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; }
+.ovl-strow > span:first-child { width: 62px; flex: none; color: var(--text-muted); }
+.ovl-strow > b { width: 38px; flex: none; text-align: right; font-family: monospace; font-weight: 400; }
+.ovl-strow input[type=color] { width: 34px; height: 24px; padding: 1px; flex: none; cursor: pointer; }
+.ovl-strow input[type=number], .ovl-strow select { height: 24px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -479,15 +486,19 @@ button[hidden] { display: none !important; }
 
         <div class="settings-row" style="margin-top:8px;">
           <button class="browse-btn" style="width:auto; padding:0 12px;"
-                  onclick="pyApi.ovlLoadPreview()">⤢ Xem trước &amp; căn chỉnh</button>
-          <span id="ovlPlaceLabel" style="font-size:11px; color:var(--text-muted);">chưa căn chỉnh</span>
+                  onclick="pyApi.ovlLoadPreview()">⤢ Xem trước, căn chỉnh &amp; kiểu chữ</button>
+        </div>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
+          <span id="ovlPlaceLabel">chưa căn chỉnh</span> ·
+          <span id="ovlStyleLabel">kiểu chữ mặc định</span>
         </div>
 
-        <!-- Vi tri/co cua dem nguoc di qua o AN nay chu khong qua mot ham JS:
-             pyApi proxy doc MOI truong bang getFieldValue() nen giu duoc hinh
-             dang dong nhat, khong co loi goi ham nao co the tra undefined
-             (dung tien le #ytThumbSelected cua ADR-008). -->
+        <!-- Vi tri/co VA kieu chu cua dem nguoc di qua hai o AN nay chu khong
+             qua ham JS: pyApi proxy doc MOI truong bang getFieldValue() nen
+             giu duoc hinh dang dong nhat, khong co loi goi ham nao co the tra
+             undefined (dung tien le #ytThumbSelected cua ADR-008). -->
         <input type="hidden" id="ovlPlace" value="">
+        <input type="hidden" id="ovlStyle" value="">
 
         <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
           có mã hoá lại (ghép overlay) · Output phải khác Kho video
@@ -914,31 +925,97 @@ button[hidden] { display: none !important; }
   <!-- max-height + overflow: chot chan cuoi. Kich thuoc khung da duoc tinh
        cho vua cua so (ovlStageSize), day chi la de neu tinh sai thi van con
        cuon toi duoc cac nut chu khong mat hut. -->
-  <div class="update-box" style="width:540px; max-height:92vh; overflow-y:auto;">
+  <div class="update-box" id="ovlPreviewBox" style="width:auto; max-width:94vw;
+       max-height:92vh; overflow-y:auto;">
     <div class="update-icon">⤢</div>
-    <div class="update-title">Căn chỉnh video đếm ngược</div>
+    <div class="update-title">Căn chỉnh &amp; kiểu chữ đếm ngược</div>
     <div class="update-versions" id="ovlPreviewInfo"></div>
 
-    <div id="ovlStage" style="position:relative; margin:0 auto 12px; background:#000;
-         overflow:hidden; user-select:none; touch-action:none; border-radius:6px;">
-      <img id="ovlBaseImg" style="display:block; width:100%; height:100%;
-           object-fit:cover; pointer-events:none;" alt="">
-      <div id="ovlBox" style="position:absolute; left:0; top:0; cursor:move;
-           outline:2px solid var(--accent); outline-offset:-1px;">
-        <img id="ovlCntImg" style="display:block; width:100%; height:100%;
-             pointer-events:none;" alt="">
-        <div id="ovlHandle" style="position:absolute; right:-7px; bottom:-7px;
-             width:15px; height:15px; border-radius:3px; background:var(--accent);
-             border:2px solid #fff; cursor:nwse-resize;"></div>
+    <div style="display:flex; gap:16px; align-items:flex-start; justify-content:center;">
+      <div>
+        <div id="ovlStage" style="position:relative; margin:0 auto 10px; background:#000;
+             overflow:hidden; user-select:none; touch-action:none; border-radius:6px;">
+          <img id="ovlBaseImg" style="display:block; width:100%; height:100%;
+               object-fit:cover; pointer-events:none;" alt="">
+          <div id="ovlBox" style="position:absolute; left:0; top:0; cursor:move;
+               outline:2px solid var(--accent); outline-offset:-1px;">
+            <img id="ovlCntImg" style="display:block; width:100%; height:100%;
+                 pointer-events:none;" alt="">
+            <div id="ovlHandle" style="position:absolute; right:-7px; bottom:-7px;
+                 width:15px; height:15px; border-radius:3px; background:var(--accent);
+                 border:2px solid #fff; cursor:nwse-resize;"></div>
+          </div>
+        </div>
+        <div style="font-size:11px; color:var(--text-muted); text-align:center;">
+          Kéo để đặt vị trí · kéo ô góc dưới-phải để đổi cỡ<br>
+          <span id="ovlNumbers" style="font-family:monospace;"></span>
+        </div>
+      </div>
+
+      <!-- Bang kieu chu. Chi hien o che do TU TAO: voi file nguoi dung tu
+           chon thi khong co gi de ve lai. -->
+      <div id="ovlStylePanel" style="width:250px; text-align:left; flex:none;">
+        <div class="field-label" style="margin-top:0;">🎨 Kiểu chữ đếm ngược</div>
+
+        <select id="ovlStPreset" class="ovl-st" style="width:100%; margin-bottom:8px;">
+          <option value="">— kiểu mẫu —</option>
+          <option value="plain">Trắng trơn</option>
+          <option value="outline">Trắng viền đen</option>
+          <option value="shadow">Trắng đổ bóng</option>
+          <option value="box">Trắng trên nền mờ</option>
+          <option value="gold">Vàng viền đen</option>
+          <option value="neon">Xanh neon</option>
+        </select>
+
+        <div class="ovl-strow"><span>Phông</span>
+          <select id="ovlStFont" class="ovl-st" style="flex:1;"></select></div>
+
+        <div class="ovl-strow"><span>Kiểu số</span>
+          <select id="ovlStFmt" class="ovl-st" style="flex:1;">
+            <option value="auto">Tự động</option>
+            <option value="mmss">phút:giây</option>
+            <option value="hhmmss">giờ:phút:giây</option>
+            <option value="ss">chỉ số giây</option>
+          </select></div>
+
+        <div class="ovl-strow"><span>Màu chữ</span>
+          <input type="color" id="ovlStColor" class="ovl-st" value="#ffffff"></div>
+
+        <div class="ovl-strow"><span>Độ mờ</span>
+          <input type="range" id="ovlStOpacity" min="10" max="100" step="5" value="100"
+                 style="flex:1;"><b id="ovlStOpacityVal">100%</b></div>
+
+        <div class="ovl-strow"><span>Viền</span>
+          <input type="number" id="ovlStBorder" class="ovl-st" min="0" max="40" value="0"
+                 style="width:56px;">
+          <input type="color" id="ovlStBorderColor" class="ovl-st" value="#000000"></div>
+
+        <div class="ovl-strow"><span>Bóng</span>
+          <input type="number" id="ovlStShadow" class="ovl-st" min="0" max="40" value="0"
+                 style="width:56px;">
+          <input type="color" id="ovlStShadowColor" class="ovl-st" value="#000000"></div>
+
+        <div class="ovl-strow"><span>Nền</span>
+          <input type="checkbox" id="ovlStBox" class="ovl-st">
+          <input type="color" id="ovlStBoxColor" class="ovl-st" value="#000000">
+          <input type="number" id="ovlStBoxPad" class="ovl-st" min="0" max="120" value="24"
+                 title="đệm quanh chữ (px)" style="width:56px;"></div>
+
+        <div class="ovl-strow"><span>Đậm nền</span>
+          <input type="range" id="ovlStBoxOpacity" min="0" max="100" step="5" value="45"
+                 style="flex:1;"><b id="ovlStBoxOpacityVal">45%</b></div>
+
+        <div class="ovl-strow"><span>Độ nét</span>
+          <input type="number" id="ovlStSize" class="ovl-st" min="60" max="400" step="20"
+                 value="140" style="width:56px;">
+          <span style="font-size:10px; color:var(--text-muted);">px khi vẽ</span></div>
+
+        <div id="ovlStBusy" style="font-size:11px; color:var(--text-muted);
+             margin-top:8px; min-height:15px;"></div>
       </div>
     </div>
 
-    <div style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
-      Kéo để đặt vị trí · kéo ô vuông góc dưới-phải để đổi cỡ<br>
-      <span id="ovlNumbers" style="font-family:monospace;"></span>
-    </div>
-
-    <div class="update-btns">
+    <div class="update-btns" style="margin-top:12px;">
       <button class="btn-accent" id="ovlApplyBtn">✓ Áp dụng</button>
       <button class="btn-muted" id="ovlResetBtn">↺ Đặt lại</button>
       <button class="btn-danger" id="ovlCancelBtn">✕ Hủy</button>
@@ -1052,9 +1129,13 @@ let ovlState = null;              // {ar, cur:{x,y,w}}
 // rong la du cho video ngang, nhung video DOC 1080x1920 se ra 460x818 -
 // cao hon ca cua so app (751px), day tieu de va cac nut ra ngoai man hinh
 // va khong con bam duoc gi. Da xay ra 2026-09-08.
-function ovlStageSize(bw, bh) {
+function ovlStageSize(bw, bh, panel) {
   const maxH = Math.max(200, Math.min(520, window.innerHeight - 320));
-  let w = OVL_STAGE_W, h = Math.round(OVL_STAGE_W * bh / bw);
+  // Tru cho bang kieu chu ben canh (250px + khoang cach + le hop thoai),
+  // neu khong tren cua so hep bang do se bi day ra ngoai.
+  const maxW = Math.max(180, Math.min(OVL_STAGE_W,
+    window.innerWidth - (panel ? 360 : 90)));
+  let w = maxW, h = Math.round(maxW * bh / bw);
   if (h > maxH) { h = maxH; w = Math.round(maxH * bw / bh); }
   return [Math.max(80, w), Math.max(80, h)];
 }
@@ -1100,15 +1181,205 @@ function ovlClosePreview() {
   ov.onclick = null;
 }
 
+// ══ LOOP + DEM NGUOC: kieu chu ═══════════════════════════════════════════
+// Cac tham so trinh bay di qua o an #ovlStyle dang JSON - cung tien le voi
+// #ovlPlace, nen pyApi proxy khong phai biet gi them.
+//
+// DO MO la ngoai le co chu y: no duoc dat bang CSS ngay tren anh xem truoc
+// (thay tuc thi, khong cho ffmpeg ve lai), con Python van ap dung con so do
+// o buoc ghep that. Moi thu con lai deu phai ve lai THAT bang ffmpeg: CSS
+// khong ta duoc chinh xac cai ma drawtext se ve (nhat la vien - CSS chi co
+// net giua chu khong phai net ngoai), va anh xem truoc noi doi thi te hon
+// han la anh xem truoc cham.
+let ovlStFonts = [];
+let ovlStDefaults = null;
+let ovlStAlpha = {};      // duoi '@0.6' cua tung mau, giu nguyen tu preset
+let ovlStTimer = null;
+let ovlStReady = false;   // chan ve lai trong luc dang do gia tri vao form
+let ovlStAuto = true;     // che do tu tao? che do file thi khong ve lai duoc
+
+const OVL_NAMED = {
+  white: '#ffffff', black: '#000000', red: '#ff0000', lime: '#00ff00',
+  blue: '#0000ff', yellow: '#ffff00', cyan: '#00ffff', aqua: '#00ffff',
+  magenta: '#ff00ff', fuchsia: '#ff00ff', gray: '#808080', grey: '#808080',
+  silver: '#c0c0c0', orange: '#ffa500', green: '#008000', navy: '#000080',
+};
+
+const OVL_ST_PRESETS = {
+  plain:   { color: '#ffffff', border: 0, shadow: 0, box: false },
+  outline: { color: '#ffffff', border: 5, border_color: '#000000',
+             shadow: 0, box: false },
+  shadow:  { color: '#ffffff', border: 0, shadow: 5,
+             shadow_color: '#000000', box: false },
+  box:     { color: '#ffffff', border: 0, shadow: 0, box: true,
+             box_color: '#000000', box_opacity: 0.45, box_pad: 24 },
+  gold:    { color: '#ffd54a', border: 5, border_color: '#000000',
+             shadow: 0, box: false },
+  neon:    { color: '#33e0ff', border: 6, border_color: '#052733',
+             shadow: 0, box: false },
+};
+
+// Mau tu Python co the la '0xRRGGBB', ten mau, hoac kem duoi '@0.6'. O
+// <input type=color> chi nhan '#rrggbb', nen duoi alpha duoc CAT RA GIU
+// RIENG roi gan lai luc doc - neu khong, cham vao o mau mot cai la bong
+// 60% cua preset am tham thanh den dac.
+function ovlHexOf(c, key, fallback) {
+  const s = String(c === undefined || c === null ? '' : c).trim();
+  const at = s.indexOf('@');
+  ovlStAlpha[key] = at >= 0 ? s.slice(at) : '';
+  const head = (at >= 0 ? s.slice(0, at) : s).toLowerCase();
+  if (/^0x[0-9a-f]{6}$/.test(head)) return '#' + head.slice(2);
+  if (/^#[0-9a-f]{6}$/.test(head)) return head;
+  // Moi o mau co mac dinh RIENG: thieu mau bong ma roi ve trang thi ra mot
+  // cai bong trang - vo nghia, va la thu khong ai nghi den de di kiem tra.
+  return OVL_NAMED[head] || fallback || '#ffffff';
+}
+
+function ovlG(id) { return document.getElementById(id); }
+
+function ovlStyleFill(st) {
+  ovlStReady = false;
+  const sel = ovlG('ovlStFont');
+  sel.innerHTML = ovlStFonts.map(f =>
+    '<option value="' + escHtml(f.file) + '">' + escHtml(f.label)
+    + '</option>').join('');
+  sel.value = st.font || '';
+  if (!sel.value && ovlStFonts.length) sel.value = ovlStFonts[0].file;
+  ovlG('ovlStFmt').value = st.fmt || 'auto';
+  ovlG('ovlStColor').value = ovlHexOf(st.color, 'color', '#ffffff');
+  ovlG('ovlStOpacity').value = Math.round((st.opacity == null ? 1 : st.opacity) * 100);
+  ovlG('ovlStBorder').value = Math.round(st.border || 0);
+  ovlG('ovlStBorderColor').value =
+    ovlHexOf(st.border_color, 'border_color', '#000000');
+  ovlG('ovlStShadow').value = Math.round(st.shadow || 0);
+  ovlG('ovlStShadowColor').value =
+    ovlHexOf(st.shadow_color, 'shadow_color', '#000000');
+  ovlG('ovlStBox').checked = !!st.box;
+  ovlG('ovlStBoxColor').value = ovlHexOf(st.box_color, 'box_color', '#000000');
+  ovlG('ovlStBoxPad').value = Math.round(st.box_pad == null ? 24 : st.box_pad);
+  ovlG('ovlStBoxOpacity').value =
+    Math.round((st.box_opacity == null ? 0.45 : st.box_opacity) * 100);
+  ovlG('ovlStSize').value = Math.round(st.size || 140);
+  ovlStReady = true;
+  ovlStyleSave();
+}
+
+function ovlStyleRead() {
+  const col = (id, key) => ovlG(id).value + (ovlStAlpha[key] || '');
+  const int = (id, d) => {
+    const v = parseInt(ovlG(id).value, 10);
+    return isNaN(v) ? d : v;
+  };
+  return {
+    font: ovlG('ovlStFont').value,
+    fmt: ovlG('ovlStFmt').value,
+    size: int('ovlStSize', 140),
+    color: col('ovlStColor', 'color'),
+    opacity: int('ovlStOpacity', 100) / 100,
+    border: int('ovlStBorder', 0),
+    border_color: col('ovlStBorderColor', 'border_color'),
+    shadow: int('ovlStShadow', 0),
+    shadow_color: col('ovlStShadowColor', 'shadow_color'),
+    box: ovlG('ovlStBox').checked,
+    // KHONG gan duoi alpha o day: Python tu noi '@<box_opacity>' vao, gan
+    // ca hai se ra 'black@0.6@0.45' - mot chuoi mau khong hop le.
+    box_color: ovlG('ovlStBoxColor').value,
+    box_pad: int('ovlStBoxPad', 24),
+    box_opacity: int('ovlStBoxOpacity', 45) / 100,
+  };
+}
+
+function ovlStyleSave() {
+  const st = ovlStyleRead();
+  ovlG('ovlStyle').value = JSON.stringify(st);
+  ovlG('ovlStOpacityVal').textContent = Math.round(st.opacity * 100) + '%';
+  ovlG('ovlStBoxOpacityVal').textContent =
+    Math.round(st.box_opacity * 100) + '%';
+  const img = ovlG('ovlCntImg');
+  if (img) img.style.opacity = st.opacity;
+  const bits = [];
+  if (st.border > 0) bits.push('viền ' + st.border);
+  if (st.shadow > 0) bits.push('bóng ' + st.shadow);
+  if (st.box) bits.push('nền mờ');
+  if (st.opacity < 0.999) bits.push('mờ ' + Math.round(st.opacity * 100) + '%');
+  ovlG('ovlStyleLabel').textContent =
+    'kiểu: ' + st.color.replace(/@.*/, '')
+    + (bits.length ? ' · ' + bits.join(' · ') : ' · trơn');
+}
+
+function ovlStyleRerender() {
+  if (!ovlStAuto) return;   // che do file: khong co gi de ve lai
+  clearTimeout(ovlStTimer);
+  ovlG('ovlStBusy').textContent = 'đang vẽ lại...';
+  ovlStTimer = setTimeout(function () { pyApi.ovlRestyle(); }, 350);
+}
+
+function ovlStyleTouched() {
+  if (!ovlStReady) return;
+  ovlStyleSave();
+  ovlG('ovlStPreset').value = '';   // khong con dung y nguyen kieu mau nao
+  ovlStyleRerender();
+}
+
+// Python goi ham toan cuc nay khi ve lai xong.
+function ovlSetCntImg(p) {
+  const img = ovlG('ovlCntImg');
+  img.src = p.cntUrl;
+  img.style.opacity = (p.opacity == null ? 1 : p.opacity);
+  if (ovlState && p.cntW && p.cntH) {
+    ovlState.ar = p.cntH / p.cntW;   // vien/nen day hon lam doi ti le khung
+    ovlApplyToBox();
+  }
+  ovlG('ovlStBusy').textContent = '';
+}
+
+(function ovlInitStyle() {
+  const panel = ovlG('ovlStylePanel');
+  if (!panel) return;
+  panel.querySelectorAll('.ovl-st').forEach(function (el) {
+    if (el.id === 'ovlStPreset') return;
+    el.addEventListener('change', ovlStyleTouched);
+  });
+  // Hai thanh truot chi doi DO MO: luu lai va doi CSS, khong ve lai.
+  ['ovlStOpacity'].forEach(function (id) {
+    ovlG(id).addEventListener('input', function () {
+      if (ovlStReady) ovlStyleSave();
+    });
+  });
+  // Dam nen thi PHAI ve lai - no nam trong anh.
+  ovlG('ovlStBoxOpacity').addEventListener('change', ovlStyleTouched);
+  ovlG('ovlStBoxOpacity').addEventListener('input', function () {
+    if (ovlStReady) ovlG('ovlStBoxOpacityVal').textContent =
+      ovlG('ovlStBoxOpacity').value + '%';
+  });
+  ovlG('ovlStPreset').addEventListener('change', function () {
+    const p = OVL_ST_PRESETS[this.value];
+    if (!p) return;
+    const cur = ovlStyleRead();
+    Object.keys(p).forEach(k => { cur[k] = p[k]; });
+    ovlStyleFill(cur);   // KHONG xoa o 'kieu mau' - van dung y nguyen no
+    ovlStyleRerender();
+  });
+})();
+
 // Python goi thang ham toan cuc nay (khong qua uiApi) - dung tien le
 // showUpdateDialog / showRetryDialog / showJazzReport.
 function ovlShowPreview(p) {
   const stage = document.getElementById('ovlStage');
-  const [sw, sh] = ovlStageSize(p.baseW, p.baseH);
+  // Bang kieu chu chi co nghia o che do TU TAO: voi file nguoi dung tu chon
+  // thi khong co gi de ve lai, chi con do mo - va do mo dat o buoc ghep nen
+  // cung khong thuoc bang nay.
+  ovlStAuto = !!p.auto;
+  document.getElementById('ovlStylePanel').style.display =
+    ovlStAuto ? '' : 'none';
+  const [sw, sh] = ovlStageSize(p.baseW, p.baseH, ovlStAuto);
   stage.style.width = sw + 'px';
   stage.style.height = sh + 'px';
   document.getElementById('ovlBaseImg').src = p.baseUrl;
-  document.getElementById('ovlCntImg').src = p.cntUrl;
+  const cimg = document.getElementById('ovlCntImg');
+  cimg.src = p.cntUrl;
+  cimg.style.opacity = (p.opacity == null ? 1 : p.opacity);
+  document.getElementById('ovlStBusy').textContent = '';
   document.getElementById('ovlPreviewInfo').textContent =
     p.baseName + ' · ' + p.baseW + '×' + p.baseH + ' · '
     + p.nVideos + ' video trong kho · đếm ngược ' + p.cntDur + 's';
@@ -1170,9 +1441,18 @@ function ovlShowPreview(p) {
     ovlClosePreview();
   };
   document.getElementById('ovlResetBtn').onclick = function () {
-    if (!ovlState) return;
-    ovlState.cur = { x: 0.25, y: 0.60, w: 0.50 };
-    ovlApplyToBox();
+    if (ovlState) {
+      ovlState.cur = { x: 0.25, y: 0.60, w: 0.50 };
+      ovlApplyToBox();
+    }
+    // Dat lai CA kieu chu ve mac dinh cua preset, khong chi vi tri: nut nay
+    // la duong lui khi chinh loan len, ma chinh loan thi thuong la o mau sac
+    // chu khong phai o vi tri.
+    if (ovlStAuto && ovlStDefaults) {
+      document.getElementById('ovlStPreset').value = '';
+      ovlStyleFill(ovlStDefaults);
+      ovlStyleRerender();
+    }
   };
   document.getElementById('ovlCancelBtn').onclick = ovlClosePreview;
 })();
@@ -1223,6 +1503,20 @@ window.uiApi = {
   showLoopOvlSection(show) {
     document.getElementById('loopOvlSection').style.display = show ? 'block' : 'none';
     if (show) onOvlCountSrcChanged();
+  },
+
+  // Danh sach phong chu co that tren may + kieu chu mac dinh cua preset.
+  // Chi day sang khi that su mo chuc nang nay, mot lan moi lan mo. Neu o an
+  // #ovlStyle da co gia tri (nguoi dung da chinh) thi do LAI GIA TRI DO vao
+  // form chu khong do mac dinh - doi chuc nang roi quay lai ma mat kieu vua
+  // dat la mot cai bay im lang.
+  setOvlStyleDefaults(fonts, st) {
+    ovlStFonts = fonts || [];
+    ovlStDefaults = st || null;
+    let cur = null;
+    try { cur = JSON.parse(document.getElementById('ovlStyle').value || 'null'); }
+    catch (e) { cur = null; }
+    ovlStyleFill(cur || st || {});
   },
 
   // Ba o duong dan cua 'Loop Video + dem nguoc'. Mot ham nhan khoa thay vi
@@ -1766,6 +2060,7 @@ const pyApi = new Proxy({}, {
           ovlCount: getFieldValue('ovlCountPath'),
           ovlTime: getFieldValue('ovlTime'),
           ovlPlace: getFieldValue('ovlPlace'),
+          ovlStyle: getFieldValue('ovlStyle'),
         }];
       }
       if (method === 'saveNoiTxt') args = [getFieldValue('editor')];
