@@ -2742,6 +2742,16 @@ class Api:
         out_ext = str(code.get('out_ext', '.mp4')).lower()
         crf = int(code.get('crf', 18))
         x_preset = str(code.get('preset', 'medium'))
+        # Co cua swscale cho buoc thu nho cua nhom C. 'accurate_rnd' va
+        # 'full_chroma_int' la phan tuong duong doc duoc cua "Maximum Render
+        # Quality" ben Adobe: lam tron chinh xac + noi suy chroma day du.
+        # Do 2026-09-10 tren chinh file 1440p cua nguoi dung, phep thu vong
+        # (thu nho roi phong lai bang CUNG mot bo phong): 50,837 dB so voi
+        # 50,768 dB cua 'lanczos' tran. Nho, nhung on dinh qua HAI bo phong
+        # khac nhau va khong ton them thoi gian.
+        scale_flags = str(code.get(
+            'scale_flags', 'lanczos+accurate_rnd+full_chroma_int'))
+        match_bf = bool(code.get('match_bframes', True))
         prefer_gpu = bool(code.get('prefer_gpu', False))
         a_bitrate = str(code.get('audio_bitrate', '192k'))
         add_silent = bool(code.get('add_silent_audio', True))
@@ -2829,6 +2839,21 @@ class Api:
         t_pix = majority('pix_fmt')
         t_sar = majority('sar')
         t_tbn = majority('time_base')
+        # Neu SO DONG cua kho khong dung khung B thi nhom C cung khong duoc
+        # dung, neu khong moi cho noi cua no de lai canh bao DTS. Do 2026-09-10:
+        # doi DUY NHAT doan giua trong mot phep ghep ba doan, 0 khung B -> 0
+        # canh bao, 2 khung B -> 2 canh bao, va dieu do dung cho CA HAI profile
+        # (Main lan High) - tuc profile khong lien quan. Gia phai tra rat re
+        # tren kho nay: +0,8% dung luong o cung CRF (14,71 so voi 14,59 MB).
+        # Chi ap khi so dong la 0; kho nao von co khung B thi de nguyen.
+        def _hb(f):
+            try:
+                return int(specs[f].get('has_b') or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        t_bframes = collections.Counter(
+            _hb(f) for f in files).most_common(1)[0][0]
         n_audio = sum(1 for f in files if specs[f].get('a_codec'))
         t_has_audio = n_audio * 2 >= len(files)
         with_a = [f for f in files if specs[f].get('a_codec')]
@@ -2931,6 +2956,10 @@ class Api:
         else:
             self._log("          khong co duong tieng (so dong file khong"
                       " co tieng)", 'info')
+        if t_bframes == 0 and match_bf:
+            self._log("          so dong kho khong dung khung B -> file ma"
+                      " hoa lai cung tat khung B (tranh canh bao DTS o cho"
+                      " noi; ton them ~1% dung luong)", 'info')
         far = [f for f in files if fps_far(f)]
         if fps_mode == 'force':
             self._log(f"          fps EP CUNG {t_fps} -> moi file lech fps se"
@@ -3131,7 +3160,13 @@ class Api:
 
             # ---- Nhom C: bat buoc ma hoa lai ----
             src_fps = self._fps_value(s.get('fps'))
-            chain = [f"scale={t_w}:{t_h}:flags=lanczos",
+            # KHONG chen 'format=gbrp16le' (hay bat ky trung gian 16-bit/RGB
+            # nao) vao truoc scale de bat chuoc "Render at Maximum Depth" cua
+            # Adobe. Do 2026-09-10: no TE HON 2,8 dB (48,01 so voi 50,84),
+            # on dinh qua ca hai bo phong - vi di qua RGB bat chroma 4:2:0
+            # phai noi suy len roi lay mau xuong lai, mat nhieu hon phan
+            # duoc them. Nghe rat hop ly va no sai.
+            chain = [f"scale={t_w}:{t_h}:flags={scale_flags}",
                      f"setsar={str(t_sar).replace(':', '/')}"]
             # 'auto' chi doi fps cho file lech HAN ho. Mot file vao nhom C vi
             # ly do khac (vd sai kich thuoc) ma fps van dung ho thi phai giu
@@ -3152,6 +3187,11 @@ class Api:
 
             enc = (list(gpu_args) if gpu_args else
                    ['-c:v', 'libx264', '-preset', x_preset, '-crf', str(crf)])
+            # Khop khung B voi so dong cua kho (xem ghi chu o cho tinh
+            # t_bframes). Chi TAT khi so dong la 0; khong bao gio ep BAT,
+            # vi mot kho co khung B thi bo ma hoa tu chon la du.
+            if t_bframes == 0 and match_bf:
+                enc += ['-bf', '0']
             # MOI doi so input phai dung TRUOC moi doi so output. Dat
             # '-f lavfi -i ...' sau '-vf' se lam ffmpeg hieu '-f lavfi' la
             # dinh dang cua file RA.
@@ -4951,7 +4991,7 @@ class Api:
                     self.ffprobe_path,
                     '-v', 'error',
                     '-show_entries',
-                    'stream=index,codec_type,codec_name,width,height,r_frame_rate,pix_fmt,sample_aspect_ratio,time_base,sample_rate,channels',
+                    'stream=index,codec_type,codec_name,width,height,r_frame_rate,pix_fmt,sample_aspect_ratio,time_base,has_b_frames,sample_rate,channels',
                     '-of', 'json',
                     file_path,
                 ],
@@ -4987,6 +5027,15 @@ class Api:
                 # cho ra file dai 239 phut thay vi 149, lech A/V 8750 giay.
                 'v_index':     (v or {}).get('index'),
                 'a_index':     (a or {}).get('index'),
+                # KHUNG B cung la mot phan cua "cung thong so", va day la
+                # thu tu de bo sot vi no khong hien o dau ca. Do that
+                # 2026-09-10, ghep ba doan bang -c copy, chi doi doan giua:
+                #   Main 0 khung B (doi chung) -> 0 canh bao
+                #   High 2 khung B             -> 2 canh bao
+                #   High 0 khung B             -> 0 canh bao
+                #   Main 2 khung B             -> 2 canh bao
+                # Tuc thu phai khop la KHUNG B chu KHONG phai profile.
+                'has_b':       (v or {}).get('has_b_frames'),
                 'a_codec':     (a or {}).get('codec_name'),
                 'sample_rate': (a or {}).get('sample_rate'),
                 'channels':    (a or {}).get('channels'),

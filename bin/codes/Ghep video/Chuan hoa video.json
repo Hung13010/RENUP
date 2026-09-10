@@ -27,6 +27,18 @@
     "crf": 18,
     "preset": "medium",
     "prefer_gpu": false,
+    "scale_flags": "lanczos+accurate_rnd+full_chroma_int",
+    "match_bframes": true,
+
+    "_ghi_chu_match_bframes": "Khung B cung la mot phan cua 'cung thong so', va no la thu de bo sot nhat vi khong hien o dau ca. Do that 2026-09-10, ghep BA doan bang '-c copy' va chi doi DUY NHAT doan giua: Main 0 khung B (doi chung) -> 0 canh bao; High 2 khung B -> 2 canh bao; High 0 khung B -> 0 canh bao; Main 2 khung B -> 2 canh bao. Tuc thu phai khop la KHUNG B chu KHONG phai profile - dung mat cong ep '-profile:v main'. Kho do Adobe Media Encoder xuat ra co 0 khung B (va profile Main), trong khi x264 mac dinh ra 2 khung B (va profile High), nen khong khop nay xay ra that. Bat cai nay thi nhom C tu tat khung B khi SO DONG cua kho la 0. Gia: +0,8% dung luong o cung CRF (do tren clip 8 giay: 14,71 so voi 14,59 MB). Khong bao gio ep BAT khung B - kho nao von co thi bo ma hoa tu chon la du.",
+
+    "_ghi_chu_scale_flags": "Co cua swscale cho buoc THU NHO cua nhom C. Day la phan doc duoc cua 'Maximum Render Quality' ben Adobe Media Encoder: lam tron chinh xac + noi suy chroma day du. Do that 2026-09-10 tren chinh file 1440p cua nguoi dung, phep thu vong (thu nho roi phong lai bang CUNG mot bo phong, so PSNR voi ban goc): lanczos+accurate_rnd+full_chroma_int = 50,837 dB; lanczos tran = 50,768; spline+ar+fci = 50,807; zscale lanczos = 50,800; bicubic (mac dinh ffmpeg) = 50,381; area = 47,956. Chenh lech giua ba cai dau la vun (0,07 dB) nhung ON DINH qua HAI bo phong khac nhau, va khong ton them thoi gian (12,5s so voi 13,6s).",
+
+    "_ghi_chu_dung_them_16bit": "DUNG chen 'format=gbrp16le' hay bat ky trung gian RGB/16-bit nao vao truoc scale de bat chuoc 'Render at Maximum Depth' cua Adobe. Do that 2026-09-10: no TE HON 2,8 dB (48,01 so voi 50,84), on dinh qua ca hai bo phong. Ly do: di qua RGB bat chroma 4:2:0 phai noi suy len roi lay mau xuong lai, mat nhieu hon phan duoc them. Nghe rat hop ly va no sai - da do roi, dung thu lai. Ban linear-light day du (zscale t=linear) thi KHONG chay duoc tren ffmpeg 2018 di kem: 'm=rgb' bao 'Undefined constant' va 'gbrpf32le' bao 'Impossible to convert between the formats'.",
+
+    "_ghi_chu_vi_sao_khong_theo_bitrate_cua_AME": "Adobe Media Encoder xuat kho nay o muc bitrate CO DINH ~10,31 Mbps (24 file, do lech chuan chi 0,133 Mbps = 1,3% - qua chat de la CRF, day la VBR nham mot moc). Da do thu kieu do: VBR 1 pass 10,3M/max12 cho 8,85 Mbps va PSNR 46,19 dB, trong khi duong CRF o cung 8,85 Mbps cho khoang 46,4 dB. Tuc CRF THANG ~0,2 dB o cung dung luong, va con tu dieu chinh theo do kho cua noi dung. Giu CRF.",
+
+    "_ghi_chu_dung_them_maxrate": "DUNG them '-maxrate' de chan tran bitrate cho giong AME, du file ra co the TO HON NGUON (do that: 802,4 MB ra tu nguon 523,3 MB, tuc 16,66 Mbps cho 1080p trong khi nguon 1440p chi 10,66). Do tren doan NANG (t=250s, noi crf18 doi 24 Mbps), doi chung la ban thu nho khong nen: crf18 khong chan = 24,34 Mbps / 43,70 dB; chan tran 10,66M = 11,20 Mbps / 38,21 dB (MAT 5,5 dB); chan tran 14M = 14,70 Mbps / 39,93 dB; crf20 = 19,70 / 42,25; crf21 = 17,67 / 41,52. Chan tran con THUA ca viec chi nang CRF o cung dung luong. NEU MUON FILE NHO HON THI NANG 'crf' (18 -> 20 hoac 21), dung them maxrate.",
 
     "_ghi_chu_crf_va_gpu": "Do that 2026-09-10, thu nho 1440p -> 1080p doan 30 giay, so voi ban thu nho KHONG NEN: CPU crf18 medium = 1,20x thoi gian thuc, PSNR 44,13 dB, SSIM 0,99089. GPU nvenc cq18 nhanh hon 1,26 lan NHUNG file to hon 11% VA SSIM thap hon (0,98828). Chuc nang nay lay chat luong lam muc tieu nen mac dinh CPU - giong ngoai le da ghi o 'image_clip_gpu' cua Claim Jazz. Dat prefer_gpu=true neu can nhanh hon va chap nhan file to hon.",
 
