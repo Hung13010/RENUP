@@ -555,6 +555,42 @@ button[hidden] { display: none !important; }
         </div>
       </div>
 
+      <div id="normSection" style="display:none;">
+        <div class="field-label">📐 Kích thước đích</div>
+        <div class="settings-row">
+          <select id="normSize" style="width:210px;">
+            <option value="auto">Tự động — theo số đông của kho</option>
+            <option value="1920x1080">1920×1080 (Full HD)</option>
+            <option value="1280x720">1280×720 (HD)</option>
+            <option value="2560x1440">2560×1440 (2K)</option>
+            <option value="3840x2160">3840×2160 (4K)</option>
+            <option value="1080x1920">1080×1920 (dọc, Full HD)</option>
+          </select>
+        </div>
+
+        <div class="field-label" style="margin-top:6px;">🎞 Framerate</div>
+        <div class="settings-row">
+          <select id="normFps" style="width:210px;">
+            <option value="keep">Giữ nguyên — khuyên dùng</option>
+            <option value="auto">Tự động — chỉ ép file lệch hẳn</option>
+            <option value="30">Ép 30</option>
+            <option value="29.97">Ép 29.97</option>
+            <option value="25">Ép 25</option>
+            <option value="24">Ép 24</option>
+            <option value="60">Ép 60</option>
+            <option value="50">Ép 50</option>
+          </select>
+        </div>
+
+        <div style="font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.5;">
+          File nào đã đúng sẵn thì <b>chép nguyên, không mã hoá lại</b>.<br>
+          Framerate lệch <i>không</i> làm vỡ ghép — nhưng khi ghép nên đặt
+          file có <b>fps cao nhất lên đầu</b> danh sách. Xem log nếu kho có
+          fps lệch hẳn.<br>
+          Output phải khác Input.
+        </div>
+      </div>
+
       <div id="overlaySection" style="display:none;">
         <div class="field-label">🖼 Ảnh overlay (PNG)</div>
         <div class="input-row">
@@ -1586,6 +1622,10 @@ window.uiApi = {
     document.getElementById('convertSection').style.display = show ? 'block' : 'none';
   },
 
+  showNormSection(show) {
+    document.getElementById('normSection').style.display = show ? 'block' : 'none';
+  },
+
   showOverlaySection(show) {
     document.getElementById('overlaySection').style.display = show ? 'block' : 'none';
   },
@@ -2067,6 +2107,8 @@ const pyApi = new Proxy({}, {
           workers: parseInt(getFieldValue('workers')) || 2,
           splitSeconds: parseInt(getFieldValue('splitSeconds')) || 300,
           convertTarget: getFieldValue('convertTarget'),
+          normSize: getFieldValue('normSize'),
+          normFps: getFieldValue('normFps'),
           editorText: getFieldValue('editor'),
           overlayPath: getFieldValue('overlayPath'),
           folders: {

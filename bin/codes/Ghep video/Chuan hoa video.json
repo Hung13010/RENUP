@@ -1,0 +1,37 @@
+{
+    "name": "Chuẩn hoá video (để ghép -c copy không lỗi)",
+    "type": "normalize_video",
+    "description": "Đưa cả kho video về cùng thông số để 'Ghép Video' (concat -c copy) không lỗi. File nào đã đúng sẵn thì chép nguyên, không mã hoá lại.",
+
+    "_ghi_chu_thu_pha_hong_concat": "Do that 2026-09-10 tren kho 24 file cua nguoi dung. Thu phá hỏng 'concat -c copy' KHONG phai fps ma la TIME BASE: 29.970 + 30.000 ghep SACH (0 canh bao, 3601/3601 khung) vi ca hai cung tbn 1/30000; con 23.976 (tbn 1/24000) + 30.000 thi ra 240 dong 'Non-monotonous DTS' va hinh ngan hon tieng 15,9 giay. Vi vay mac dinh KHONG cham vao fps - ep cung fps chi lam mat chat luong vo co.",
+
+    "_ghi_chu_ba_nhom_viec": "Moi file roi vao mot trong ba nhom, chi nhom C moi mat chat luong: A) da khop moc -> chep nguyen file, bit y het. B) chi lech timescale -> '-c copy -video_track_timescale', DA DO: MD5 luong hinh TRUNG KHOP, fps giu nguyen 24000/1001, do dai lech 0,0000s. C) lech kich thuoc/codec/pix_fmt/SAR -> bat buoc ma hoa lai. Tren kho that: 22 file nhom A, 1 file nhom B, 1 file nhom C.",
+
+    "target_size": "auto",
+    "target_fps": "keep",
+    "fps_tolerance": 0.01,
+
+    "_ghi_chu_target_size": "'auto' = lay theo SO DONG cua kho (it file phai dung toi nhat). Hoac ghi thang '1920x1080'. Lay so dong co the phai THU NHO mot vai file - do la mat mat that, nhung phuong an kia (lay cai to nhat) se PHONG TO phan lon kho, vua mat chat luong vua phinh file ma khong them duoc chi tiet nao.",
+
+    "_ghi_chu_target_fps": "Ba che do. 'keep' (mac dinh) khong dung toi fps - day la ly do chuc nang nay gan nhu khong mat chat luong. 'auto' chi ma hoa lai nhung file co fps LECH HAN ho cua so dong (nguong = fps_tolerance): 29.97 va 30 lech 0,1% nen cung ho va duoc de yen, con 23.976 lech 20% nen bi ep ve moc. Mot con so ('30', '29.97') ep cung tat ca -> moi file lech fps deu phai ma hoa lai.",
+
+    "_ghi_chu_hoa_phieu_fps": "Moc fps lay theo so dong, nhung HOA PHIEU THI LAY FPS CAO HON. Do that 2026-09-10 tren kho 3 file moi file mot fps: de Counter tu chon thi no lay phan tu gap dau tien (phu thuoc thu tu ten file), chon 23.976 lam moc, roi che do 'auto' MA HOA HAI FILE 30fps XUONG 23.976 - vut bo khung cua phan lon kho. Lay fps cao hon thi file cham duoc nhan ban khung (khong mat thong tin) thay vi file nhanh bi bo bot khung (mat han).",
+
+    "_ghi_chu_vi_sao_co_che_do_auto": "Do that 2026-09-10: file GHEP ra lay `r_frame_rate` theo DOAN DAU TIEN, nen doan nao chay nhanh hon doan dau se co khung khong co o thoi gian rieng. So khung du = thoi luong x (fps doan do - fps doan dau), khop tuyet doi: 29.970 truoc 30.000 (356,33s) -> 11; 23.976 truoc 30.000 -> 2146; doan dau co fps cao nhat -> 0. QUAN TRONG: day la tinh chat co san cua concat, KHONG phai do chuan hoa gay ra - ghep 24 file GOC chua dung toi cung cho dung hien tuong nay. Va doi timescale KHONG cuu duoc (da thu ca 30000 lan 120000, van dung 2146 loi) vi nguyen nhan la fps khac ho chu khong phai nhip thoi gian. Cach re nhat lai la MIEN PHI: khi ghep, dat file co fps cao nhat len dau danh sach.",
+
+    "_ghi_chu_timescale": "Moc timescale phai KHOP DUNG timescale cua so dong, khong duoc chon mot boi so 'cho an toan'. Do that: dat 60000 (boi cua ca 30000 lan 24000) cho ra file dai gap doi o mot thu tu ghep, va 1200 dong 'Non-monotonous DTS' o thu tu con lai.",
+
+    "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v", ".wmv", ".flv"],
+    "out_ext": ".mp4",
+
+    "crf": 18,
+    "preset": "medium",
+    "prefer_gpu": false,
+
+    "_ghi_chu_crf_va_gpu": "Do that 2026-09-10, thu nho 1440p -> 1080p doan 30 giay, so voi ban thu nho KHONG NEN: CPU crf18 medium = 1,20x thoi gian thuc, PSNR 44,13 dB, SSIM 0,99089. GPU nvenc cq18 nhanh hon 1,26 lan NHUNG file to hon 11% VA SSIM thap hon (0,98828). Chuc nang nay lay chat luong lam muc tieu nen mac dinh CPU - giong ngoai le da ghi o 'image_clip_gpu' cua Claim Jazz. Dat prefer_gpu=true neu can nhanh hon va chap nhan file to hon.",
+
+    "audio_bitrate": "192k",
+    "add_silent_audio": true,
+
+    "_ghi_chu_add_silent_audio": "Kho tron ca video CO tieng lan KHONG tieng thi 'concat -c copy' hong nang. Bat cai nay thi file khong tieng duoc them mot duong tieng IM LANG, va phan HINH van '-c:v copy' - tuc van khong mat chat luong."
+}

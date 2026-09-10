@@ -539,6 +539,7 @@ class Api:
                      + json.dumps(self._ovl_font_list(code)) + ", "
                      + json.dumps(self._ovl_style(code)) + ")")
         self._js(f"uiApi.showConvertSection({str(code_type == 'convert_video').lower()})")
+        self._js(f"uiApi.showNormSection({str(code_type == 'normalize_video').lower()})")
         self._js(f"uiApi.showOverlaySection({str(code_type == 'overlay_corner').lower()})")
         self._js(f"uiApi.showMultiFolderSection({str(code_type == 'concat_multi_folder').lower()})")
         self._js(f"uiApi.showClaimSection({str(code_type == 'claim_tiktok').lower()})")
@@ -1133,6 +1134,8 @@ class Api:
                     self._run_loop_overlay(params, code)
                 elif code_type == 'convert_video':
                     self._run_convert_video(params, code)
+                elif code_type == 'normalize_video':
+                    self._run_normalize_video(params, code)
                 elif code_type == 'overlay_corner':
                     self._run_overlay_corner(params, code)
                 elif code_type == 'concat_multi_folder':
@@ -2676,6 +2679,525 @@ class Api:
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video -> {target} ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video -> {target}.')")
+
+    # ── Chuan hoa video (de 'Ghep Video' -c copy khong vo) ──
+
+    # Nguoi dung go '29.97' nhung gia tri DUNG la 30000/1001. Dua 29.97 chan
+    # cho ffmpeg se ra mot fps hoi khac, va sai so do tich luy thanh khung
+    # thua/thieu doc theo mot video dai.
+    FPS_ALIASES = {
+        '23.976': '24000/1001', '23.98': '24000/1001',
+        '29.97': '30000/1001', '29.970': '30000/1001',
+        '47.952': '48000/1001', '59.94': '60000/1001',
+        '59.940': '60000/1001', '119.88': '120000/1001',
+    }
+
+    @staticmethod
+    def _fps_value(text):
+        """'30000/1001' hoac '29.97' -> 29.97 (float). Doc khong duoc -> 0.0."""
+        s = str(text or '').strip()
+        if not s:
+            return 0.0
+        try:
+            if '/' in s:
+                n, d = s.split('/', 1)
+                return (float(n) / float(d)) if float(d) else 0.0
+            return float(s)
+        except (ValueError, ZeroDivisionError):
+            return 0.0
+
+    def _run_normalize_video(self, params, code):
+        """Dua ca kho video ve cung thong so de 'Ghep Video' (concat -c copy)
+        khong bao loi.
+
+        THU PHA HONG concat KHONG PHAI FPS MA LA TIME BASE. Do that
+        2026-09-10 tren kho 24 file cua nguoi dung:
+            29.970 + 30.000, cung tbn 1/30000 -> 0 canh bao, 3601/3601 khung
+            23.976 o tbn 1/24000, + 30.000    -> 240 dong 'Non-monotonous
+                                                 DTS', hinh ngan hon tieng
+                                                 15,9 giay
+        Vi vay mac dinh KHONG dung toi fps. Ep cung fps se bat moi file lech
+        fps phai ma hoa lai, tuc tra chat luong de doi lay mot thu khong hong.
+
+        Ba nhom viec, chi nhom C moi mat chat luong:
+            A. da khop moc, dung ca duoi file -> CHEP NGUYEN, bit y het
+            B. luong hinh da khop, chi lech vo / timescale / duong tieng
+               -> '-c:v copy'. DA DO: MD5 luong hinh TRUNG KHOP goc, fps giu
+                  nguyen 24000/1001, do dai lech 0,0000s
+            C. lech kich thuoc / codec / pix_fmt / SAR, hoac bi ep fps
+               -> bat buoc ma hoa lai
+        Tren kho that: 22 file nhom A, 1 file nhom B, 1 file nhom C.
+
+        MOC TIMESCALE PHAI KHOP DUNG so dong, KHONG duoc lay mot boi so "cho
+        an toan". Do that voi 60000 (boi cua ca 30000 lan 24000): mot thu tu
+        ghep cho ra file DAI GAP DOI, thu tu con lai cho 1200 dong
+        'Non-monotonous DTS'. Day la cai bay nghe rat hop ly va no sai.
+        """
+        input_dir = (params.get('inputDir') or '').strip()
+        output_dir = (params.get('outputDir') or '').strip()
+        workers = max(1, int(params.get('workers') or 1))
+        vid_ext = [e.lower() for e in code.get(
+            'video_ext', ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v',
+                          '.wmv', '.flv'])]
+        out_ext = str(code.get('out_ext', '.mp4')).lower()
+        crf = int(code.get('crf', 18))
+        x_preset = str(code.get('preset', 'medium'))
+        prefer_gpu = bool(code.get('prefer_gpu', False))
+        a_bitrate = str(code.get('audio_bitrate', '192k'))
+        add_silent = bool(code.get('add_silent_audio', True))
+
+        self._js("uiApi.setStatus('Dang chuan bi chuan hoa video...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau chuan hoa video ===", 'info')
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder.", 'err')
+            return
+        # Ten file ra giu nguyen ten goc nen Input trung Output nghia la moi
+        # file tu ghi de len chinh no. Chan CA ME, giong _run_loop_video:
+        # o day khong phai mot phan file bi anh huong ma la tat ca.
+        if (os.path.normcase(os.path.abspath(input_dir))
+                == os.path.normcase(os.path.abspath(output_dir))):
+            self._log("Folder Output phai KHAC folder Input: ten file ra giu"
+                      " nguyen ten goc nen moi file se tu ghi de len chinh no.",
+                      'err')
+            return
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+
+        files = sorted(f for f in os.listdir(input_dir)
+                       if os.path.splitext(f)[1].lower() in vid_ext)
+        if not files:
+            self._log("Khong tim thay video trong Input.", 'err')
+            return
+
+        # ---- Pha 1: probe TAT CA file (song song) ----
+        # Phai probe het truoc khi biet moc dich la gi, nen day la mot pha
+        # rieng dat truoc _begin_batch - dung tien le pha lay tieu de cua
+        # youtube_download (ADR-005).
+        self._js("uiApi.setStatus('Dang doc thong so tung file...')")
+        self._log(f"Doc thong so {len(files)} file...", 'info')
+        specs = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            fut = {ex.submit(self._probe_spec,
+                             os.path.join(input_dir, f)): f for f in files}
+            for k in as_completed(fut):
+                specs[fut[k]] = k.result()
+
+        readable = [f for f in files
+                    if specs.get(f) and specs[f].get('width')]
+        for f in files:
+            if f not in readable:
+                self._log(f"  Khong doc duoc thong so, bo qua: {f}", 'err')
+        if not readable:
+            self._log("Khong doc duoc thong so cua file nao.", 'err')
+            return
+        files = readable
+
+        # ---- Pha 2: chot moc dich ----
+        # Lay theo SO DONG: it file phai dung toi nhat, tuc it mat chat
+        # luong nhat. Hoa phieu thi uu tien kich thuoc NHO hon - phong to
+        # khong them duoc chi tiet nao ma van mat mot doi ma hoa.
+        def majority(key):
+            c = collections.Counter(specs[f][key] for f in files)
+            top = c.most_common()
+            best = top[0][1]
+            tied = [v for v, n in top if n == best]
+            return tied[0] if len(tied) == 1 else sorted(
+                tied, key=lambda v: str(v))[0]
+
+        size_c = collections.Counter(
+            (specs[f]['width'], specs[f]['height']) for f in files)
+        top_n = size_c.most_common()[0][1]
+        t_w, t_h = sorted((wh for wh, n in size_c.most_common() if n == top_n),
+                          key=lambda wh: wh[0] * wh[1])[0]
+
+        # Gia tri tu UI thang, preset chi giu mac dinh - giong
+        # convertTarget/loopMode.
+        raw_size = (str(params.get('normSize') or '').strip().lower()
+                    or str(code.get('target_size', 'auto')).strip().lower())
+        if raw_size and raw_size != 'auto':
+            m = re.match(r'^(\d+)\s*[x*×]\s*(\d+)$', raw_size)
+            if not m:
+                self._log(f"target_size khong hop le: {raw_size}"
+                          f" (dung 'auto' hoac '1920x1080')", 'err')
+                return
+            t_w, t_h = int(m.group(1)), int(m.group(2))
+
+        t_codec = majority('v_codec')
+        t_pix = majority('pix_fmt')
+        t_sar = majority('sar')
+        t_tbn = majority('time_base')
+        n_audio = sum(1 for f in files if specs[f].get('a_codec'))
+        t_has_audio = n_audio * 2 >= len(files)
+        with_a = [f for f in files if specs[f].get('a_codec')]
+        if t_has_audio and with_a:
+            t_acodec = collections.Counter(
+                specs[f]['a_codec'] for f in with_a).most_common(1)[0][0]
+            t_ar = collections.Counter(
+                specs[f]['sample_rate'] for f in with_a).most_common(1)[0][0]
+            t_ach = collections.Counter(
+                specs[f]['channels'] for f in with_a).most_common(1)[0][0]
+        else:
+            t_acodec = t_ar = t_ach = None
+
+        # THU TU LUONG (tieng truoc hay hinh truoc). Concat ghep theo CHI SO
+        # luong chu khong theo loai, nen tron hai thu tu la tieng chay vao
+        # track hinh. Lay theo so dong de it file phai dung toi nhat: kho
+        # that cua nguoi dung 24/24 la TIENG TRUOC, trong khi ffmpeg mac
+        # dinh ghi ra HINH TRUOC - ep het ve hinh-truoc se bat remux ca 24
+        # file thay vi 2.
+        def is_audio_first(f):
+            s = specs[f]
+            return (s.get('a_index') is not None
+                    and s.get('v_index') is not None
+                    and s['a_index'] < s['v_index'])
+
+        # Mau so la so file CO TIENG, khong phai ca kho: file khong co tieng
+        # thi khong co "thu tu" nao de bo phieu, va tinh chung se keo ket
+        # qua ve hinh-truoc mot cach vo co.
+        t_audio_first = bool(t_has_audio) and bool(with_a) and (
+            sum(1 for f in with_a if is_audio_first(f)) * 2 > len(with_a))
+
+        # ---- fps: ba che do ----
+        # Do that 2026-09-10: file ghep ra lay `r_frame_rate` theo doan DAU
+        # TIEN, nen moi doan phia sau chay NHANH hon se co nhieu khung hon so
+        # o thoi gian ma nhip do bieu dien duoc. So khung du = thoi luong x
+        # (fps doan do - fps doan dau). Kiem chung khop tuyet doi:
+        #   29.970 truoc + 30.000 (356,33s) -> 356,33 x 0,03  = 10,7 -> do 11
+        #   23.976 truoc + 30.000 (356,33s) -> 356,33 x 6,024 = 2146 -> do 2146
+        #   doan dau co fps CAO NHAT                                 -> do 0
+        # Day la tinh chat co san cua concat, KHONG phai do chuan hoa gay ra:
+        # ghep 24 file GOC chua dung toi cung cho dung hien tuong nay. Va doi
+        # timescale khong cuu duoc (thu ca 30000 lan 120000, van 2146) vi
+        # nguyen nhan la FPS KHAC HO chu khong phai nhip thoi gian.
+        fps_vals = {f: self._fps_value(specs[f].get('fps')) for f in files}
+        good_fps = [v for v in fps_vals.values() if v > 0]
+        # So dong, nhung HOA PHIEU THI LAY FPS CAO HON. Khong duoc de
+        # Counter tu chon: no lay phan tu gap dau tien, tuc phu thuoc thu tu
+        # ten file. Do that 2026-09-10 tren kho 3 file moi file mot fps: no
+        # chon 23.976 lam moc roi che do 'auto' MA HOA HAI FILE 30fps XUONG
+        # 23.976 - vut bo khung cua phan lon kho. Lay fps cao hon thi file
+        # cham duoc nhan ban khung (khong mat thong tin) thay vi file nhanh
+        # bi bo bot khung (mat han).
+        if good_fps:
+            cnt = collections.Counter(specs[f]['fps'] for f in files
+                                      if fps_vals[f] > 0)
+            top = max(n for _, n in cnt.most_common())
+            maj_fps_str = max((s for s, n in cnt.items() if n == top),
+                              key=self._fps_value)
+        else:
+            maj_fps_str = None
+        maj_fps = self._fps_value(maj_fps_str)
+        tol = float(code.get('fps_tolerance', 0.01))
+
+        def fps_far(f):
+            """Lech HAN ho fps cua so dong (29.97 va 30 chi lech 0,1% nen
+            cung ho; 23.976 lech 20% nen khac ho)."""
+            v = fps_vals.get(f, 0)
+            if v <= 0 or maj_fps <= 0:
+                return False
+            return abs(v - maj_fps) / max(v, maj_fps) > tol
+
+        raw_fps = (str(params.get('normFps') or '').strip().lower()
+                   or str(code.get('target_fps', 'keep')).strip().lower())
+        t_fps = None
+        fps_mode = 'keep'
+        if raw_fps in ('auto', 'tu dong'):
+            fps_mode = 'auto'
+            t_fps = maj_fps_str
+        elif raw_fps and raw_fps not in ('keep', 'giu nguyen', ''):
+            fps_mode = 'force'
+            t_fps = self.FPS_ALIASES.get(raw_fps, raw_fps)
+            if self._fps_value(t_fps) <= 0:
+                self._log(f"target_fps khong hop le: {raw_fps} (dung 'keep',"
+                          f" 'auto', hoac mot so nhu '30', '29.97')", 'err')
+                return
+
+        try:
+            tb_num = int(str(t_tbn).split('/')[1])
+        except (IndexError, ValueError):
+            self._log(f"Khong doc duoc timescale tu time_base: {t_tbn}", 'err')
+            return
+
+        self._log(f"Moc dich: {t_codec} {t_w}x{t_h} {t_pix} SAR {t_sar}"
+                  f" timescale 1/{tb_num}", 'info')
+        if t_has_audio:
+            self._log(f"          tieng {t_acodec} {t_ar}Hz {t_ach} kenh"
+                      f", thu tu luong:"
+                      f" {'TIENG truoc' if t_audio_first else 'HINH truoc'}",
+                      'info')
+        else:
+            self._log("          khong co duong tieng (so dong file khong"
+                      " co tieng)", 'info')
+        far = [f for f in files if fps_far(f)]
+        if fps_mode == 'force':
+            self._log(f"          fps EP CUNG {t_fps} -> moi file lech fps se"
+                      f" phai MA HOA LAI (mat chat luong).", 'info')
+        elif fps_mode == 'auto':
+            self._log(f"          fps TU DONG: giu nguyen, tru {len(far)} file"
+                      f" lech han ho {maj_fps_str} -> ma hoa lai ve moc do.",
+                      'info')
+        else:
+            self._log("          fps GIU NGUYEN.", 'info')
+
+        # Canh bao khi de nguyen fps khac ho. Phai noi ro CAI GIA, vi day la
+        # thu duy nhat con lai sau khi chuan hoa va nguoi dung khong the tu
+        # phat hien: ghep van bao 0 canh bao.
+        if far and fps_mode == 'keep':
+            self._log(f"CANH BAO: {len(far)} file co fps lech han so dong"
+                      f" ({maj_fps_str}): "
+                      + ', '.join(f"{f} ({fps_vals[f]:.3f})"
+                                  for f in far[:4])
+                      + (f" ... (+{len(far)-4})" if len(far) > 4 else ''),
+                      'err')
+            self._log("  File ghep ra lay nhip theo DOAN DAU TIEN, nen doan"
+                      " nao chay nhanh hon doan dau se co khung khong co o"
+                      " thoi gian rieng. Do that: 23.976 dung truoc mot file"
+                      " 30fps dai 6 phut -> 2146 khung; 29.970 truoc 30.000"
+                      " -> 11 khung; doan dau co fps CAO NHAT -> 0.", 'info')
+            self._log("  Ba cach, re truoc dat sau:"
+                      " (1) MIEN PHI - khi ghep, dat file co fps CAO NHAT"
+                      " len dau danh sach, dung de file fps thap dan dau;"
+                      " (2) Framerate = 'Tu dong' - chi ma hoa lai may file"
+                      " lech han ho; (3) ep mot con so - ma hoa lai moi file"
+                      " lech fps.", 'info')
+
+        # ---- Pha 3: phan nhom ----
+        PIXEL = (('v_codec', t_codec), ('width', t_w), ('height', t_h),
+                 ('pix_fmt', t_pix), ('sar', t_sar))
+
+        def classify(f):
+            """-> ('A'|'B'|'C', ly do)"""
+            s = specs[f]
+            bad = [k for k, want in PIXEL if s.get(k) != want]
+            # 'force': moi file lech fps deu phai doi. 'auto': chi file lech
+            # HAN ho - 29.97 va 30 de yen vi chung chi gay ~11 khung du tren
+            # mot doan 6 phut, trong khi 23.976 gay 2146.
+            if fps_mode == 'force':
+                if self._fps_value(s.get('fps')) and abs(
+                        self._fps_value(s['fps'])
+                        - self._fps_value(t_fps)) > 0.001:
+                    bad.append('fps')
+            elif fps_mode == 'auto' and fps_far(f):
+                bad.append('fps lech han ho')
+            if bad:
+                return 'C', ', '.join(bad)
+            has_a = bool(s.get('a_codec'))
+            if t_has_audio and has_a and (
+                    s.get('a_codec') != t_acodec
+                    or s.get('sample_rate') != t_ar
+                    or s.get('channels') != t_ach):
+                return 'B', 'thong so tieng'
+            if t_has_audio and not has_a:
+                if not add_silent:
+                    return 'C', 'khong co tieng (add_silent_audio dang tat)'
+                return 'B', 'them tieng im lang'
+            if not t_has_audio and has_a:
+                return 'B', 'bo duong tieng'
+            if t_has_audio and has_a and is_audio_first(f) != t_audio_first:
+                return 'B', ('dao thu tu luong -> '
+                             + ('tieng truoc' if t_audio_first
+                                else 'hinh truoc'))
+            if s.get('time_base') != t_tbn:
+                return 'B', f"timescale {s.get('time_base')} -> {t_tbn}"
+            if os.path.splitext(f)[1].lower() != out_ext:
+                return 'B', f"doi vo sang {out_ext}"
+            return 'A', ''
+
+        groups = {f: classify(f) for f in files}
+
+        # Moi file ra deu mang duoi `out_ext`, nen 'x.mp4' va 'x.mkv' trong
+        # Input se cung tro toi 'x.mp4' o Output va cai nay ghi de cai kia -
+        # mat du lieu, khong phai bat tien. Chinh chuc nang nay lai la noi
+        # de gap nhat, vi ly do ton tai cua no la kho TRON NHIEU VO.
+        # Doi ten thay vi dung ca me: dung se chan mot cong viec hop le.
+        out_name = {}
+        taken = set()
+        for f in files:
+            stem = os.path.splitext(f)[0]
+            cand = stem + out_ext
+            if cand.lower() in taken:
+                cand = f"{stem}_{os.path.splitext(f)[1].lstrip('.')}{out_ext}"
+                k = 2
+                while cand.lower() in taken:
+                    cand = f"{stem}_{k}{out_ext}"
+                    k += 1
+                self._log(f"  Trung ten file ra, doi thanh: {cand}"
+                          f"  (nguon: {f})", 'info')
+            taken.add(cand.lower())
+            out_name[f] = cand
+
+        n = collections.Counter(g for g, _ in groups.values())
+        self._log(f"Ke hoach: {n.get('A', 0)} file chep nguyen"
+                  f" | {n.get('B', 0)} file chep luong (khong ma hoa lai)"
+                  f" | {n.get('C', 0)} file MA HOA LAI.", 'info')
+        if n.get('C', 0):
+            self._log("  Chi nhom ma hoa lai moi mat chat luong. Ly do tung"
+                      " file se ghi o dong cua no.", 'info')
+
+        # '+faststart' chi co nghia voi vo MP4/MOV; dua no cho .mkv/.avi la
+        # ffmpeg bao loi chu khong bo qua.
+        faststart = (['-movflags', '+faststart']
+                     if out_ext in ('.mp4', '.mov', '.m4v') else [])
+        silent_src = (f"anullsrc=r={t_ar}:cl="
+                      f"{'stereo' if int(t_ach or 2) == 2 else 'mono'}"
+                      if t_has_audio else '')
+
+        def maps(v_spec, a_spec):
+            """Thu tu '-map' quyet dinh thu tu track o file ra, nen no PHAI
+            theo moc chu khong theo thoi quen 'hinh truoc'."""
+            if not t_has_audio:
+                return ['-map', v_spec]
+            return (['-map', a_spec, '-map', v_spec] if t_audio_first
+                    else ['-map', v_spec, '-map', a_spec])
+
+        gpu_args = None
+        if prefer_gpu and n.get('C', 0):
+            gpu_args, gpu_name = self._gpu_h264_args(crf, x_preset)
+            self._log(f"  Bo ma hoa: {gpu_name}", 'info')
+
+        os.makedirs(output_dir, exist_ok=True)
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+        self._log(f"{len(files)} file | {workers} luong.", 'info')
+
+        ok_count, done_count = [0], [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success:
+                    ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            self._mark_row(idx, success)
+            self._js(f"uiApi.setProgress({int(d / total * 100)},"
+                     f" '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang chuan hoa... {d}/{total} file')")
+
+        def norm_one(idx, name):
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'running')")
+            if self._stopped:
+                return False
+            src = os.path.join(input_dir, name)
+            out_base = out_name[name]
+            dst = os.path.join(output_dir, out_base)
+            grp, why = groups[name]
+            s = specs[name]
+
+            if grp == 'A':
+                # Chep nguyen file: nhanh nhat va giu tung bit. Remux
+                # '-c copy' cung khong mat chat luong nhung phai doc-ghi
+                # qua ffmpeg va viet lai vo - khong mua duoc gi o day.
+                shutil.copy2(src, dst)
+                self._log(f"[{idx + 1}/{total}] A giu nguyen (khong dung"
+                          f" toi): {name}", 'ok')
+                self._js(f"uiApi.updateProcessItem({idx}, 100, 'running')")
+                return True
+
+            if grp == 'B':
+                cmd = [self.ffmpeg_path, '-v', 'error']
+                if t_has_audio and not s.get('a_codec'):
+                    # Them duong tieng im lang ma van '-c:v copy': phan hinh
+                    # khong bi dung toi mot pixel nao.
+                    cmd += ['-i', src, '-f', 'lavfi', '-i', silent_src] \
+                        + maps('0:v:0', '1:a:0') \
+                        + ['-shortest', '-c:v', 'copy',
+                           '-c:a', t_acodec or 'aac', '-b:a', a_bitrate]
+                elif not t_has_audio:
+                    cmd += ['-i', src, '-map', '0:v:0', '-an', '-c:v', 'copy']
+                elif s.get('a_codec') != t_acodec or \
+                        s.get('sample_rate') != t_ar or \
+                        s.get('channels') != t_ach:
+                    cmd += ['-i', src] + maps('0:v:0', '0:a:0') \
+                        + ['-c:v', 'copy', '-c:a', t_acodec or 'aac',
+                           '-b:a', a_bitrate, '-ar', str(t_ar),
+                           '-ac', str(t_ach)]
+                else:
+                    cmd += ['-i', src] + maps('0:v:0', '0:a:0') \
+                        + ['-c', 'copy']
+                cmd += ['-video_track_timescale', str(tb_num)] + faststart \
+                    + ['-y', dst]
+                ok, err = self._ffmpeg_quiet(cmd)
+                if ok:
+                    self._log(f"[{idx + 1}/{total}] B chep luong, KHONG ma"
+                              f" hoa lai ({why}): {name}", 'ok')
+                else:
+                    self._log(f"[{idx + 1}/{total}] LOI ({why}) {name}:"
+                              f" {err}", 'err')
+                self._js(f"uiApi.updateProcessItem({idx}, 100, 'running')")
+                return ok
+
+            # ---- Nhom C: bat buoc ma hoa lai ----
+            src_fps = self._fps_value(s.get('fps'))
+            chain = [f"scale={t_w}:{t_h}:flags=lanczos",
+                     f"setsar={str(t_sar).replace(':', '/')}"]
+            # 'auto' chi doi fps cho file lech HAN ho. Mot file vao nhom C vi
+            # ly do khac (vd sai kich thuoc) ma fps van dung ho thi phai giu
+            # nguyen fps cua no - doi vo co la them mot lan mat mat.
+            want_fps = (fps_mode == 'force'
+                        or (fps_mode == 'auto' and fps_far(name)))
+            if t_fps and want_fps:
+                # Thu tu quyet dinh boi HUONG doi fps, khong phai theo thoi
+                # quen. Do 2026-09-10 (TODO #077): dat 'fps' truoc 'scale'
+                # khi fps TANG lam scale phai chay tren so khung da nhan ban
+                # - cham 1,71 lan cho cung mot ket qua. Khi fps GIAM thi
+                # nguoc lai, loc bot khung truoc moi re.
+                if src_fps and self._fps_value(t_fps) < src_fps:
+                    chain.insert(0, f"fps={t_fps}")
+                else:
+                    chain.append(f"fps={t_fps}")
+            vf = ','.join(chain)
+
+            enc = (list(gpu_args) if gpu_args else
+                   ['-c:v', 'libx264', '-preset', x_preset, '-crf', str(crf)])
+            # MOI doi so input phai dung TRUOC moi doi so output. Dat
+            # '-f lavfi -i ...' sau '-vf' se lam ffmpeg hieu '-f lavfi' la
+            # dinh dang cua file RA.
+            need_sil = t_has_audio and not s.get('a_codec')
+            cmd = [self.ffmpeg_path, '-i', src]
+            if need_sil:
+                cmd += ['-f', 'lavfi', '-i', silent_src]
+            cmd += maps('0:v:0', '1:a:0' if need_sil else '0:a:0')
+            cmd += ['-vf', vf] + enc + ['-pix_fmt', t_pix]
+            if t_has_audio:
+                cmd += ['-c:a', t_acodec or 'aac', '-b:a', a_bitrate,
+                        '-ar', str(t_ar), '-ac', str(t_ach)]
+                if need_sil:
+                    cmd += ['-shortest']
+            else:
+                cmd += ['-an']
+            cmd += ['-video_track_timescale', str(tb_num)] + faststart + \
+                   ['-progress', 'pipe:1', '-nostats', '-y', dst]
+
+            self._log(f"[{idx + 1}/{total}] C MA HOA LAI ({why}):"
+                      f" {name}  {s.get('width')}x{s.get('height')}"
+                      f" -> {t_w}x{t_h}", 'info')
+            dur = self._get_duration(src)
+            ok, _ = self._run_ffmpeg_with_table(cmd, idx, dur, out_base)
+            return ok
+
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i, f in run_items:
+                if self._stopped:
+                    break
+                futures[ex.submit(norm_one, i, f)] = i
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    ok = fut.result()
+                except Exception as e:
+                    self._log(f"[{i + 1}] LOI: {e}", 'err')
+                    ok = False
+                update(i, ok)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} file ===", 'ok')
+        if ok_count[0] == total:
+            self._log("Gio co the dung 'Ghep Video' tren folder Output nay.",
+                      'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} file.')")
 
     # ── Pad Duration ──
 
@@ -4409,8 +4931,18 @@ class Api:
         """Probe a media file and return a spec dict for mismatch detection.
 
         Returns a dict with keys:
-            v_codec, width, height, fps, pix_fmt,
+            v_codec, width, height, fps, pix_fmt, sar, time_base,
             a_codec, sample_rate, channels
+
+        `sar` va `time_base` duoc them 2026-09-10 cho `normalize_video`.
+        Them khoa la thao tac cong them: moi caller cu doc bang `.get()`
+        theo tung khoa nen khong bi anh huong.
+
+        `time_base` khong phai chi tiet vun vat: do that cho thay no MOI
+        la thu pha hong 'concat -c copy', chu khong phai fps. Hai file
+        29.970 va 30.000 cung tbn 1/30000 ghep sach hoan toan, con mot
+        file 23.976 o tbn 1/24000 lam hinh ngan hon tieng 15,9 giay.
+
         Returns None on any failure (caller should treat as mismatch → re-encode).
         """
         try:
@@ -4419,7 +4951,7 @@ class Api:
                     self.ffprobe_path,
                     '-v', 'error',
                     '-show_entries',
-                    'stream=codec_type,codec_name,width,height,r_frame_rate,pix_fmt,sample_rate,channels',
+                    'stream=index,codec_type,codec_name,width,height,r_frame_rate,pix_fmt,sample_aspect_ratio,time_base,sample_rate,channels',
                     '-of', 'json',
                     file_path,
                 ],
@@ -4443,6 +4975,18 @@ class Api:
                 'height':      (v or {}).get('height'),
                 'fps':         (v or {}).get('r_frame_rate'),
                 'pix_fmt':     (v or {}).get('pix_fmt'),
+                # ffprobe bo qua SAR khi no la 1:1 o vai container, nen
+                # thieu = 1:1 chu khong phai "khong biet".
+                'sar':         (v or {}).get('sample_aspect_ratio') or '1:1',
+                'time_base':   (v or {}).get('time_base'),
+                # THU TU LUONG la mot phan cua "cung thong so". Concat ghep
+                # theo CHI SO luong, nen mot file tieng-truoc dat canh mot
+                # file hinh-truoc se lam tieng chay vao track hinh. Do that
+                # 2026-09-10: kho cua nguoi dung co 24/24 file la TIENG
+                # TRUOC, va ffmpeg thi luon ghi ra hinh-truoc - ghep chung
+                # cho ra file dai 239 phut thay vi 149, lech A/V 8750 giay.
+                'v_index':     (v or {}).get('index'),
+                'a_index':     (a or {}).get('index'),
                 'a_codec':     (a or {}).get('codec_name'),
                 'sample_rate': (a or {}).get('sample_rate'),
                 'channels':    (a or {}).get('channels'),
