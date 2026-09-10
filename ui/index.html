@@ -1093,10 +1093,11 @@ let ytThumbSelectedIds = new Set();   // tap chon thumbnail (JS la chu, xem F2/I
 
 // Cac function khong co Folder Input. Moi show*Section chi set co cua rieng no
 // roi goi _syncInputDirRow(); khong callback nao duoc ghi thang vao #inputDirRow.
-const NO_INPUT_DIR = { claim: false, youtube: false, ytthumb: false, claimjazz: false };
+const NO_INPUT_DIR = { claim: false, youtube: false, ytthumb: false, claimjazz: false,
+                       loopovl: false };
 function _syncInputDirRow() {
   const hide = NO_INPUT_DIR.claim || NO_INPUT_DIR.youtube || NO_INPUT_DIR.ytthumb
-            || NO_INPUT_DIR.claimjazz;
+            || NO_INPUT_DIR.claimjazz || NO_INPUT_DIR.loopovl;
   document.getElementById('inputDirRow').style.display = hide ? 'none' : '';
 }
 
@@ -1586,9 +1587,13 @@ window.uiApi = {
     if (show) onLoopModeChanged();
   },
 
+  // Kho video den tu #ovlVideoDir (params.folders.ovlVideo), KHONG tu #inputDir
+  // -> an o Folder Input di, giong claim/youtube/ytthumb/claimjazz.
   showLoopOvlSection(show) {
     document.getElementById('loopOvlSection').style.display = show ? 'block' : 'none';
     if (show) onOvlCountSrcChanged();
+    NO_INPUT_DIR.loopovl = show;
+    _syncInputDirRow();
   },
 
   // Danh sach phong chu co that tren may + kieu chu mac dinh cua preset.
