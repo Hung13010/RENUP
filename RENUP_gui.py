@@ -54,6 +54,13 @@ GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 # dat thay vi ung dung, hoac te hon: file chay goc bi xoa mat).
 UPDATE_ASSET_RE = re.compile(r'^RENUP_Setup_v\d+(?:\.\d+)*\.exe$', re.IGNORECASE)
 
+# Han cho mot lan `ffprobe` doc thong so file. Truoc 2026-09-11 la 10 giay
+# co dinh, va da lam nguoi dung bao loi that khi tai nhac jazz 3 tieng tu
+# Youtube. Do ngay do: file 523 MB doc NGUOI mat 2,1 giay (doc am 0,16s),
+# nen file vai GB vua ghi xong - luc Windows Defender con quet va cac luong
+# khac con dang ghi cung o dia - vuot 10 giay la binh thuong.
+PROBE_TIMEOUT_SEC = 60
+
 
 # ── Youtube Download: regex constants (module-level so they compile once) ──
 YT_ID_PATTERNS = [
@@ -4967,12 +4974,26 @@ class Api:
 
     # ── Helpers ──
 
-    def _probe_spec(self, file_path):
+    def _probe_spec(self, file_path, timeout=PROBE_TIMEOUT_SEC, quiet=False):
         """Probe a media file and return a spec dict for mismatch detection.
 
         Returns a dict with keys:
             v_codec, width, height, fps, pix_fmt, sar, time_base,
             a_codec, sample_rate, channels
+
+        `timeout` mac dinh PROBE_TIMEOUT_SEC (60s), truoc 2026-09-11 la 10s
+        co dinh va DA QUA CHAT: do that ngay do, mot file 523 MB doc NGUOI
+        mat 2,1 giay (doc am chi 0,16s). File tai ve tu Youtube co the vai
+        GB, vua ghi xong nen Windows Defender con dang quet, lai dung dia
+        voi cac luong dang tai khac - 10 giay khong du. Nguoi dung bao loi
+        nay that voi file nhac jazz 3 tieng.
+        Lam lenh "gon hon" KHONG phai cach chua: do lenh chi lay
+        `v:0 codec_name` mat 0,34s so voi 0,16s cua lenh day du - chi phi
+        nam o viec MO va doc file, khong o so truong yeu cau.
+
+        `quiet=True` khi ket qua chi de goi y (vd canh bao codec sau khi tai
+        Youtube): probe hong thi bo qua goi y do chu khong phai loi, nen
+        dung ghi tag 'err' - nguoi dung se tuong ca lan tai bi hong.
 
         `sar` va `time_base` duoc them 2026-09-10 cho `normalize_video`.
         Them khoa la thao tac cong them: moi caller cu doc bang `.get()`
@@ -4998,11 +5019,15 @@ class Api:
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 creationflags=subprocess.CREATE_NO_WINDOW,
-                timeout=10,
+                timeout=timeout,
             )
             data = json.loads(r.stdout)
         except Exception as e:
-            self._log(f"  [probe] Loi khi probe {os.path.basename(file_path)}: {e}", 'err')
+            name = os.path.basename(file_path)
+            if quiet:
+                self._log(f"  [probe] Bo qua kiem codec ({name}): {e}", 'info')
+            else:
+                self._log(f"  [probe] Loi khi probe {name}: {e}", 'err')
             return None
 
         try:
@@ -7399,7 +7424,11 @@ class Api:
             # san ("Convert video", dich MP4, skip_same_codec tranh ma hoa lai
             # file da dung codec).
             if yt_format in ('MP4', 'MP4_NOAUDIO'):
-                probed = self._probe_spec(out_path)
+                # quiet=True: day chi la GOI Y (ADR-017). File da tai xong va
+                # da kiem ton tai o tren; probe hong thi mat loi nhac, khong
+                # mat gi khac - ghi tag 'err' o day lam nguoi dung tuong ca
+                # lan tai that bai (da xay ra that 2026-09-11).
+                probed = self._probe_spec(out_path, quiet=True)
                 v_codec = (probed or {}).get('v_codec')
                 if v_codec and v_codec != 'h264':
                     self._log(
