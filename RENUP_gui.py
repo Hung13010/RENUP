@@ -4700,10 +4700,17 @@ class Api:
                 # Check if scale_cuda filter exists
                 if gpu_name == 'nvenc':
                     self._has_scale_cuda = 'scale_cuda' in output or self._test_scale_cuda()
+                    # Dong nay tung bi doc nham thanh "khong dung GPU" (nguoi
+                    # dung hoi dung cau do 2026-09-11, trong khi log ngay ben
+                    # tren da ghi "GPU detected"). No chi noi ve BO LOC scale,
+                    # va chi cham toi preset nao co `scale=` - viec ma hoa van
+                    # tren GPU. Noi ro ra thay vi de nguoi doc tu suy.
                     if self._has_scale_cuda:
                         self._log("scale_cuda: co", 'info')
                     else:
-                        self._log("scale_cuda: khong co, dung scale CPU", 'info')
+                        self._log("scale_cuda: khong co -> preset nao co"
+                                  " scale= thi thu nho bang CPU (viec ma hoa"
+                                  " van chay tren GPU)", 'info')
                 return self._gpu_encoder
 
         self._gpu_encoder = None
@@ -4791,12 +4798,65 @@ class Api:
         for p in cmd_parts:
             new_parts.append(replacements.get(p, p))
 
+        # Lenh nay co buoc ffmpeg phai DUNG TOI KHUNG O BO NHO HE THONG khong?
+        # Quyet dinh duoc dat o day chu khong phai o `_has_scale_cuda`.
+        #
+        # `-pix_fmt` nam trong danh sach nay du no khong phai bo loc: khung o
+        # dinh dang `cuda` khong phai `yuv420p`, nen ffmpeg tu chen mot bo
+        # chuyen doi va vo ra dung nhu khi co `-vf`. Da do that 2026-09-11 -
+        # convert_video MP4/MOV/MKV deu exit 1, ke ca khi nguon VON DA la
+        # yuv420p. Suy luan "cung dinh dang thi chac khong sao" la sai.
+        needs_cpu_frames = any(
+            p in ('-vf', '-filter:v', '-filter_complex', '-lavfi',
+                  '-filter_complex_script', '-pix_fmt')
+            for p in cmd_parts)
+
         # Insert hwaccel flags before first -i
         hwaccel_flags = hwaccel_map.get(gpu, [])
         if hwaccel_flags:
-            # If no scale_cuda, don't use hwaccel_output_format cuda
-            # (need CPU frames for scale filter)
-            if gpu == 'nvenc' and not self._has_scale_cuda:
+            # GIU KHUNG O TRONG GPU (`-hwaccel_output_format cuda`) thi NVDEC
+            # dua thang sang NVENC, khong phai tai khung ve bo nho he thong
+            # roi day nguoc len. Do 2026-09-11, nguon VP9 3840x2160 60fps tren
+            # GTX 1050 Ti, cung bo ma hoa hevc_nvenc, doan 30 giay, chay HAI
+            # VONG NGUOC CHIEU de loai bien an thu tu:
+            #     -hwaccel cuda (hanh vi cu)      0,717x va 0,676x
+            #     + -hwaccel_output_format cuda   1,86x  va 1,86x  -> 2,7 LAN
+            #     giai ma CPU, khong -hwaccel     1,11x
+            # Dau ra GIONG HET: ca bon lan deu ra 43,65 MB, va PSNR giua hai
+            # duong la inf (moc doi chung cung inf nen phep do co gia tri).
+            # Quy ra video 3h34 cua nguoi dung: 5,1 tieng xuong 1,9 tieng.
+            #
+            # Dang chu y hon: rieng khau GIAI MA, CUDA cham hon CPU (0,946x so
+            # voi 1,43x) khi phai tai khung ve. Tuc `-hwaccel cuda` DUNG MOT
+            # MINH la mot khoan LO - no khong phai "toi uu nua vua", no lam
+            # cham di. Chi bo doi day du moi co lai.
+            #
+            # NHUNG chi dung duoc khi lenh khong cham toi khung o bo nho he
+            # thong: khung o dinh dang `cuda` thi bo loc CPU khong doc noi, ma
+            # ffmpeg 2018 di kem lai khong co `scale_cuda` de loc tren GPU.
+            # Hong la exit 1 chu khong phai cham - "Impossible to convert
+            # between the formats ... auto_scaler_0".
+            #
+            # Dieu kien cu hoi "co scale_cuda khong", va vi ffmpeg di kem
+            # KHONG BAO GIO co no nen `_has_scale_cuda` luon false -> duong
+            # nhanh nay tu truoc toi nay KHONG AI dung duoc, ke ca nhung lenh
+            # hoan toan khong co bo loc. Cau hoi dung la "lenh nay co can
+            # khung o bo nho he thong khong".
+            #
+            # Da chay THAT ca 10 lenh GPU ma app sinh ra duoc (2026-09-11,
+            # nguon VP9 4K60, moi lenh 3 giay nen ti so bi pha loang boi chi
+            # phi khoi dong - con so thuc te la 2,7x o phep do 10 giay):
+            #   Nen HEVC giu chat luong / cao nhat      OK  nhanh 1,83x
+            #   Xoa metadata video + re-encode          OK  nhanh 2,16x
+            #   convert_video FLV                       OK  nhanh 2,12x
+            #   Xoa metadata video (-c:v copy)          OK  0,99x (khong giai
+            #                                               ma nen khong doi)
+            #   Nen video 1920 / CRF24 (-vf)            HONG
+            #   convert_video MP4/MOV/MKV (-pix_fmt)    HONG
+            #
+            # Codec ma NVDEC khong giai ma duoc thi ffmpeg tu lui ve giai ma
+            # phan mem chu khong bao loi - da thu bang nguon ffv1: exit 0.
+            if gpu == 'nvenc' and needs_cpu_frames and not self._has_scale_cuda:
                 hwaccel_flags = ['-hwaccel', 'cuda']
             try:
                 i_idx = new_parts.index('-i')
