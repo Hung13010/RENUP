@@ -355,6 +355,16 @@ button[hidden] { display: none !important; }
 #ovlStageCol { flex: none; }
 #ovlStageCol .ovl-hint { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
 
+/* Nut can giua ngang, nam trong bang kieu chu. Cao 26px cho bang cac o nhap
+   cung hang (.ovl-strow input), va nho hon han hang nut "Ap dung/Dat lai/
+   Huy" o duoi de khong canh tranh thi giac voi chung. */
+.ovl-cbtn {
+  height: 26px; padding: 0 10px; font-size: 11px; border-radius: 5px;
+  cursor: pointer; background: var(--surface2); color: var(--text-muted);
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.ovl-cbtn:hover { background: #e0e0e0; color: var(--text); }
+
 #ovlStylePanel { width: 300px; flex: none; text-align: left; }
 .ovl-strow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; }
 .ovl-strow > span:first-child { width: 56px; flex: none; color: var(--text-muted); }
@@ -1073,6 +1083,10 @@ button[hidden] { display: none !important; }
                  value="140" style="width:58px;">
           <span style="font-size:10px; color:var(--text-muted);">px khi vẽ, không đổi cỡ hiển thị</span></div>
 
+        <div class="ovl-strow"><span></span>
+          <button type="button" class="ovl-cbtn" id="ovlCenterHBtn"
+                  title="Đưa đếm ngược vào giữa khung hình theo chiều ngang">⇔ Căn giữa ngang</button></div>
+
         <div id="ovlStBusy" style="font-size:11px; color:var(--text-muted);
              margin-top:8px; min-height:15px;"></div>
       </div>
@@ -1198,6 +1212,10 @@ function ovlStageSize(bw, bh, panel) {
   // rong: 460px be rong tren ti le 9:16 ra 818px cao, vuot ca cua so.
   // 300 = phan chrome cua hop da do sau khi thu gon o CSS (le 40, icon 24,
   // tieu de 28, dong thong tin 32, chu thich 34, hang nut 54, du phong).
+  // Con so nay phai tang neu them gi vao CHINH COT KHUNG XEM TRUOC: voi video
+  // DOC thi chieu cao la rang buoc, tinh thieu thi day tieu de lan cac nut ra
+  // ngoai man hinh (da xay ra 2026-09-08). Nut "Can giua ngang" nam trong
+  // bang kieu chu ben canh chu khong nam duoi khung, nen khong tinh vao day.
   const maxH = Math.max(200, Math.min(560, window.innerHeight - 300));
   // Tru cho bang kieu chu ben canh (300px + khoang cach + le hop thoai).
   const maxW = Math.max(180, Math.min(OVL_STAGE_W,
@@ -1236,6 +1254,22 @@ function ovlApplyToBox() {
   document.getElementById('ovlNumbers').textContent =
     'x ' + (c.x * 100).toFixed(1) + '%   y ' + (c.y * 100).toFixed(1)
     + '%   rộng ' + (c.w * 100).toFixed(1) + '%';
+}
+
+// ── Can giua ngang ──
+// Chi mot cong thuc, khong can doi he quy chieu: `w` da do theo be rong video
+// nen giong het `x`, nen khoang trong con lai la (1 - w) va chia doi la xong.
+// (Can giua DOC thi khac han - `ar` la ti le cua CHINH anh dem nguoc chu
+// khong phai cua khung video, nen se phai nhan them sw/sh de doi he. Khong
+// lam vi khong duoc yeu cau.)
+function ovlCenterH() { if (ovlState) ovlState.cur.x = (1 - ovlState.cur.w) / 2; }
+
+// Dung de GIU giua khi doi co: o co DANG o giua khong.
+// Dung sai 0,005 (0,5% be rong khung) vi x bi lam tron 4 chu so khi ghi ra
+// #ovlPlace, va mot lan keo tay hiem khi roi dung tuyet doi vao giua.
+function ovlIsCenteredH() {
+  return !!ovlState
+    && Math.abs(ovlState.cur.x - (1 - ovlState.cur.w) / 2) < 0.005;
 }
 
 function ovlSetLabel(c) {
@@ -1398,6 +1432,8 @@ function ovlSetCntImg(p) {
   img.src = p.cntUrl;
   img.style.opacity = (p.opacity == null ? 1 : p.opacity);
   if (ovlState && p.cntW && p.cntH) {
+    // `ar` chi doi CHIEU CAO cua o keo tha, khong doi be rong - nen viec can
+    // giua ngang khong bi anh huong va khong can giu lai gi o day.
     ovlState.ar = p.cntH / p.cntW;   // vien/nen day hon lam doi ti le khung
     ovlApplyToBox();
   }
@@ -1490,12 +1526,16 @@ function ovlShowPreview(p) {
   const box = document.getElementById('ovlBox');
   const handle = document.getElementById('ovlHandle');
   if (!stage || !box || !handle) return;
-  let mode = null, sx = 0, sy = 0, start = null;
+  let mode = null, sx = 0, sy = 0, start = null, keepH = false;
 
   function down(e, m) {
     if (!ovlState) return;
     mode = m; sx = e.clientX; sy = e.clientY;
     start = { x: ovlState.cur.x, y: ovlState.cur.y, w: ovlState.cur.w };
+    // Chot MOT LAN o day chu khong hoi lai trong luc keo: o keo tha se thoi
+    // "dang o giua" ngay khi be rong nhich mot chut, nen hoi lai moi lan
+    // mousemove thi hieu ung giu giua chi song dung mot khung hinh.
+    keepH = (m === 'size') && ovlIsCenteredH();
     e.preventDefault();
     e.stopPropagation();
   }
@@ -1513,10 +1553,20 @@ function ovlShowPreview(p) {
       ovlState.cur.y = Math.min(Math.max(start.y + dy, -0.5), 1);
     } else {
       ovlState.cur.w = Math.min(Math.max(start.w + dx, 0.05), 2);
+      // GIU giua khi doi co, nhung CHI khi o da o giua san tu truoc. O keo
+      // tha chi co nut o goc duoi-phai nen doi co lam mep phai/duoi chay di
+      // con x/y dung yen -> vua bam "Giua ngang" xong ma keo to ra la lech
+      // ngay. Rang buoc "chi khi da o giua" khien no khong the lam phien
+      // nguoi dat dem nguoc lech mot ben co chu y.
+      if (keepH) ovlCenterH();
     }
     ovlApplyToBox();
   });
   document.addEventListener('mouseup', function () { mode = null; });
+
+  document.getElementById('ovlCenterHBtn').onclick = function () {
+    ovlCenterH(); ovlApplyToBox();
+  };
 
   document.getElementById('ovlApplyBtn').onclick = function () {
     if (ovlState) {
