@@ -442,6 +442,11 @@ class Api:
                 'musicDir': state.get('musicDir', '') if isinstance(state, dict) else '',
                 'outputDir': state.get('outputDir', '') if isinstance(state, dict) else '',
                 'workers': state.get('workers', '') if isinstance(state, dict) else '',
+                # Thoi luong output (2026-09-18). Luu lai vi no la lua chon
+                # lap lai giua cac me, giong voiceDir/musicDir - go lai moi
+                # lan mo app la phien. File cu khong co khoa nay -> doc ra ''
+                # -> o nhap de trong -> quay ve mac dinh 60s, dung hanh vi cu.
+                'maxSeconds': state.get('maxSeconds', '') if isinstance(state, dict) else '',
             }
             with open(self.claim_state_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False)
@@ -517,6 +522,10 @@ class Api:
             music = data.get('musicDir', '')
             output = data.get('outputDir', '')
             workers = data.get('workers', '')
+            max_sec = data.get('maxSeconds', '')
+            if max_sec:
+                self._js("var e=document.getElementById('claimMaxSeconds');"
+                         f"if(e) e.value = {json.dumps(str(max_sec))};")
             if voice:
                 self._js(f"document.getElementById('voiceDir').value = {json.dumps(voice)}")
             if music:
@@ -5592,8 +5601,6 @@ class Api:
         device_id = code.get('device_id', '7300000000000000000')
         sample_rate = int(code.get('sample_rate', 44100))
         channels = int(code.get('channels', 2))
-        max_seconds = int(code.get('max_seconds', 60))
-
         if not claim_table:
             self._log("Bang rong.", 'err')
             return
@@ -5613,6 +5620,26 @@ class Api:
             self._log("Khong tim thay yt-dlp.exe (vao Cap nhat yt-dlp).", 'err')
             return
 
+        # Thoi luong output nay den tu O NHAP tren UI (2026-09-18). Truoc do no
+        # chi nam trong preset nen doi mot lan la phai mo file JSON ra sua.
+        # Preset gio chi con giu MAC DINH, giong quan he giua `default_quality`
+        # va `ytQuality` cua youtube_download.
+        # Dat phep kiem nay CUOI chuoi validate de khong xen ngang thu tu thong
+        # bao loi ma nguoi dung da quen ("Bang rong", "Chua chon folder...").
+        _raw_max = str(params.get('claimMaxSeconds', '') or '').strip()
+        if not _raw_max:
+            max_seconds = float(code.get('max_seconds', 60))
+        else:
+            max_seconds = self._parse_time_spec(_raw_max)
+            # Go sai thi DUNG HAN chu khong am tham lui ve mac dinh. Khac voi
+            # cac tham so trinh bay (vd `ovlPlace`) von lui ve mac dinh duoc:
+            # o day lui ve nghia la ca me ra SAI DO DAI, ma me nay ton mang va
+            # ton thoi gian - mot dong bao loi re hon nhieu.
+            if max_seconds is None or max_seconds <= 0:
+                self._log(f"Thoi luong output khong hop le: '{_raw_max}'"
+                          f" - nhan '90' (giay), '1:30' hoac '0:01:30'.", 'err')
+                return
+
         os.makedirs(voice_dir, exist_ok=True)
         os.makedirs(music_dir, exist_ok=True)
         os.makedirs(output_dir, exist_ok=True)
@@ -5625,6 +5652,14 @@ class Api:
         labels = [r['final_name'] for r in rows]
         run_items = self._begin_batch(labels)
         total = len(run_items)
+
+        # In ra CACH APP DA HIEU o nhap, truoc khi tai byte nao - quy tac cua
+        # ADR-014. So tran la cho de hieu nham nhat: '90' la 90 GIAY chu khong
+        # phai 90 phut, va nguoi dung khong co cach nao biet neu app im lang.
+        _src = 'mac dinh' if not _raw_max else f"da nhap '{_raw_max}'"
+        self._log(f"Thoi luong output: toi da {self._fmt_seconds(max_seconds)}"
+                  f" ({max_seconds:g} giay, {_src}). Voice + nhac ngan hon mac"
+                  f" nay thi lay tron, khong dem them.", 'info')
 
         ok_count = [0]
         done_count = [0]

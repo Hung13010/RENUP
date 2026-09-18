@@ -5,5 +5,6 @@
   "device_id": "7300000000000000000",
   "sample_rate": 44100,
   "channels": 2,
+  "_ghi_chu_max_seconds": "Tu 2026-09-18, thoi luong output co O NHAP rieng tren giao dien (Claim Tiktok > Thoi luong output). Gia tri duoi day chi con la MAC DINH, dung khi o do de trong - giong quan he giua 'default_quality' va dropdown 'ytQuality' cua youtube_download. Sua o day thi doi mac dinh cho moi me; sua tren giao dien thi doi rieng me dang chay va duoc nho lai trong bin/claim_state.json. O nhap con nhan ca dang '1:30' va '0:01:30', khong chi nhan so giay.",
   "max_seconds": 60
 }

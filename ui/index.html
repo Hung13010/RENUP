@@ -638,6 +638,12 @@ button[hidden] { display: none !important; }
           <input type="text" id="musicDir" placeholder="Folder luu nhac tai ve (cache)...">
           <button class="browse-btn" onclick="pyApi.browseMusicDir()">📂</button>
         </div>
+        <div class="field-label" style="margin-top:6px;">⏱ Thời lượng output</div>
+        <input type="text" id="claimMaxSeconds"
+               placeholder="60 giây · hoặc 1:30 · để trống = 60">
+        <div style="font-size:10px; color:var(--text-muted); margin-top:3px;">
+          Voice phát trọn, nhạc ghép cho đủ mốc. Tổng ngắn hơn mốc thì lấy trọn, không đệm thêm.
+        </div>
         <div style="margin-top:8px;">
           <button class="btn-sm btn-muted" onclick="pyApi.updateYtDlp()">⟳ Cập nhật yt-dlp</button>
         </div>
@@ -1994,12 +2000,14 @@ function saveClaimState() {
     musicDir:  document.getElementById('musicDir').value,
     outputDir: document.getElementById('outputDir').value,
     workers:   document.getElementById('workers').value,
+    maxSeconds: document.getElementById('claimMaxSeconds').value,
   });
 }
 document.getElementById('voiceDir').addEventListener('change', saveClaimState);
 document.getElementById('musicDir').addEventListener('change', saveClaimState);
 document.getElementById('outputDir').addEventListener('change', saveClaimState);
 document.getElementById('workers').addEventListener('change', saveClaimState);
+document.getElementById('claimMaxSeconds').addEventListener('change', saveClaimState);
 
 function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
@@ -2183,6 +2191,7 @@ const pyApi = new Proxy({}, {
           claimTable: getFieldValue('claimTable'),
           voiceDir: getFieldValue('voiceDir'),
           musicDir: getFieldValue('musicDir'),
+          claimMaxSeconds: getFieldValue('claimMaxSeconds'),
           resizeWidth: getFieldValue('resizeWidth'),
           resizeHeight: getFieldValue('resizeHeight'),
           ytLinks: getFieldValue('ytLinks'),
