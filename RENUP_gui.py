@@ -4105,6 +4105,42 @@ class Api:
                 except OSError:
                     pass
 
+    def _ovl_frame_diff(self, path, dur):
+        """Do muc THAY DOI giua hai khung cach nhau 1 giay - PSNR cang thap
+        thi cang nhieu chuyen dong/chi tiet doi, tuc clip cang 'nang' voi
+        bo ma hoa.
+
+        Dung cho che do ghep GPU+CPU (2026-09-22). Tren kho that cua nguoi
+        dung: hai clip nang do ra 25,9-26,8 dB, clip nhe 35,5 dB - cach
+        nhau du xa de mot nguong don gian phan lan duoc. Tra ve dB (float;
+        hai khung y het nhau tra 999.0), hoac None khi video qua ngan hoac
+        ffmpeg loi. Nguoi goi nen xep None ve lan CPU: xep nham clip nang
+        sang GPU thi file to gap doi, xep nham clip nhe sang CPU chi cham
+        hon mot chut.
+        """
+        if not dur or dur < 2.5:
+            return None
+        t1 = max(0.0, min(1.0, dur * 0.25))
+        t2 = min(t1 + 1.0, dur - 0.2)
+        if t2 - t1 < 0.4:
+            return None
+        try:
+            r = subprocess.run(
+                [self.ffmpeg_path, '-hide_banner',
+                 '-ss', f'{t1:.2f}', '-i', path,
+                 '-ss', f'{t2:.2f}', '-i', path,
+                 '-lavfi', 'psnr', '-frames:v', '1', '-an',
+                 '-f', 'null', '-'],
+                capture_output=True, text=True, timeout=30,
+                encoding='utf-8', errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            m = re.search(r'average:([\d.]+|inf)', r.stderr or '')
+            if not m:
+                return None
+            return 999.0 if m.group(1) == 'inf' else float(m.group(1))
+        except Exception:
+            return None
+
     def _run_loop_overlay(self, params, code):
         folders = params.get('folders') or {}
         video_dir = (folders.get('ovlVideo') or '').strip()
@@ -4263,6 +4299,29 @@ class Api:
             gpu_args = ['-c:v', 'libx264', '-preset', cpu_p,
                         '-crf', str(code.get('crf', 20))]
             enc_tag = f'CPU libx264 {cpu_p} (nho hon ~2x so voi GPU, ADR-031)'
+        # --- Che do GHEP GPU+CPU (2026-09-22): moi con chip lam viec no gioi.
+        # x264 chi thang NVENC ve dung luong o clip NHIEU chuyen dong/chi
+        # tiet (7,6 -> 3,4 Mbps); o clip tinh hai ben ra file BANG NHAU
+        # (2,10 so voi 2,27 Mbps) nen xep clip tinh cho x264 la ton thoi
+        # gian ma khong duoc gi. Khi bat: do muc thay doi giua hai khung
+        # cach nhau 1 giay cua tung video (_ovl_frame_diff), clip nang
+        # (PSNR thap hon nguong) -> CPU x264, clip nhe -> GPU; hai lan chay
+        # tron trong cung mot me.
+        hybrid = (not bool(code.get('prefer_gpu', False))
+                  and bool(code.get('hybrid', False))
+                  and self._detect_gpu() is not None)
+        enc_map = {}
+        if hybrid:
+            enc_tag = (f'GHEP GPU+CPU: clip nang -> {enc_tag.split(" (")[0]},'
+                       f' clip nhe -> GPU')
+        # NVDEC giai ma thay CPU (tuy chon, do roi moi bat): ap cho input
+        # video nen. ADR-030 do duoc kieu nay LO voi 4K60 vi chi phi tai
+        # khung ve, nen chi bat qua preset sau khi do tren noi dung that.
+        hwdec = (['-hwaccel', 'cuda']
+                 if bool(code.get('hw_decode', False))
+                 and self._detect_gpu() == 'nvenc' else [])
+        if hwdec:
+            enc_tag += ' + NVDEC giai ma'
         self._log(f"Tim thay {len(files)} video | {workers} luong"
                   f" | {enc_tag}", 'info')
 
@@ -4292,6 +4351,20 @@ class Api:
                 factor = 1.0
             plan[name] = (cycle, n_c, factor)
             cnt_seconds += cycle if cycle else target
+            if hybrid:
+                db = self._ovl_frame_diff(os.path.join(video_dir, name), bdur)
+                thr = float(code.get('hybrid_threshold_db', 30.0))
+                if db is not None and db >= thr:
+                    g_args, _gt = self._gpu_h264_args(code.get('crf', 20))
+                    enc_map[name] = (g_args,
+                                     f'GPU (khung doi {db:.1f} dB >= {thr:g})')
+                else:
+                    d_txt = (f'khung doi {db:.1f} dB < {thr:g}'
+                             if db is not None else 'khong do duoc -> lan an toan')
+                    # Do khong duoc thi ve lan CPU: xep nham clip nang sang
+                    # GPU la file to gap doi, xep nham clip nhe sang CPU chi
+                    # cham hon mot chut.
+                    enc_map[name] = (gpu_args, f'CPU ({d_txt})')
 
         # --- Dem nguoc: dung san MOT ban da tach nen + thu nho cho ca me ---
         # CHI dung san khi no duoc dung lai du nhieu. Dung san ton mot lan
@@ -4456,6 +4529,10 @@ class Api:
             # dung san ban dem nguoc hay khong - hai viec do phu thuoc nhau
             # nen phai tinh mot cho.
             cycle, n_c_cyc, factor = plan.get(name, (0, 0, 1.0))
+            row_enc, row_tag = enc_map.get(name, (gpu_args, ''))
+            if row_tag:
+                self._log(f"[{idx + 1}/{total}] {name} | lan ma hoa:"
+                          f" {row_tag}", 'info')
 
             # setpts TRUOC fps: no doi dau thoi gian, fps moi lay mau lai.
             # colorkey (neu chua nung vao ban dung san) dat SAU scale - do
@@ -4492,13 +4569,13 @@ class Api:
                         output_dir, f"_ovl_cyc_{uuid.uuid4().hex}.mp4")
                     tmp += [lb, lc, cyc_path]
 
-                    cmd = ([self.ffmpeg_path,
-                            '-f', 'concat', '-safe', '0', '-i', lb]
+                    cmd = ([self.ffmpeg_path] + hwdec
+                           + ['-f', 'concat', '-safe', '0', '-i', lb]
                            + self._ovl_cnt_input(cnt_use, code)
                            + ['-f', 'concat', '-safe', '0', '-i', lc,
                               '-filter_complex', fc, '-map', '[v]', '-an',
                               '-t', f'{cycle:.3f}']
-                           + gpu_args
+                           + row_enc
                            + ['-pix_fmt', 'yuv420p', cyc_path,
                               '-progress', 'pipe:1', '-nostats', '-y'])
                     ok, _ = self._run_ffmpeg_with_table(cmd, idx, cycle, name)
@@ -4531,15 +4608,15 @@ class Api:
                 lb = self._ovl_mklist(src, n_b, 'b', output_dir)
                 lc = self._ovl_mklist(cnt_use, n_c, 'c', output_dir)
                 tmp += [lb, lc]
-                cmd = ([self.ffmpeg_path,
-                        '-f', 'concat', '-safe', '0', '-i', lb]
+                cmd = ([self.ffmpeg_path] + hwdec
+                       + ['-f', 'concat', '-safe', '0', '-i', lb]
                        + self._ovl_cnt_input(cnt_use, code)
                        + ['-f', 'concat', '-safe', '0', '-i', lc,
                           '-i', aud_full,
                           '-filter_complex', fc,
                           '-map', '[v]', '-map', '2:a:0',
                           '-c:a', 'copy', '-t', f'{target:.3f}']
-                       + gpu_args
+                       + row_enc
                        + ['-pix_fmt', 'yuv420p', '-movflags', '+faststart',
                           os.path.join(output_dir, name),
                           '-progress', 'pipe:1', '-nostats', '-y'])
