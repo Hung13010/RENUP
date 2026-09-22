@@ -4242,7 +4242,27 @@ class Api:
         run_items = self._begin_batch(files)
         total = len(run_items)
 
-        gpu_args, enc_tag = self._gpu_h264_args(code.get('crf', 20))
+        # Bo ma hoa cho buoc ghep. Tu 2026-09-22 mac dinh la CPU x264 medium
+        # chu KHONG uu tien GPU nua (ADR-031) - cho thu BA trong app co y
+        # tu choi GPU, sau _jazz_image_to_clip va normalize_video nhom C,
+        # nen DUNG "don cho dong bo". So do tren chinh kho cua nguoi dung
+        # (tranh ve anime nhieu chi tiet, 1080x1920 30fps, hai clip nang):
+        #     NVENC constqp qp23:  7,6 / 7,6 Mbps   SSIM 0,976 / 0,954
+        #     NVENC constqp qp26:  4,4 / 4,3        SSIM 0,952 / 0,942
+        #     x264 crf23 medium:   3,4 / 3,7        SSIM 0,980 / 0,968
+        # -> x264 cho file CHUA BANG MOT NUA ma chat luong do duoc con CAO
+        # HON; NVENC khong nam tren duong bien toi uu o bat ky qp nao voi
+        # noi dung nay (qp26 van to hon x264 ma xau hon ro). vbr_hq cung da
+        # thu va khong cuu duoc gi. Gia phai tra la toc do ma hoa; tang o
+        # Luong bu duoc phan lon. Preset 'prefer_gpu: true' lay lai duong
+        # NVENC cu ma khong can rebuild.
+        if bool(code.get('prefer_gpu', False)):
+            gpu_args, enc_tag = self._gpu_h264_args(code.get('crf', 20))
+        else:
+            cpu_p = str(code.get('cpu_preset', 'medium'))
+            gpu_args = ['-c:v', 'libx264', '-preset', cpu_p,
+                        '-crf', str(code.get('crf', 20))]
+            enc_tag = f'CPU libx264 {cpu_p} (nho hon ~2x so voi GPU, ADR-031)'
         self._log(f"Tim thay {len(files)} video | {workers} luong"
                   f" | {enc_tag}", 'info')
 
