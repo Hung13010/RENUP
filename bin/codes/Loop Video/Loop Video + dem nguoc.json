@@ -61,7 +61,8 @@
   "sample_rate": 44100,
   "channels": 2,
 
-  "crf": 20,
+  "_ghi_chu_crf": "23 tu 2026-09-22 theo yeu cau nguoi dung (giam dung luong). Gia tri nay di qua _gpu_h264_args: co GPU thi thanh '-qp' cua NVENC, khong co thi thanh '-crf' cua x264. Do that tren video doc 1080x1920 60fps: qp 20 -> qp 23 giam 23% dung luong, SSIM 0,9941 -> 0,9928 (mat thuong khong phan biet duoc), toc do y het. LUU Y truoc khi ha them: NVENC constqp la che do PHI BIT - cung chat luong do duoc (~0,992), x264 crf 20 medium cho file NHO HON MOT NUA (22 MB so voi 39 MB tren doan thu) nhung cham gap ~4 lan; con vbr_hq cua NVENC thi DA THU VA KHONG CUU DUOC GI (cung co file thi chat luong ngang constqp). Dung luong output chenh nhau giua cac video la hanh vi dung cua che do chat luong co dinh: clip nguon nhieu chuyen dong/nhieu hat ton ~10 Mbps moi giay, clip tinh chi ~2,5 Mbps.",
+  "crf": 23,
 
   "_ghi_chu_alpha": "Da kiem chung tren ffmpeg 2018 di kem (2026-09-08): .mov QuickTime RLE va .mov ProRes 4444 deu ghep dung - overlay hien, nen lot qua vung trong suot. .webm VP8/VP9 alpha CHUA kiem chung duoc vi chinh ban ffmpeg nay khong tao noi file thu co alpha. Voi .webm app them '-c:v libvpx-vp9' truoc input do, vi bo giai ma vp9 goc cua ffmpeg bo kenh alpha con libvpx thi giu.",
   "webm_decoder": "libvpx-vp9",
