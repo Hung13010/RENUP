@@ -143,6 +143,11 @@ class Api:
         self.ffprobe_path = os.path.join(self.bin_dir, 'ffprobe.exe')
         self.noi_txt_path = os.path.join(self.bin_dir, 'Noi.txt')
         self.claim_state_path = os.path.join(self.bin_dir, 'claim_state.json')
+        # Trang thai cua 'Loop Video + dem nguoc' (2026-09-23): duong dan ba o,
+        # thoi luong, vi tri can chinh va kieu chu - de mo app lan sau khong
+        # phai chinh lai. Cung khuon voi claim_state.json; .gitignore da chan
+        # theo mau bin/*_state.json nen khong can them dong nao.
+        self.ovl_state_path = os.path.join(self.bin_dir, 'ovl_state.json')
         # ADR-015: khoa Youtube Data API v3 do NGUOI DUNG tu tao. La thong tin
         # nhay cam nen KHONG duoc nam trong ma nguon hay trong preset JSON di
         # kem bo cai - luu rieng ra file nay, va file nay nam trong .gitignore.
@@ -353,6 +358,7 @@ class Api:
         self._js("onFuncChanged()")
         self._load_noi_txt()
         self._load_claim_state()
+        self._load_ovl_state()
         # Khoi phuc khoa API da luu vao o nhap (o dang password nen khong lo ra
         # man hinh). Khong log gi o day - im lang la dung, va tuyet doi khong
         # duoc ghi khoa ra log.
@@ -452,6 +458,45 @@ class Api:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as e:
             self._log(f"Loi luu claim state: {e}", 'err')
+
+    def saveOvlState(self, state):
+        """Luu trang thai 'Loop Video + dem nguoc' vao bin/ovl_state.json.
+
+        Frontend goi moi khi mot truong doi (ke ca kieu chu, vi kieu chu duoc
+        ap song song vao #ovlStyle chu khong cho nut Ap dung). Khong log khi
+        thanh cong de khoi nhieu - giong saveClaimState.
+
+        CO Y khong luu outputDir/workers: _load_claim_state da khoi phuc hai
+        o do luc khoi dong, hai nguoi cung ghi thi ai chay sau se de len
+        nguoi truoc mot cach kho doan.
+        """
+        try:
+            keys = ('videoDir', 'audio', 'countSrc', 'countPath', 'time',
+                    'place', 'style')
+            data = {k: (state.get(k, '') if isinstance(state, dict) else '')
+                    for k in keys}
+            with open(self.ovl_state_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception as e:
+            self._log(f"Loi luu ovl state: {e}", 'err')
+
+    def _load_ovl_state(self):
+        """Khoi phuc trang thai 'Loop Video + dem nguoc' tu ovl_state.json.
+
+        Do MOT cuc JSON sang JS cho ham toan cuc ovlRestoreState() tu dien -
+        khong evaluate_js tung truong nhu _load_claim_state, vi o day con
+        phai cap nhat hai nhan (#ovlPlaceLabel, #ovlStyleLabel) tu gia tri
+        vua do, ma logic dung nhan nam san ben JS.
+        """
+        try:
+            if not os.path.exists(self.ovl_state_path):
+                return
+            with open(self.ovl_state_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict) and any(data.values()):
+                self._js(f"ovlRestoreState({json.dumps(data, ensure_ascii=False)})")
+        except Exception as e:
+            self._log(f"Loi tai ovl state: {e}", 'err')
 
     def saveYtApiKey(self, key):
         """Luu khoa Youtube Data API v3 vao bin/yt_api_key.txt.
@@ -4334,11 +4379,21 @@ class Api:
         stretch_on = bool(code.get('stretch_countdown', True))
         tol = float(code.get('stretch_tolerance', 0.02))
         cnt_seconds = 0.0
+        # --- Giu soundeffect cua video (2026-09-23): video nao CO SAN tieng
+        # thi tieng do duoc giu va TRON voi nhac (ca hai 100%), thay vi bi
+        # bo nhu truoc. Tu nhan bang ffprobe tung file - nguoi dung chon
+        # "tu nhan" thay vi checkbox. Duong ve khi mot kho co tap am khong
+        # mong muon: preset "keep_video_audio": false (khong can rebuild).
+        keep_sfx = bool(code.get('keep_video_audio', True))
+        sfx = {}
         for name in files:
             info = self._ovl_probe(os.path.join(video_dir, name))
             infos[name] = info
             if not info:
                 continue
+            if keep_sfx and self._has_audio_stream(
+                    os.path.join(video_dir, name)):
+                sfx[name] = True
             bdur, bfps = info[3], info[2]
             fit = (self._ovl_fit_cycle(bdur, cnt_dur, target, cap, tol)
                    if stretch_on else None)
@@ -4365,6 +4420,25 @@ class Api:
                     # GPU la file to gap doi, xep nham clip nhe sang CPU chi
                     # cham hon mot chut.
                     enc_map[name] = (gpu_args, f'CPU ({d_txt})')
+
+        if sfx:
+            self._log(f"{len(sfx)}/{len(files)} video co san tieng -> giu"
+                      f" soundeffect, tron voi nhac (ca hai 100%).", 'info')
+        # Bo loc tron tieng, dung chung cho ca hai duong. amix chia deu bien
+        # do cho so duong vao (moi duong con 1/2) va ffmpeg 2018 di kem CHUA
+        # co tuy chon normalize de tat viec do -> volume=2 sau amix de tra
+        # ca hai ve dung 100%. aformat ep cung sample rate/layout truoc khi
+        # tron: tieng cua video nguoi dung co the la 48000/mono trong khi
+        # ban nhac da dung o sample_rate cua preset.
+        mix_sr = int(code.get('sample_rate', 44100))
+        mix_ch = int(code.get('channels', 2))
+        mix_lay = 'stereo' if mix_ch >= 2 else 'mono'
+        mix_br = str(code.get('audio_bitrate', '192k'))
+
+        def mix_fc(sfx_lbl, mus_lbl):
+            af = f"aformat=sample_rates={mix_sr}:channel_layouts={mix_lay}"
+            return (f"[{sfx_lbl}]{af}[sa];[{mus_lbl}]{af}[ma];"
+                    f"[sa][ma]amix=inputs=2:duration=longest,volume=2[a]")
 
         # --- Dem nguoc: dung san MOT ban da tach nen + thu nho cho ca me ---
         # CHI dung san khi no duoc dung lai du nhieu. Dung san ton mot lan
@@ -4504,6 +4578,10 @@ class Api:
             if len(aud_list) > 1:
                 self._log(f"[{idx + 1}/{total}] {name}  <-  nhac:"
                           f" {os.path.basename(pair[name])}", 'info')
+            row_sfx = sfx.get(name, False)
+            if row_sfx:
+                self._log(f"[{idx + 1}/{total}] {name} | co tieng san ->"
+                          f" giu va tron voi nhac", 'info')
             info = infos.get(name)
             if not info:
                 self._log(f"[{idx + 1}/{total}] Khong doc duoc video: {name}",
@@ -4582,12 +4660,48 @@ class Api:
                     if not ok:
                         return False
 
+                    # Duong chu ky: hinh chi ma hoa MOT chu ky, nhung tieng
+                    # tron thi phai dai du moc (nhac khong lap theo chu ky
+                    # cua hinh) -> dung rieng mot ban tieng cho DONG nay roi
+                    # van chep luong vao buoc ghep cuoi. Gia: mot lan ma hoa
+                    # AAC dai `target` moi dong co tieng (7,9-15x thoi gian
+                    # thuc, ADR-024) - van re hon nhieu so voi bo duong chu
+                    # ky. Dat SAU buoc ma hoa chu ky de thanh tien trinh cua
+                    # dong da chay xong phan chinh roi moi toi khuc "cham".
+                    aud_use = aud_full
+                    if row_sfx:
+                        self._log(f"[{idx + 1}/{total}] Dang tron tieng cua"
+                                  f" video voi nhac ({name})...", 'info')
+                        n_a = max(1, int(math.ceil(target / bdur)))
+                        la = self._ovl_mklist(src, n_a, 'sa', output_dir)
+                        mixp = os.path.join(
+                            output_dir, f"_ovl_mix_{uuid.uuid4().hex}.m4a")
+                        tmp += [la, mixp]
+                        ok_m, err_m = self._ffmpeg_quiet([
+                            self.ffmpeg_path,
+                            '-f', 'concat', '-safe', '0', '-i', la,
+                            '-i', aud_full,
+                            '-filter_complex', mix_fc('0:a', '1:a'),
+                            '-map', '[a]', '-vn',
+                            '-c:a', 'aac', '-b:a', mix_br,
+                            '-ar', str(mix_sr), '-ac', str(mix_ch),
+                            '-t', f'{target:.3f}', mixp, '-y'])
+                        if ok_m and os.path.exists(mixp):
+                            aud_use = mixp
+                        else:
+                            # Tron hong thi dong nay VAN ra file (chi co
+                            # nhac) kem mot dong do - per-row isolation:
+                            # khong bo ca dong vi loi o mot lop tieng phu.
+                            self._log(f"[{idx + 1}/{total}] Khong tron duoc"
+                                      f" tieng cua video, output chi co nhac"
+                                      f" ({name}): {err_m}", 'err')
+
                     lcyc = self._ovl_mklist(cyc_path, n_cyc, 'y', output_dir)
                     tmp.append(lcyc)
                     ok, err = self._ffmpeg_quiet([
                         self.ffmpeg_path,
                         '-f', 'concat', '-safe', '0', '-i', lcyc,
-                        '-i', aud_full,
+                        '-i', aud_use,
                         '-map', '0:v:0', '-map', '1:a:0',
                         '-c:v', 'copy', '-c:a', 'copy',
                         '-t', f'{target:.3f}', '-movflags', '+faststart',
@@ -4608,14 +4722,27 @@ class Api:
                 lb = self._ovl_mklist(src, n_b, 'b', output_dir)
                 lc = self._ovl_mklist(cnt_use, n_c, 'c', output_dir)
                 tmp += [lb, lc]
+                # Co tieng san thi tron ngay trong CUNG lenh nay: duong thang
+                # von phai ma hoa het chieu dai nen mot nhanh tieng them vao
+                # gan nhu mien phi so voi phan hinh, va tien trinh cua dong
+                # van la mot lenh duy nhat. [0:a] la tieng cua danh sach
+                # concat video nen no tu lap theo hinh (ADR-022 da kiem
+                # chung concat demuxer lo tieng ra [0:a]).
+                if row_sfx:
+                    fc_full = fc + ';' + mix_fc('0:a', '2:a')
+                    a_args = ['-map', '[a]', '-c:a', 'aac', '-b:a', mix_br,
+                              '-ar', str(mix_sr), '-ac', str(mix_ch)]
+                else:
+                    fc_full = fc
+                    a_args = ['-map', '2:a:0', '-c:a', 'copy']
                 cmd = ([self.ffmpeg_path] + hwdec
                        + ['-f', 'concat', '-safe', '0', '-i', lb]
                        + self._ovl_cnt_input(cnt_use, code)
                        + ['-f', 'concat', '-safe', '0', '-i', lc,
                           '-i', aud_full,
-                          '-filter_complex', fc,
-                          '-map', '[v]', '-map', '2:a:0',
-                          '-c:a', 'copy', '-t', f'{target:.3f}']
+                          '-filter_complex', fc_full,
+                          '-map', '[v]'] + a_args
+                       + ['-t', f'{target:.3f}']
                        + row_enc
                        + ['-pix_fmt', 'yuv420p', '-movflags', '+faststart',
                           os.path.join(output_dir, name),

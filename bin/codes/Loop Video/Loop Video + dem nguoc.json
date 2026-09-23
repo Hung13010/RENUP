@@ -61,6 +61,9 @@
   "sample_rate": 44100,
   "channels": 2,
 
+  "_ghi_chu_giu_tieng": "TU 2026-09-23: video nao CO SAN tieng (soundeffect) thi tieng do duoc GIU va TRON voi nhac - ca hai o 100% (amix chia doi bien do tung duong nen co volume=2 bu lai; ffmpeg 2018 di kem chua co tuy chon normalize). Tu nhan bang ffprobe tung file, video cam thi van nhu cu (chi co nhac). Gia phai tra: dong nao co tieng thi mat them mot lan ma hoa AAC dai du moc o duong chu ky (7,9-15x thoi gian thuc, vai phut cho moc 1 gio), con duong ma hoa thang thi tron ngay trong cung lenh nen gan nhu mien phi. Dat false neu kho video co tap am khong mong muon - khi do moi output chi co nhac nhu truoc.",
+  "keep_video_audio": true,
+
   "_ghi_chu_bo_ma_hoa": "MAC DINH LA CPU x264 medium, KHONG uu tien GPU (ADR-031, 2026-09-22) - nguoc voi hau het chuc nang ma hoa khac cua app, va la lua chon co so do nen dung 'don cho dong bo'. Do tren chinh kho cua nguoi dung (tranh ve anime nhieu chi tiet, 1080x1920 30fps): NVENC qp23 cho 7,6 Mbps o SSIM 0,976/0,954, trong khi x264 crf23 medium cho 3,4-3,7 Mbps o SSIM 0,980/0,968 - tuc file CHUA BANG MOT NUA ma chat luong do duoc con CAO HON. NVENC khong nam tren duong bien toi uu o bat ky qp nao voi noi dung nay (qp26: 4,3-4,4 Mbps nhung SSIM tut xuong 0,942-0,952, van to hon x264 ma xau hon ro); vbr_hq cung DA THU VA KHONG CUU DUOC GI. Gia phai tra la toc do ma hoa cham hon - tang o Luong len 3-4 bu duoc phan lon. Dat prefer_gpu = true de lay lai duong NVENC (nhanh hon, file to gap ~2 lan).",
   "prefer_gpu": false,
 

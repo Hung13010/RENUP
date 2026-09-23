@@ -1024,7 +1024,15 @@ button[hidden] { display: none !important; }
         </div>
         <div class="ovl-hint">
           Kéo để đặt vị trí · kéo ô góc để đổi cỡ<br>
+          <!-- O nhap co nam CUNG DONG voi day so x/y (thay cho chu 'rong'
+               cu), khong them dong moi - chieu cao cot khung xem truoc la
+               rang buoc voi video DOC va hang so chrome 300 cua ovlStageSize
+               da duoc tinh cho dung so dong nay. -->
           <span id="ovlNumbers" style="font-family:monospace;"></span>
+          <span style="white-space:nowrap;">rộng
+            <input type="number" id="ovlSizeInput" min="5" max="200" step="1"
+                   title="Cỡ đếm ngược, tính theo % bề rộng video — nhập số hoặc bấm mũi tên để nhích ±1"
+                   style="width:54px; height:20px; font-size:11px; text-align:right;">%</span>
         </div>
       </div>
 
@@ -1259,7 +1267,12 @@ function ovlApplyToBox() {
   box.style.top = (c.y * sh) + 'px';
   document.getElementById('ovlNumbers').textContent =
     'x ' + (c.x * 100).toFixed(1) + '%   y ' + (c.y * 100).toFixed(1)
-    + '%   rộng ' + (c.w * 100).toFixed(1) + '%';
+    + '%  ';
+  // Do lai o nhap co, TRU khi nguoi dung dang go trong chinh o do - ghi de
+  // giua chung vua lam mat thu ho dang go, vua gay tranh cai toFixed voi
+  // gia tri ma spinner vua dat.
+  const si = document.getElementById('ovlSizeInput');
+  if (si && document.activeElement !== si) si.value = (c.w * 100).toFixed(1);
 }
 
 // ── Can giua ngang ──
@@ -1400,6 +1413,19 @@ function ovlStyleRead() {
   };
 }
 
+// Dung nhan cho #ovlStyleLabel tu MOT object kieu chu. Tach rieng vi hai
+// noi cung can: ovlStyleSave (doc tu form) va ovlRestoreState (doc tu
+// ovl_state.json luc khoi dong, khi form CHUA duoc do gia tri).
+function ovlStyleLabelOf(st) {
+  const bits = [];
+  if (st.border > 0) bits.push('viền ' + st.border);
+  if (st.shadow > 0) bits.push('bóng ' + st.shadow);
+  if (st.box) bits.push('nền mờ');
+  if (st.opacity < 0.999) bits.push('mờ ' + Math.round(st.opacity * 100) + '%');
+  return 'kiểu: ' + String(st.color || '#ffffff').replace(/@.*/, '')
+    + (bits.length ? ' · ' + bits.join(' · ') : ' · trơn');
+}
+
 function ovlStyleSave() {
   const st = ovlStyleRead();
   ovlG('ovlStyle').value = JSON.stringify(st);
@@ -1408,14 +1434,8 @@ function ovlStyleSave() {
     Math.round(st.box_opacity * 100) + '%';
   const img = ovlG('ovlCntImg');
   if (img) img.style.opacity = st.opacity;
-  const bits = [];
-  if (st.border > 0) bits.push('viền ' + st.border);
-  if (st.shadow > 0) bits.push('bóng ' + st.shadow);
-  if (st.box) bits.push('nền mờ');
-  if (st.opacity < 0.999) bits.push('mờ ' + Math.round(st.opacity * 100) + '%');
-  ovlG('ovlStyleLabel').textContent =
-    'kiểu: ' + st.color.replace(/@.*/, '')
-    + (bits.length ? ' · ' + bits.join(' · ') : ' · trơn');
+  ovlG('ovlStyleLabel').textContent = ovlStyleLabelOf(st);
+  ovlSaveState();
 }
 
 function ovlStyleRerender() {
@@ -1473,6 +1493,54 @@ function ovlSetCntImg(p) {
     ovlStyleFill(cur);   // KHONG xoa o 'kieu mau' - van dung y nguyen no
     ovlStyleRerender();
   });
+})();
+
+// ══ LOOP + DEM NGUOC: luu / khoi phuc trang thai (2026-09-23) ═════════════
+// Nguoi dung yeu cau "luu lai thong so cu de sau khong can chinh lai".
+// Cung khuon voi claim_state.json: JS gui ca cum sang Python moi khi mot
+// gia tri doi, Python ghi bin/ovl_state.json va do nguoc lai luc khoi dong.
+// pyApi la Proxy tu bo qua khi bridge chua san sang, nen goi som khong sao.
+function ovlSaveState() {
+  pyApi.saveOvlState({
+    videoDir: ovlG('ovlVideoDir').value,
+    audio: ovlG('ovlAudio').value,
+    countSrc: ovlG('ovlCountSrc').value,
+    countPath: ovlG('ovlCountPath').value,
+    time: ovlG('ovlTime').value,
+    place: ovlG('ovlPlace').value,
+    style: ovlG('ovlStyle').value,
+  });
+}
+
+// Python goi ham toan cuc nay luc khoi dong voi noi dung ovl_state.json.
+// Chi do vao cac o + cap nhat hai nhan; form kieu chu trong popup se tu
+// doc lai #ovlStyle khi mo chuc nang (setOvlStyleDefaults da uu tien gia
+// tri co san trong o an hon mac dinh cua preset).
+function ovlRestoreState(d) {
+  if (!d) return;
+  const set = (id, v) => { const el = ovlG(id); if (el && v) el.value = v; };
+  set('ovlVideoDir', d.videoDir);
+  set('ovlAudio', d.audio);
+  if (d.countSrc) { ovlG('ovlCountSrc').value = d.countSrc; onOvlCountSrcChanged(); }
+  set('ovlCountPath', d.countPath);
+  set('ovlTime', d.time);
+  set('ovlPlace', d.place);
+  set('ovlStyle', d.style);
+  ovlSetLabel(ovlReadPlace());
+  try {
+    const st = JSON.parse(d.style || 'null');
+    if (st) ovlG('ovlStyleLabel').textContent = ovlStyleLabelOf(st);
+  } catch (e) { /* kieu hong -> giu nhan mac dinh, khong bao loi */ }
+}
+
+(function ovlInitState() {
+  // 'change' bat ca go tay lan dan duong dan; cac nut duyet di duong
+  // uiApi.setOvlField nen duoc moc rieng o do.
+  ['ovlVideoDir', 'ovlAudio', 'ovlCountSrc', 'ovlCountPath', 'ovlTime']
+    .forEach(function (id) {
+      const el = ovlG(id);
+      if (el) el.addEventListener('change', ovlSaveState);
+    });
 })();
 
 // Python goi thang ham toan cuc nay (khong qua uiApi) - dung tien le
@@ -1574,12 +1642,31 @@ function ovlShowPreview(p) {
     ovlCenterH(); ovlApplyToBox();
   };
 
+  // O nhap co hien thi (2026-09-23): "toi keo nhung vi du chi muon to them
+  // 1 co thi toi se nhap vao" - keo goc cho tho, o so cho tinh. Dong bo hai
+  // chieu voi keo goc; mui ten spinner nhich +-1 (%). Nghe 'change' chu
+  // khong 'input': go "5" tren duong toi "50" ma ap ngay thi o keo tha nhay
+  // ve 5% giua chung. Cung bien 5-200% voi keo goc (0.05-2), va cung quy
+  // tac giu-giua: chi giu khi o DA o giua san (nhu keepH cua keo goc).
+  document.getElementById('ovlSizeInput').addEventListener('change', function () {
+    if (!ovlState) return;
+    let v = parseFloat(this.value);
+    if (isNaN(v)) { ovlApplyToBox(); return; }
+    v = Math.min(Math.max(v, 5), 200);
+    if (parseFloat(this.value) !== v) this.value = v;   // hien gia tri da kep
+    const keep = ovlIsCenteredH();
+    ovlState.cur.w = v / 100;
+    if (keep) ovlCenterH();
+    ovlApplyToBox();
+  });
+
   document.getElementById('ovlApplyBtn').onclick = function () {
     if (ovlState) {
       const c = ovlState.cur;
       const v = { x: +c.x.toFixed(4), y: +c.y.toFixed(4), w: +c.w.toFixed(4) };
       document.getElementById('ovlPlace').value = JSON.stringify(v);
       ovlSetLabel(v);
+      ovlSaveState();
     }
     ovlClosePreview();
   };
@@ -1673,6 +1760,8 @@ window.uiApi = {
       video: 'ovlVideoDir', audio: 'ovlAudio', count: 'ovlCountPath',
     }[key]);
     if (el) el.value = path;
+    // Chon qua nut duyet khong ban su kien 'change' cua o nhap -> luu o day.
+    ovlSaveState();
   },
 
   showResizeSection(show) {
