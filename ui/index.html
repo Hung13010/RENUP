@@ -739,6 +739,17 @@ button[hidden] { display: none !important; }
           </label>
         </div>
 
+        <!-- ADR-034: ep fps dau ra. Checkbox (nguoi dung chot 2026-10-02) mac
+             dinh BAT; con so 29.97 nam trong preset (output_fps), khong nam
+             o day. An khi dinh dang MP3 (khong co hinh) - xem onYtFormatChanged. -->
+        <div class="settings-row" id="ytFpsRow" style="margin-top:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"
+                 title="Video tải về lệch 29.97 fps sẽ được mã hoá lại về 29.97 (CPU x264) ngay sau khi tải — video dài tốn thêm nhiều phút. Video đúng fps sẵn thì giữ nguyên, không mã hoá.">
+            <input type="checkbox" id="ytFpsEnable" checked>
+            <span>🎞 Ép video về 29.97 fps (mã hoá lại sau khi tải)</span>
+          </label>
+        </div>
+
         <div class="settings-row" style="margin-top:8px;">
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
             <input type="checkbox" id="ytSectionEnable" onchange="onYtSectionToggled()">
@@ -1146,6 +1157,8 @@ function onYtFormatChanged() {
   // chi an voi MP3 - khong con la "khac MP4 thi an" nua.
   const isMp3 = document.getElementById('ytFormat').value === 'MP3';
   document.getElementById('ytQualityRow').style.display = isMp3 ? 'none' : '';
+  // Ep fps (ADR-034) cung chi co nghia voi dinh dang co hinh.
+  document.getElementById('ytFpsRow').style.display = isMp3 ? 'none' : '';
 }
 
 // Hien/an hai o nhap khoang thoi gian. Dung checkbox thay vi "de trong = tat"
@@ -2286,6 +2299,7 @@ const pyApi = new Proxy({}, {
           ytLinks: getFieldValue('ytLinks'),
           ytFormat: getFieldValue('ytFormat'),
           ytWriteThumbnail: getFieldChecked('ytWriteThumbnail'),
+          ytFpsEnable: getFieldChecked('ytFpsEnable'),
           ytSectionEnable: getFieldChecked('ytSectionEnable'),
           ytSectionStart: getFieldValue('ytSectionStart'),
           ytSectionDuration: getFieldValue('ytSectionDuration'),

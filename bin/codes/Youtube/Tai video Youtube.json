@@ -22,5 +22,9 @@
   "fragment_retries": 10,
   "socket_timeout": 30,
   "mp3_quality": "0",
-  "max_filename_len": 150
+  "max_filename_len": 150,
+  "_ghi_chu_ep_fps": "ADR-034 (2026-10-02, nguoi dung chot). Checkbox 'Ep video ve 29.97 fps' tren UI bat/tat TUNG ME; output_fps o day quyet dinh CON SO dich. Logic tai KHONG doi (van remux, ADR-005) - day la mot luot ma hoa lai RIENG chay sau khi tai xong, bang CPU x264 (fps_preset/fps_crf, cung ly do normalize_video nhom C: chat luong/dung luong truoc toc do). MOI video lech fps dich deu bi ep - ke ca 30.000 (nguoi dung chot 'moi video lech 29.97') va ke ca 24fps (bi NHAN khung nen hoi giat - da canh bao khi hoi). Video dung 29.97 san thi giu nguyen, khong ma hoa. '29.97' duoc map sang phan so chinh tac 30000/1001 (ffmpeg hieu '29.97' tho la 2997/100 - KHAC 30000/1001, gay lech dau thoi gian tren timescale 30000). De trong ('') = tat han tinh nang, checkbox tren UI mat tac dung. Gia tri khong doc duoc -> batch DUNG voi loi ro (khong am tham roi ve 'khong ep' - ca me se ra sai fps ma khong ai biet). Ep fps hong thi dong do bao error nhung file tai van con nguyen; chay lai dong loi se CHI ep fps lai chu khong tai lai (skip-existing nay kiem ca fps).",
+  "output_fps": "29.97",
+  "fps_crf": 18,
+  "fps_preset": "medium"
 }

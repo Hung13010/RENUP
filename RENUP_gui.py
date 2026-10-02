@@ -7306,6 +7306,39 @@ class Api:
             return f"{kb / 1024:.2f}MiB/s"
         return f"{kb:.0f}KiB/s"
 
+    @staticmethod
+    def _parse_fps_spec(value):
+        """'29.97' -> (30000, 1001). Tra ve (num, den) hoac None neu khong doc duoc.
+
+        Cac nhip NTSC phai tra ve dung phan so chinh tac: ffmpeg hieu
+        'fps=29.97' la 2997/100 chu KHONG phai 30000/1001, va 2997/100 tren
+        timescale 30000 cho khoang cach tick khong nguyen -> dau thoi gian
+        bi lech dan. Nen '29.97' bat buoc map sang 30000/1001 chu khong duoc
+        truyen thang chuoi nguoi dung go vao bo loc.
+        """
+        v = str(value or '').strip()
+        if not v:
+            return None
+        if '/' in v:
+            try:
+                num, den = (int(x) for x in v.split('/', 1))
+            except ValueError:
+                return None
+            return (num, den) if num > 0 and den > 0 else None
+        try:
+            f = float(v)
+        except ValueError:
+            return None
+        if f <= 0:
+            return None
+        for ntsc, frac in ((23.976, (24000, 1001)), (29.97, (30000, 1001)),
+                           (59.94, (60000, 1001)), (119.88, (120000, 1001))):
+            if abs(f - ntsc) < 0.005:
+                return frac
+        if abs(f - round(f)) < 1e-9:
+            return (int(round(f)), 1)
+        return (int(round(f * 1000)), 1000)
+
     def _resolve_js_runtime(self, spec):
         """Bien gia tri preset `js_runtimes` thanh doi so cho `--js-runtimes`.
 
@@ -7454,6 +7487,151 @@ class Api:
                 self._log(f"Da xoa file rac: {name}", 'info')
             except OSError:
                 pass
+
+    def _yt_fps_convert(self, idx, out_path, title, settings, probed=None):
+        """Ep file video da tai ve dung fps dich (ADR-034) - buoc SAU khi tai.
+
+        Logic tai khong doi (van remux, khong re-encode luc tai - ADR-005);
+        day la mot luot ma hoa lai rieng chay tren file da nam tren dia, nen
+        no cung chay duoc cho file CO SAN trong Output (duong skip-existing).
+
+        Tra ve 'converted' | 'skipped' | False. False = file goc van nguyen
+        ven tren dia (ma hoa ra file tam roi os.replace, hong giua chung thi
+        chi mat file tam) - dong bi danh 'error' de nguoi dung THAY, va lan
+        chay lai se chi ep fps chu khong tai lai (skip-existing kiem fps).
+
+        Khong doc duoc fps (probe hong) thi EP CHO CHAC chu khong bo qua:
+        ep mot file von da dung fps chi ton mot luot ma hoa thua, con bo qua
+        mot file 60fps la ket qua sai am tham - dung huong hong an toan.
+
+        CPU x264 (nguoi dung chot 2026-10-02, cung ly do voi normalize_video
+        nhom C: chat luong/dung luong truoc toc do). crf/preset tu preset
+        (`fps_crf`/`fps_preset`), mac dinh 18/medium nhu normalize.
+        """
+        num, den = settings['fps_target']
+        tgt_disp = f"{num / den:.5g}"
+
+        if probed is None:
+            probed = self._probe_spec(out_path, quiet=True)
+
+        src_disp = '?'
+        fr = (probed or {}).get('fps') or ''
+        try:
+            s_num, s_den = (int(x) for x in str(fr).split('/', 1))
+            src = s_num / s_den
+            src_disp = f"{src:.5g}"
+            # 30.000 so voi 29.970 lech 0,1% nen nguong phai chat hon the
+            # (nguoi dung chot: 30.000 CUNG bi ep). 0,05% du bat moi bien the
+            # lam tron cua cung mot nhip ma van tach duoc 30 khoi 29.97.
+            if abs(src - num / den) / (num / den) < 0.0005:
+                self._log(f"[{idx + 1}] fps da dung {tgt_disp}, khong can ep:"
+                          f" {title}", 'info')
+                return 'skipped'
+        except (ValueError, ZeroDivisionError):
+            self._log(f"[{idx + 1}] Khong doc duoc fps, ep cho chac: {title}",
+                      'info')
+
+        # Tieng: chep luong khi vo mp4 nhan duoc (aac/mp3); Opus thi 2018
+        # ffmpeg khong chep vao mp4 duoc (da do o remux_same_codec) -> ma hoa
+        # lai AAC. Probe hong (khong biet codec) cung di nhanh AAC cho chac;
+        # file khong co tieng (MP4_NOAUDIO) thi -an.
+        a_codec = (probed or {}).get('a_codec')
+        if probed is not None and a_codec is None:
+            a_args = ['-an']
+        elif a_codec in ('aac', 'mp3'):
+            a_args = ['-c:a', 'copy']
+        else:
+            a_args = ['-c:a', 'aac', '-b:a', '192k']
+
+        # Timescale khop nhip dich (ADR-028: tbn 1/30000 la mot nua cua viec
+        # "cung thong so" voi kho 29.97/30 cua nguoi dung).
+        ts = num if den != 1 else num * 1000
+        crf = int(settings.get('fps_crf', 18))
+        preset = str(settings.get('fps_preset', 'medium') or 'medium')
+        dur = self._get_duration(out_path)
+
+        base, ext = os.path.splitext(out_path)
+        tmp = f"{base}.fpstmp_{uuid.uuid4().hex[:8]}{ext}"
+        cpu_count = os.cpu_count() or 4
+        cmd = [self.ffmpeg_path, '-threads', str(max(1, cpu_count // 2)),
+               '-i', out_path,
+               '-vf', f'fps={num}/{den}',
+               '-c:v', 'libx264', '-preset', preset, '-crf', str(crf),
+               '-video_track_timescale', str(ts)] + a_args + [
+               '-progress', 'pipe:1', '-nostats', tmp, '-y']
+
+        self._log(f"[{idx + 1}] Ep fps {src_disp} -> {tgt_disp}"
+                  f" (CPU x264 {preset} crf {crf}): {title}", 'info')
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding='utf-8', errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+        except Exception as e:
+            self._log(f"[{idx + 1}] Ep fps that bai, GIU file goc ({title}): {e}", 'err')
+            return False
+        self._current_procs.append(proc)
+
+        stderr_lines = collections.deque(maxlen=50)
+
+        def drain():
+            for line in proc.stderr:
+                stderr_lines.append(line)
+        t = threading.Thread(target=drain, daemon=True)
+        t.start()
+
+        # Dai 92-99% cua dong: phan tai da chiem 0-88 (hai luong) + 92 (ghep),
+        # buoc ep fps nam sau cung. 'ep fps' hien canh phan tram de khuc bo
+        # cham nay khong bi doc nham la tai bi treo.
+        last_pct = -1
+        try:
+            for line in proc.stdout:
+                if self._stopped:
+                    break
+                line = line.strip()
+                if line.startswith('out_time_ms=') and dur > 0:
+                    try:
+                        val = int(line.split('=')[1])
+                        pct = 92 + min(7, int(val / 1_000_000 / dur * 7))
+                        if pct > last_pct:
+                            last_pct = pct
+                            self._js(f"uiApi.updateProcessItem({idx}, {pct},"
+                                     " 'running', 'ep fps')")
+                    except ValueError:
+                        pass
+            proc.wait()
+        finally:
+            t.join()
+            if proc in self._current_procs:
+                self._current_procs.remove(proc)
+
+        if self._stopped or proc.returncode != 0:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            if self._stopped:
+                return False
+            err_lines = [l.strip() for l in ''.join(stderr_lines).splitlines()
+                         if l.strip()]
+            last_err = ' | '.join(err_lines[-5:]) if err_lines else 'Unknown error'
+            if len(last_err) > 500:
+                last_err = last_err[:500] + '...'
+            self._log(f"[{idx + 1}] Ep fps that bai, GIU file goc ({title}):"
+                      f" {last_err}", 'err')
+            return False
+
+        try:
+            os.replace(tmp, out_path)
+        except OSError as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            self._log(f"[{idx + 1}] Ep fps that bai, GIU file goc ({title}): {e}", 'err')
+            return False
+        return 'converted'
 
     def _yt_download_one(self, idx, item, settings):
         """Download one Youtube video/audio (§5.5/§5.6) and parse its progress (§7).
@@ -7747,8 +7925,21 @@ class Api:
                 # da kiem ton tai o tren; probe hong thi mat loi nhac, khong
                 # mat gi khac - ghi tag 'err' o day lam nguoi dung tuong ca
                 # lan tai that bai (da xay ra that 2026-09-11).
+                # (_yt_fps_convert ben duoi thi NGUOC lai: probe hong -> ep
+                # cho chac, vi bo qua mot file 60fps la sai am tham.)
                 probed = self._probe_spec(out_path, quiet=True)
-                v_codec = (probed or {}).get('v_codec')
+
+                # ADR-034: ep fps dau ra. Dat TRUOC loi nhac codec vi file
+                # da ep ra la H.264 (x264) -> loi nhac tu im dung cho.
+                fps_res = None
+                if settings.get('fps_target'):
+                    fps_res = self._yt_fps_convert(idx, out_path, title,
+                                                   settings, probed=probed)
+                    if fps_res is False:
+                        return False
+
+                v_codec = ('h264' if fps_res == 'converted'
+                           else (probed or {}).get('v_codec'))
                 if v_codec and v_codec != 'h264':
                     self._log(
                         f"[{idx + 1}] Luu y: file la {v_codec} (khong phai H.264) du duoi"
@@ -7792,6 +7983,13 @@ class Api:
         else:
             write_thumbnail = bool(str(_wt).strip())
         skip_existing = code.get('skip_existing', True)
+        # ADR-034: ep fps dau ra (checkbox #ytFpsEnable + preset output_fps).
+        # Doc don gian (khoa vang mat -> TAT) chu khong theo quy tac khoa-co-
+        # ton-tai cua ytWriteThumbnail: voi anh bia, "vang mat -> tat" lam mat
+        # mot tinh nang san co; con o day "vang mat -> tat" CHINH LA hanh vi
+        # cu (khong ep fps) nen huong roi ve la huong an toan.
+        fps_on = bool(str(params.get('ytFpsEnable', '') or '').strip())
+        output_fps = str(code.get('output_fps', '29.97') or '').strip()
         concurrent_fragments = int(code.get('concurrent_fragments', 4))
         # Chi co tac dung khi tai TRON video (khong --download-sections): buoc
         # yt-dlp cat file thanh cac doan co kich thuoc nay roi tai SONG SONG
@@ -7863,6 +8061,25 @@ class Api:
         if yt_format in ('MP4', 'MP4_NOAUDIO') and yt_quality not in YT_QUALITIES:
             self._log(f"Chat luong khong hop le: {yt_quality}", 'err')
             return
+        # ADR-034, kiem cuoi cung de khong doi thu tu cac thong bao loi quen
+        # thuoc (tien le claimMaxSeconds). fps_target chi khac None khi: tick
+        # checkbox + dinh dang co hinh + preset output_fps doc duoc.
+        fps_target = None
+        if fps_on and yt_format in ('MP4', 'MP4_NOAUDIO'):
+            if not output_fps:
+                self._log("Ep fps dang TAT trong preset (output_fps rong)"
+                          " -> bo qua buoc ep fps.", 'info')
+            else:
+                fps_target = self._parse_fps_spec(output_fps)
+                if fps_target is None:
+                    # Khong am tham roi ve "khong ep": lam vay la ca me ra sai
+                    # fps ma khong co gi bao - cung ly do claimMaxSeconds dung
+                    # han thay vi lay mac dinh (do khac han ovlPlace, noi gia
+                    # tri hong chi la tham so trinh bay).
+                    self._log(f"output_fps khong hop le trong preset:"
+                              f" {output_fps!r} (vd '29.97' hoac '30000/1001')."
+                              " Sua preset roi chay lai.", 'err')
+                    return
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -7902,6 +8119,12 @@ class Api:
             self._log(
                 "Doan cat luon dai hon yeu cau vai giay (chi cat duoc o khung chinh,"
                 " khong ma hoa lai).", 'info')
+        if fps_target:
+            _fn, _fd = fps_target
+            self._log(
+                f"Ep fps dau ra: video lech {_fn / _fd:.5g} fps se duoc ma hoa"
+                " lai bang CPU x264 SAU khi tai xong (video dai ton nhieu phut;"
+                " video dung fps san thi khong dung toi).", 'info')
 
         # §5.2/§9(a): pre-pass fetch titles in parallel, before initProcessTable
         self._js("uiApi.setStatus('Dang lay tieu de video...')")
@@ -8036,6 +8259,10 @@ class Api:
             'js_runtimes': js_runtimes,
             # None = tai tron video (khong truyen --download-sections).
             'section': (sec_start, sec_start + sec_dur) if section_on else None,
+            # ADR-034: None = khong ep fps (hanh vi cu, khong them buoc nao).
+            'fps_target': fps_target,
+            'fps_crf': code.get('fps_crf', 18),
+            'fps_preset': code.get('fps_preset', 'medium'),
         }
 
         def process_one(idx, it):
@@ -8046,6 +8273,16 @@ class Api:
             out_path = os.path.join(output_dir, f"{it['title_safe']}.{ext}")
 
             if skip_existing and os.path.exists(out_path):
+                if fps_target:
+                    # ADR-034: file co san cung phai DUNG fps dich - no co the
+                    # la file tai tu ban cu, hoac lan truoc tai xong nhung ep
+                    # fps hong (dong bi danh error, nguoi dung chay lai va roi
+                    # vao day). Chi ep fps, KHONG tai lai; _yt_fps_convert tu
+                    # probe va tu bo qua neu fps da dung.
+                    self._log(f"[{idx + 1}] Da co, bo qua tai (kiem fps):"
+                              f" {it['title']}", 'info')
+                    return self._yt_fps_convert(
+                        idx, out_path, it['title'], settings) is not False
                 self._log(f"[{idx + 1}] Da co, bo qua: {it['title']}", 'info')
                 return True
 
