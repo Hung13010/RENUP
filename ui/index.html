@@ -448,6 +448,35 @@ button[hidden] { display: none !important; }
         </div>
       </div>
 
+      <!-- Chia nho + Cat video short (preset 'split_short', ADR-035) -->
+      <div id="splitShortSection" style="display:none;">
+        <div class="field-label">📱 Độ dài mỗi short (giây)</div>
+        <div class="settings-row">
+          <input type="text" id="shortMin" value="60" style="width:70px;">
+          <span style="font-size:11px; color:var(--text-muted);">→</span>
+          <input type="text" id="shortMax" value="90" style="width:70px;">
+          <span style="font-size:11px; color:var(--text-muted);">mỗi đoạn bốc ngẫu nhiên trong khoảng</span>
+        </div>
+
+        <div class="settings-row" style="margin-top:8px;">
+          <button class="browse-btn" style="width:auto; padding:0 12px;"
+                  onclick="pyApi.shortLoadPreview()">⤢ Xem trước &amp; căn vùng cắt</button>
+        </div>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
+          <span id="shortPlaceLabel">chưa căn — mặc định cắt giữa, cao 100%</span>
+        </div>
+
+        <!-- Vung cat di qua o AN dang JSON ({cx,cy,h} theo TI LE cua khung
+             nguon) - cung tien le #ovlPlace/#ytThumbSelected: pyApi proxy
+             doc moi truong bang getFieldValue(), khong co loi goi ham nao
+             tra undefined. -->
+        <input type="hidden" id="shortPlace" value="">
+
+        <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
+          ra video dọc 1080×1920 · 29.97fps · có mã hoá lại (chậm hơn Chia nhỏ thường)
+        </div>
+      </div>
+
       <div id="loopSection" style="display:none;">
         <div class="field-label">🔁 Chế độ loop</div>
         <div class="settings-row">
@@ -1125,6 +1154,44 @@ button[hidden] { display: none !important; }
   </div>
 </div>
 
+<!-- Popup can VUNG CAT cua "Chia nho + Cat video short" (ADR-035). Don gian
+     hon popup dem nguoc nhieu: MOT hop cat ti le khoa 9:16, keo de doi vi
+     tri, keo o goc de thu nho (zoom). Vung ngoai hop phu toi bang box-shadow
+     lan rong de thay ro phan se bi bo - stage overflow:hidden chan no lai. -->
+<div class="update-overlay" id="shortPreviewOverlay">
+  <div class="update-box" id="shortPreviewBox"
+       style="width:auto; min-width:0; max-width:94vw; max-height:92vh; overflow-y:auto;">
+    <div class="update-icon">⤢</div>
+    <div class="update-title">Căn vùng cắt video short (9:16)</div>
+    <div class="update-versions" id="shortPreviewInfo"></div>
+
+    <div id="shortStageCol" style="margin:0 auto;">
+      <div id="shortStage" style="position:relative; margin:0 auto 8px; background:#000;
+           overflow:hidden; user-select:none; touch-action:none; border-radius:6px;">
+        <img id="shortBaseImg" style="display:block; width:100%; height:100%;
+             object-fit:cover; pointer-events:none;" alt="">
+        <div id="shortBox" style="position:absolute; left:0; top:0; cursor:move;
+             outline:2px solid var(--accent); outline-offset:-1px;
+             box-shadow:0 0 0 9999px rgba(0,0,0,.55);">
+          <div id="shortHandle" style="position:absolute; right:-7px; bottom:-7px;
+               width:15px; height:15px; border-radius:3px; background:var(--accent);
+               border:2px solid #fff; cursor:nwse-resize;"></div>
+        </div>
+      </div>
+      <div class="ovl-hint">
+        Kéo để chọn vùng giữ lại · kéo ô góc để thu nhỏ vùng cắt (zoom)<br>
+        <span id="shortNumbers" style="font-family:monospace;"></span>
+      </div>
+    </div>
+
+    <div class="update-btns" style="margin-top:14px;">
+      <button class="btn-accent" id="shortApplyBtn">✓ Áp dụng</button>
+      <button class="btn-muted" id="shortResetBtn">↺ Đặt lại</button>
+      <button class="btn-danger" id="shortCancelBtn">✕ Hủy</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Globals ──
 let selectedRows = new Set();
@@ -1700,6 +1767,160 @@ function ovlShowPreview(p) {
   document.getElementById('ovlCancelBtn').onclick = ovlClosePreview;
 })();
 
+// ══ CHIA NHO + CAT VIDEO SHORT: popup can vung cat (ADR-035) ═════════════
+// Trang thai luu theo TI LE vao o an #shortPlace ({cx, cy, h}: tam hop theo
+// khung nguon, cao theo chieu cao LON NHAT ma hop 9:16 dat duoc trong nguon)
+// nen mot lan can dung cho ca kho lan do phan giai (ADR-024 da do).
+let shortState = null;
+
+function shortReadPlace() {
+  try {
+    const v = document.getElementById('shortPlace').value;
+    if (!v) return null;
+    const o = JSON.parse(v);
+    if (typeof o.cx === 'number' && typeof o.cy === 'number'
+        && typeof o.h === 'number') return o;
+  } catch (e) { /* gia tri hong -> mac dinh, khong bao loi */ }
+  return null;
+}
+
+function shortBaseH() {
+  // Chieu cao LON NHAT cua hop 9:16 nam vua trong khung (tinh bang px cua
+  // stage). Nguon von DOC hon 9:16 thi be rong moi la rang buoc.
+  const stage = document.getElementById('shortStage');
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  if (!sw || !sh || !shortState) return 0;
+  return Math.min(sh, sw * shortState.outH / shortState.outW);
+}
+
+function shortApplyToBox() {
+  if (!shortState) return;
+  const stage = document.getElementById('shortStage');
+  const box = document.getElementById('shortBox');
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  // Phan tu trong khoi display:none co clientWidth 0 - ghi tiep la hop 0x0
+  // vo hinh (bai hoc popup dem nguoc 2026-09-09). Bo qua thay vi ghi so 0.
+  if (!sw || !sh) return;
+  const c = shortState.cur;
+  const bh = shortBaseH() * c.h;
+  const bw = bh * shortState.outW / shortState.outH;
+  let left = c.cx * sw - bw / 2, top = c.cy * sh - bh / 2;
+  // Vung cat phai nam TRON trong nguon: crop ra ngoai bien la ffmpeg fail
+  // han chu khong chi canh bao. Kep xong ghi NGUOC ve ti le de con so hien
+  // thi = thu that su dung, va Python kep cung mot kieu nen hai ben khop.
+  left = Math.min(Math.max(left, 0), sw - bw);
+  top = Math.min(Math.max(top, 0), sh - bh);
+  c.cx = (left + bw / 2) / sw;
+  c.cy = (top + bh / 2) / sh;
+  box.style.width = bw + 'px';
+  box.style.height = bh + 'px';
+  box.style.left = left + 'px';
+  box.style.top = top + 'px';
+  document.getElementById('shortNumbers').textContent =
+    'tâm ' + (c.cx * 100).toFixed(0) + '% / ' + (c.cy * 100).toFixed(0)
+    + '% · cao ' + (c.h * 100).toFixed(0) + '%';
+}
+
+function shortSetLabel(c) {
+  document.getElementById('shortPlaceLabel').textContent = c
+    ? 'đã căn: tâm ' + (c.cx * 100).toFixed(0) + '%/'
+      + (c.cy * 100).toFixed(0) + '%, cao ' + (c.h * 100).toFixed(0) + '%'
+    : 'chưa căn — mặc định cắt giữa, cao 100%';
+}
+
+function shortClosePreview() {
+  const ov = document.getElementById('shortPreviewOverlay');
+  ov.classList.remove('show');
+  document.onkeydown = null;
+  ov.onclick = null;
+}
+
+function shortShowPreview(p) {
+  const stage = document.getElementById('shortStage');
+  // Dung lai ovlStageSize: cung bai toan "khung vua cua so", panel=false.
+  const [sw, sh] = ovlStageSize(p.baseW, p.baseH, false);
+  stage.style.width = sw + 'px';
+  stage.style.height = sh + 'px';
+  document.getElementById('shortStageCol').style.width = sw + 'px';
+  document.getElementById('shortBaseImg').src = p.imgUrl;
+  document.getElementById('shortPreviewInfo').textContent =
+    p.baseName + ' · ' + p.baseW + '×' + p.baseH + ' · ' + p.nVideos
+    + ' video trong Input → ra ' + p.outW + '×' + p.outH;
+
+  // HIEN lop phu TRUOC khi dat hop keo tha (clientWidth trong display:none
+  // la 0 - bai hoc 2026-09-09).
+  const ov = document.getElementById('shortPreviewOverlay');
+  ov.classList.add('show');
+
+  shortState = {
+    outW: p.outW || 1080, outH: p.outH || 1920,
+    cur: shortReadPlace() || { cx: 0.5, cy: 0.5, h: 1.0 },
+  };
+  shortApplyToBox();
+
+  document.onkeydown = function (e) {
+    if (e.key === 'Escape') shortClosePreview();
+  };
+  ov.onclick = function (e) { if (e.target === ov) shortClosePreview(); };
+}
+
+(function shortInitDrag() {
+  const stage = document.getElementById('shortStage');
+  const box = document.getElementById('shortBox');
+  const handle = document.getElementById('shortHandle');
+  if (!stage || !box || !handle) return;
+  let mode = null, sx = 0, sy = 0, start = null;
+
+  function down(e, m) {
+    if (!shortState) return;
+    mode = m; sx = e.clientX; sy = e.clientY;
+    start = { cx: shortState.cur.cx, cy: shortState.cur.cy,
+              h: shortState.cur.h };
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  box.addEventListener('mousedown', function (e) { down(e, 'move'); });
+  handle.addEventListener('mousedown', function (e) { down(e, 'size'); });
+
+  document.addEventListener('mousemove', function (e) {
+    if (!mode || !shortState) return;
+    const sw = stage.clientWidth, sh = stage.clientHeight;
+    if (!sw || !sh) return;
+    if (mode === 'move') {
+      shortState.cur.cx = start.cx + (e.clientX - sx) / sw;
+      shortState.cur.cy = start.cy + (e.clientY - sy) / sh;
+    } else {
+      const bH = shortBaseH();
+      if (bH > 0) {
+        // Keo o goc = doi CHIEU CAO vung cat (zoom). San 15%: hop nho hon
+        // nua la zoom x7, chat luong ra vo nghia va hop kho cam nam.
+        shortState.cur.h = Math.min(Math.max(
+          start.h + (e.clientY - sy) / bH, 0.15), 1.0);
+      }
+    }
+    shortApplyToBox();   // tu kep vao trong khung
+  });
+  document.addEventListener('mouseup', function () { mode = null; });
+
+  document.getElementById('shortApplyBtn').onclick = function () {
+    if (shortState) {
+      const c = shortState.cur;
+      const v = { cx: +c.cx.toFixed(4), cy: +c.cy.toFixed(4),
+                  h: +c.h.toFixed(4) };
+      document.getElementById('shortPlace').value = JSON.stringify(v);
+      shortSetLabel(v);
+    }
+    shortClosePreview();
+  };
+  document.getElementById('shortResetBtn').onclick = function () {
+    if (shortState) {
+      shortState.cur = { cx: 0.5, cy: 0.5, h: 1.0 };
+      shortApplyToBox();
+    }
+  };
+  document.getElementById('shortCancelBtn').onclick = shortClosePreview;
+})();
+
 // ── Called from Python ──
 window.uiApi = {
   setVersion(v) { document.getElementById('versionText').textContent = 'v' + v; },
@@ -1728,6 +1949,11 @@ window.uiApi = {
 
   showSplitSection(show) {
     document.getElementById('splitSection').style.display = show ? 'block' : 'none';
+  },
+
+  showSplitShortSection(show) {
+    // Chi so huu #splitShortSection - bat bien "mot element mot chu" ADR-009.
+    document.getElementById('splitShortSection').style.display = show ? 'block' : 'none';
   },
 
   showAudioSplitSection(show) {
@@ -2311,6 +2537,9 @@ const pyApi = new Proxy({}, {
           audioSplitMode: getFieldValue('audioSplitMode'),
           audioSplitParts: getFieldValue('audioSplitParts'),
           audioSplitSeconds: getFieldValue('audioSplitSeconds'),
+          shortMin: getFieldValue('shortMin'),
+          shortMax: getFieldValue('shortMax'),
+          shortPlace: getFieldValue('shortPlace'),
           loopMode: getFieldValue('loopMode'),
           loopTime: getFieldValue('loopTime'),
           loopCount: getFieldValue('loopCount'),

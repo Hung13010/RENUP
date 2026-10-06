@@ -590,6 +590,7 @@ class Api:
         self._js(f"uiApi.showGhepSection({str(code_type == 'concat').lower()})")
         self._js(f"uiApi.showSplitSection({str(code_type == 'split_video').lower()})")
         self._js(f"uiApi.showAudioSplitSection({str(code_type == 'split_audio').lower()})")
+        self._js(f"uiApi.showSplitShortSection({str(code_type == 'split_short').lower()})")
         self._js(f"uiApi.showLoopSection({str(code_type == 'loop_video').lower()})")
         self._js(f"uiApi.showLoopOvlSection({str(code_type == 'loop_overlay').lower()})")
         if code_type == 'loop_overlay':
@@ -1179,6 +1180,8 @@ class Api:
                     self._run_split(params)
                 elif code_type == 'split_audio':
                     self._run_audio_split(params, code)
+                elif code_type == 'split_short':
+                    self._run_split_short(params, code)
                 elif code_type == 'reencode':
                     self._run_reencode(params, code)
                 elif code_type == 'convert_image':
@@ -1373,6 +1376,332 @@ class Api:
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} file.')")
 
     # ── Split ──
+
+    # ---- Chia nho + Cat video short (preset 'split_short', ADR-035) ------
+
+    def shortLoadPreview(self):
+        """Nut 'Xem truoc & can vung cat' cua split_short. Khong tham so, tu
+        doc #inputDir bang evaluate_js - dung tien le ovlLoadPreview().
+        Trich MOT khung giua cua video dau tien, day sang JS dang data URI
+        (KHONG file:// - xem ghi chu o _ovl_preview_work), JS mo popup keo
+        khung cat 9:16. Tang JS khong cham mang, khong cham ffmpeg (ADR-008).
+        """
+        if self.is_running:
+            self._log("Dang chay, doi xong roi hay xem truoc.", 'info')
+            return
+        threading.Thread(target=self._short_preview_work, daemon=True).start()
+
+    def _short_preview_work(self):
+        try:
+            input_dir = (self._window.evaluate_js(
+                "document.getElementById('inputDir').value") or '').strip()
+            code = next((c for c in (self._code_map or {}).values()
+                         if isinstance(c, dict)
+                         and c.get('type') == 'split_short'), {})
+            vid_ext = [e.lower() for e in code.get(
+                'video_ext', ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v',
+                              '.wmv', '.flv'])]
+            if not input_dir or not os.path.isdir(input_dir):
+                self._log("Chua chon folder Input"
+                          " (hoac thu muc khong ton tai).", 'err')
+                return
+            files = sorted(f for f in os.listdir(input_dir)
+                           if os.path.splitext(f)[1].lower() in vid_ext)
+            if not files:
+                self._log("Khong tim thay video trong Input.", 'err')
+                return
+            src = os.path.join(input_dir, files[0])
+            info = self._ovl_probe(src)
+            if not info:
+                self._log(f"Khong doc duoc video: {files[0]}", 'err')
+                return
+            bw, bh, _fps, bdur = info
+
+            pw = 480
+            ph = max(2, int(round(pw * bh / bw)))
+            tmp = os.path.join(tempfile.gettempdir(),
+                               f'_shortp_{uuid.uuid4().hex[:8]}.jpg')
+            # Khung o GIUA file, khong phai khung dau (video hay mo dau bang
+            # doan den) - cung ly do voi _ovl_preview_work.
+            ok, err = self._ffmpeg_quiet([
+                self.ffmpeg_path, '-ss', f'{bdur / 2:.3f}', '-i', src,
+                '-frames:v', '1', '-vf', f'scale={pw}:{ph}',
+                '-q:v', '4', tmp, '-y'])
+            if not ok or not os.path.exists(tmp):
+                self._log(f"Khong trich duoc khung hinh: {err}", 'err')
+                return
+            try:
+                img_url = self._ovl_data_uri(tmp, 'image/jpeg')
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+            payload = {
+                'imgUrl': img_url, 'baseName': files[0],
+                'baseW': bw, 'baseH': bh, 'nVideos': len(files),
+                'outW': int(code.get('out_width', 1080)),
+                'outH': int(code.get('out_height', 1920)),
+            }
+            self._log(f"Xem truoc vung cat: {files[0]} ({bw}x{bh}),"
+                      f" {len(files)} video trong Input", 'ok')
+            self._js(f"shortShowPreview({json.dumps(payload)})")
+        except Exception as e:
+            self._log(f"Loi khi dung anh xem truoc: {e}", 'err')
+
+    def _run_split_short(self, params, code):
+        """Chia moi video thanh cac doan ngau nhien [min, max] giay VA cat
+        moi doan thanh video doc 9:16 (ADR-035, nguoi dung chot 2026-10-06).
+
+        Khac han _run_split (video, -c copy): cat dai doc la viec cua bo loc
+        crop/scale nen BAT BUOC ma hoa lai tung doan. Bo ma hoa mac dinh la
+        CPU x264 (nguoi dung da hai lan chon CPU truoc toc do: ADR-031,
+        ADR-034); duong ve GPU bang preset `prefer_gpu`.
+
+        Vung cat den tu popup keo tha, luu theo TI LE trong #shortPlace
+        ({cx, cy, h} - tam X/Y theo khung, cao theo chieu cao nguon) nen mot
+        lan can dung cho ca kho lan do phan giai (ADR-024 da do). Gia tri
+        hong -> mac dinh giua/cao 100%, KHONG dung me (tham so trinh bay,
+        tien le ovlPlace). fps ra ep theo preset `output_fps` (mac dinh
+        29.97, dung lai _parse_fps_spec cua ADR-034).
+        """
+        self._js("uiApi.setStatus('Dang chia video short...')")
+        self._js("uiApi.setProgress(0, '')")
+        self._log("=== Bat dau chia nho + cat video short ===", 'info')
+
+        input_dir = (params.get('inputDir') or '').strip()
+        output_dir = (params.get('outputDir') or '').strip()
+        workers = max(1, params.get('workers', 2))
+        vid_ext = [e.lower() for e in code.get(
+            'video_ext', ['.mp4', '.mkv', '.mov', '.avi', '.ts', '.m4v',
+                          '.wmv', '.flv'])]
+
+        def even2(v):
+            return max(2, int(v) // 2 * 2)
+
+        out_w = even2(int(code.get('out_width', 1080)))
+        out_h = even2(int(code.get('out_height', 1920)))
+        scale_flags = str(code.get(
+            'scale_flags', 'lanczos+accurate_rnd+full_chroma_int'))
+        crf = int(code.get('short_crf', 18))
+        x264_preset = str(code.get('short_preset', 'medium') or 'medium')
+        prefer_gpu = bool(code.get('prefer_gpu', False))
+        a_bitrate = str(code.get('audio_bitrate', '192k'))
+
+        if not input_dir or not output_dir:
+            self._log("Chua chon folder Input hoac Output.", 'err')
+            return
+        if not os.path.exists(self.ffmpeg_path):
+            self._log("Khong tim thay ffmpeg.exe", 'err')
+            return
+
+        # Khoang do dai: hai o UI, preset chi giu mac dinh (quan he
+        # default_quality <-> ytQuality). Gia tri co ma khong doc duoc ->
+        # DUNG voi loi ro (tien le claimMaxSeconds/output_fps): roi am tham
+        # ve mac dinh nghia la ca me ra sai do dai ma khong ai biet.
+        raw_min = str(params.get('shortMin', '') or '').strip() \
+            or str(code.get('default_min', 60))
+        raw_max = str(params.get('shortMax', '') or '').strip() \
+            or str(code.get('default_max', 90))
+        try:
+            smin, smax = float(raw_min), float(raw_max)
+        except ValueError:
+            self._log(f"Khoang do dai khong hop le: {raw_min!r} - {raw_max!r}"
+                      " (nhap SO GIAY, vd 60 va 90).", 'err')
+            return
+        if smin < 1 or smax < smin:
+            self._log(f"Khoang do dai khong hop le: min >= 1 va max >= min"
+                      f" (dang la {smin:g} - {smax:g}).", 'err')
+            return
+
+        output_fps = str(code.get('output_fps', '29.97') or '').strip()
+        fps_target = None
+        if output_fps:
+            fps_target = self._parse_fps_spec(output_fps)
+            if fps_target is None:
+                self._log(f"output_fps khong hop le trong preset:"
+                          f" {output_fps!r} (vd '29.97'). Sua preset roi"
+                          " chay lai.", 'err')
+                return
+
+        # Vung cat tu popup. Hong -> giua / cao 100% (tham so trinh bay).
+        cx, cy, hf = 0.5, 0.5, 1.0
+        try:
+            o = json.loads(params.get('shortPlace') or '')
+            cx = min(max(float(o['cx']), 0.0), 1.0)
+            cy = min(max(float(o['cy']), 0.0), 1.0)
+            hf = min(max(float(o['h']), 0.1), 1.0)
+        except Exception:
+            pass
+
+        files = sorted(f for f in os.listdir(input_dir)
+                       if os.path.splitext(f)[1].lower() in vid_ext)
+        if not files:
+            self._log("Khong tim thay video trong Input.", 'err')
+            return
+        os.makedirs(output_dir, exist_ok=True)
+
+        run_items = self._begin_batch(files)
+        total = len(run_items)
+
+        if prefer_gpu:
+            enc_args = self._gpu_h264_args(crf)
+            enc_lbl = 'GPU (prefer_gpu)'
+        else:
+            enc_args = ['-c:v', 'libx264', '-preset', x264_preset,
+                        '-crf', str(crf)]
+            enc_lbl = f'CPU x264 {x264_preset} crf {crf}'
+
+        # In ra CACH APP DA HIEU truoc khi cham file nao (quy tac ADR-014).
+        self._log(f"Tim thay {len(files)} video | {workers} luong |"
+                  f" moi doan boc NGAU NHIEN {smin:g}-{smax:g} giay,"
+                  f" doan cuoi ngan hon {smin:g}s van giu.", 'info')
+        self._log(f"Cat dai doc: tam ngang {cx * 100:.0f}%, tam doc"
+                  f" {cy * 100:.0f}%, cao {hf * 100:.0f}% nguon"
+                  f" -> ra {out_w}x{out_h}"
+                  + (f", ep fps {output_fps}" if fps_target else "")
+                  + f" | {enc_lbl}.", 'info')
+
+        def make_one(idx, name):
+            src = os.path.join(input_dir, name)
+            self._log(f"[{idx + 1}/{total}] {name}", 'info')
+            spec = self._probe_spec(src)
+            dur = self._get_duration(src)
+            if (not spec or not spec.get('width') or not spec.get('height')
+                    or dur <= 0):
+                self._log(f"[{idx + 1}/{total}] Khong doc duoc thong so:"
+                          f" {name}", 'err')
+                return False
+            sw_, sh_ = int(spec['width']), int(spec['height'])
+
+            # Hop cat 9:16 lon nhat nam vua trong nguon, nhan voi ti le cao
+            # nguoi dung chon. Nguon von DOC hon 9:16 thi be rong la rang
+            # buoc thay vi chieu cao - clamp ca hai chieu cho chac, vi lech
+            # 2px lam crop fail han chu khong chi canh bao.
+            base_h = min(sh_, sw_ * out_h / out_w)
+            ch_px = even2(round(base_h * hf))
+            cw_px = even2(round(ch_px * out_w / out_h))
+            if cw_px > sw_:
+                cw_px = even2(sw_)
+                ch_px = even2(cw_px * out_h / out_w)
+            if ch_px > sh_:
+                ch_px = even2(sh_)
+                cw_px = even2(ch_px * out_w / out_h)
+            x_px = min(max(int(round(cx * sw_ - cw_px / 2)), 0), sw_ - cw_px)
+            y_px = min(max(int(round(cy * sh_ - ch_px / 2)), 0), sh_ - ch_px)
+
+            # Tieng: LUON ma hoa lai AAC khi co, KHONG -c:a copy. Khac quy
+            # tac cua _yt_fps_convert (ADR-034, chuyen CA file khong cat):
+            # o day cat giua chung bang -ss/-t, va do thuc te 2026-10-06
+            # tren ffmpeg 2018 di kem cho thay tieng chep luong GIU NGUYEN
+            # moc thoi gian tuyet doi cua file goc trong khi hinh ma hoa lai
+            # duoc dua ve 0 - vo chua khai thoi luong 10,6s cho doan 5,0s
+            # (= moc bat dau + do dai) va tieng lech khoi hinh. Ma hoa lai
+            # vai chuc giay AAC la re; dung thi dat hon nhieu.
+            a_codec = spec.get('a_codec')
+            if a_codec is None:
+                a_args = ['-an']
+            else:
+                a_args = ['-c:a', 'aac', '-b:a', a_bitrate]
+
+            # Ke hoach doan: boc ngau nhien [min,max] toi khi phan con lai
+            # <= max thi lay tron lam doan cuoi (co the < min - nguoi dung
+            # chot GIU). Khong seed - cung ly do ADR-027.
+            rng = random.Random()
+            segs, t, rem = [], 0.0, dur
+            while rem > smax + 0.01:
+                d = rng.uniform(smin, smax)
+                segs.append((t, d))
+                t += d
+                rem -= d
+            if rem > 0.05:
+                segs.append((t, rem))
+            n = len(segs)
+            if n == 0:
+                self._log(f"[{idx + 1}/{total}] Video qua ngan: {name}", 'err')
+                return False
+            tail = segs[-1][1]
+            note = ('' if tail >= smin - 0.01
+                    else f" (doan cuoi {tail:.0f}s - van giu)")
+            self._log(f"  [{idx + 1}/{total}] {self._fmt_seconds(dur)} ->"
+                      f" {n} doan | cat {cw_px}x{ch_px} tai ({x_px},{y_px})"
+                      f" cua {sw_}x{sh_}{note}", 'info')
+
+            # Ghi de, KHONG skip-existing (nguyen tac ADR-009: output la ham
+            # cua tham so vua doi + ranh gioi doan la ngau nhien). File thua
+            # cua lan truoc khong bi xoa - chi canh bao.
+            stem = os.path.splitext(name)[0]
+            pat = re.compile(re.escape(stem) + r' short \(\d+\)\.mp4$')
+            old = [f for f in os.listdir(output_dir) if pat.match(f)]
+            if old:
+                self._log(f"  [{idx + 1}/{total}] Da co {len(old)} file"
+                          " short cu, se ghi de (file thua khong bi xoa).",
+                          'info')
+
+            vf = (f"crop={cw_px}:{ch_px}:{x_px}:{y_px},"
+                  f"scale={out_w}:{out_h}:flags={scale_flags}")
+            ts_args = []
+            if fps_target:
+                fn, fd = fps_target
+                vf += f",fps={fn}/{fd}"
+                ts_args = ['-video_track_timescale',
+                           str(fn if fd != 1 else fn * 1000)]
+
+            for k, (start, d) in enumerate(segs, 1):
+                if self._stopped:
+                    return False
+                outp = os.path.join(output_dir, f"{stem} short ({k}).mp4")
+                # -ss TRUOC -i: tua nhanh toi keyframe roi giai ma tien toi
+                # moc - chinh xac khi ma hoa lai (khac voi -c copy).
+                cmd = ([self.ffmpeg_path, '-ss', f'{start:.3f}', '-i', src,
+                        '-t', f'{d:.3f}', '-vf', vf]
+                       + enc_args + ts_args + a_args
+                       + ['-progress', 'pipe:1', '-nostats', outp, '-y'])
+                lo = int((k - 1) * 100 / n)
+                hi = max(lo + 1, int(k * 100 / n))
+                ok, _lbl = self._run_ffmpeg_with_table(cmd, idx, d, name,
+                                                       lo=lo, hi=hi)
+                if not ok:
+                    if not self._stopped:
+                        self._log(f"[{idx + 1}/{total}] LOI doan {k}/{n}:"
+                                  f" {name}", 'err')
+                    return False
+            self._log(f"  [{idx + 1}/{total}] OK: {n} video short", 'ok')
+            return True
+
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success:
+                    ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            self._mark_row(idx, success)
+            self._js(f"uiApi.setProgress({int(d / total * 100)},"
+                     f" '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang chia short... {d}/{total}"
+                     " video')")
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {}
+            for idx, _lb in run_items:
+                if self._stopped:
+                    break
+                futures[ex.submit(make_one, idx, files[idx])] = idx
+            for fut in as_completed(futures):
+                idx = futures[fut]
+                try:
+                    success = fut.result()
+                except Exception as e:
+                    self._log(f"[{idx + 1}/{total}] LOI: {e}", 'err')
+                    success = False
+                update(idx, success)
+
+        self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
+        self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
 
     def _run_split(self, params):
         self._js("uiApi.setStatus('Dang chia nho video...')")
@@ -5183,8 +5512,15 @@ class Api:
         self._log(f"  [{i}/{total}] LOI: {last_err}", 'err')
         return False, label
 
-    def _run_ffmpeg_with_table(self, cmd, idx, duration, label):
-        """Like _run_ffmpeg but updates process table row instead of log."""
+    def _run_ffmpeg_with_table(self, cmd, idx, duration, label, lo=0, hi=100):
+        """Like _run_ffmpeg but updates process table row instead of log.
+
+        lo/hi (tuy chon, mac dinh 0/100 - moi caller cu khong doi mot ly):
+        map tien trinh cua LENH nay vao mot dai cua DONG, cho handler ma mot
+        dong bang sinh ra nhieu lan goi ffmpeg lien tiep (split_short: doan
+        k/n chiem dai [k-1, k]/n). Cung khuon voi lo/hi tuy chon cua
+        _download_music_drive.
+        """
         if self._stopped:
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'stopped')")
             return False, label
@@ -5213,7 +5549,9 @@ class Api:
                 try:
                     val = int(line.split('=')[1])
                     if val >= 0 and duration > 0:
-                        pct = min(99, int(val / 1_000_000 / duration * 100))
+                        # lo=0/hi=100 cho ra dung cong thuc cu min(99, ...).
+                        pct = lo + int(min(0.99, val / 1_000_000 / duration)
+                                       * (hi - lo))
                         if pct > last_pct:
                             self._js(f"uiApi.updateProcessItem({idx}, {pct}, 'running')")
                             last_pct = pct

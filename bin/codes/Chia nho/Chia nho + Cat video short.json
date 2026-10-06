@@ -1,0 +1,19 @@
+{
+  "name": "Chia nho + Cat thanh video short (doc 9:16)",
+  "type": "split_short",
+  "description": "Chia moi video trong Input thanh cac doan ngau nhien [min, max] giay (hai o tren UI, mac dinh 60-90) VA cat moi doan thanh video DOC 9:16 ra 1080x1920, ep 29.97fps. Vung cat chon bang nut 'Xem truoc & can vung cat' (keo nhu khung dem nguoc cua Loop Video), luu theo TI LE nen mot lan can dung cho ca kho. Doan cuoi ngan hon min van giu (nguoi dung chot). Ten file ra: <ten goc> short (1).mp4, (2)... GHI DE neu trung ten.",
+  "video_ext": [".mp4", ".mkv", ".mov", ".avi", ".ts", ".m4v", ".wmv", ".flv"],
+  "default_min": 60,
+  "default_max": 90,
+  "_ghi_chu_kich_thuoc": "ADR-035 (2026-10-06, nguoi dung chot): LUON ra 1080x1920 ke ca khi nguon thap hon - da neu ro cai gia khi hoi: dai doc cat tu 720p phai phong to 2,67x nen mem ro, tu 1080p phong 1,78x hoi mem, tu 2K phong 1,33x gan nhu khong nhan ra. Phong to khong them duoc chi tiet nao; muon net toi da thi nguon phai 4K (3840x2160 cho dai 1080x2160, thu nho nhe).",
+  "out_width": 1080,
+  "out_height": 1920,
+  "_ghi_chu_ma_hoa": "Cat dai doc la viec cua bo loc crop/scale nen BAT BUOC ma hoa lai (khac han Chia nho Video von -c copy). Mac dinh CPU x264 - nguoi dung da HAI LAN chon CPU truoc toc do (ADR-031 loop_overlay, ADR-034 ep fps Youtube), cung bo so crf 18/medium cua normalize nhom C. prefer_gpu: true ep sang NVENC khi can nhanh (file to hon o cung chat luong). Muon file nho hon thi NANG short_crf (20/21), dung chan bitrate (ADR-029).",
+  "short_crf": 18,
+  "short_preset": "medium",
+  "prefer_gpu": false,
+  "_ghi_chu_fps": "Ep fps ra theo chuan 29.97 cua kho nguoi dung (ADR-028/034). '29.97' duoc _parse_fps_spec map sang phan so chinh tac 30000/1001 - ffmpeg hieu 'fps=29.97' tho la 2997/100, troi dau thoi gian tren timescale 30000. De trong ('') = giu fps nguon, khong ep. Gia tri rac -> batch DUNG voi loi ro.",
+  "output_fps": "29.97",
+  "scale_flags": "lanczos+accurate_rnd+full_chroma_int",
+  "audio_bitrate": "192k"
+}
