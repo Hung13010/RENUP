@@ -8,12 +8,13 @@
   "_ghi_chu_kich_thuoc": "ADR-035 (2026-10-06, nguoi dung chot): LUON ra 1080x1920 ke ca khi nguon thap hon - da neu ro cai gia khi hoi: dai doc cat tu 720p phai phong to 2,67x nen mem ro, tu 1080p phong 1,78x hoi mem, tu 2K phong 1,33x gan nhu khong nhan ra. Phong to khong them duoc chi tiet nao; muon net toi da thi nguon phai 4K (3840x2160 cho dai 1080x2160, thu nho nhe).",
   "out_width": 1080,
   "out_height": 1920,
-  "_ghi_chu_ma_hoa": "Cat dai doc la viec cua bo loc crop/scale nen BAT BUOC ma hoa lai (khac han Chia nho Video von -c copy). Mac dinh CPU x264 - nguoi dung da HAI LAN chon CPU truoc toc do (ADR-031 loop_overlay, ADR-034 ep fps Youtube), cung bo so crf 18/medium cua normalize nhom C. prefer_gpu: true ep sang NVENC khi can nhanh (file to hon o cung chat luong). Muon file nho hon thi NANG short_crf (20/21), dung chan bitrate (ADR-029).",
+  "_ghi_chu_ma_hoa": "Cat dai doc la viec cua bo loc crop/scale nen BAT BUOC ma hoa lai (khac han Chia nho Video von -c copy). Tu ADR-036 (2026-10-06, nguoi dung yeu cau cat NHANH NHAT, chat luong giu nguyen) mac dinh la GPU NVENC qp18 - do tren chinh file cua ho: SSIM ngang va PSNR +1,3dB so voi x264 medium crf18, doi lai file to ~64%; video 413s 6 doan o Luong 6 het 35s thay vi 197s (cac doan cua cung mot video nay chay SONG SONG theo so Luong - scale cua ffmpeg 2018 chi mot luong moi khung nen mot tien trinh bi tran ~2-3x). May khong co GPU tu lui CPU x264 short_preset/short_crf. prefer_gpu: false = ep ve CPU x264 khi can file nho (nho hon ~40%, cham hon ~2x o cung so Luong). Muon file nho hon nua thi NANG short_crf (20/21), dung chan bitrate (ADR-029).",
   "short_crf": 18,
   "short_preset": "medium",
-  "prefer_gpu": false,
+  "prefer_gpu": true,
   "_ghi_chu_fps": "Ep fps ra theo chuan 29.97 cua kho nguoi dung (ADR-028/034). '29.97' duoc _parse_fps_spec map sang phan so chinh tac 30000/1001 - ffmpeg hieu 'fps=29.97' tho la 2997/100, troi dau thoi gian tren timescale 30000. De trong ('') = giu fps nguon, khong ep. Gia tri rac -> batch DUNG voi loi ro.",
   "output_fps": "29.97",
-  "scale_flags": "lanczos+accurate_rnd+full_chroma_int",
+  "_ghi_chu_scale": "lanczos TRAN, khong keo theo accurate_rnd+full_chroma_int cua normalize (ADR-029): o day la PHONG TO va hai co do lam bo loc cham them ~15% (16,4s so voi 15,1s moi 60s) trong khi hai anh ra giong nhau toi SSIM 0,9996 / 62,5 dB - khong mat nao phan biet duoc (do 2026-10-06, ADR-036).",
+  "scale_flags": "lanczos",
   "audio_bitrate": "192k"
 }

@@ -1455,9 +1455,18 @@ class Api:
         moi doan thanh video doc 9:16 (ADR-035, nguoi dung chot 2026-10-06).
 
         Khac han _run_split (video, -c copy): cat dai doc la viec cua bo loc
-        crop/scale nen BAT BUOC ma hoa lai tung doan. Bo ma hoa mac dinh la
-        CPU x264 (nguoi dung da hai lan chon CPU truoc toc do: ADR-031,
-        ADR-034); duong ve GPU bang preset `prefer_gpu`.
+        crop/scale nen BAT BUOC ma hoa lai tung doan. Toc do lam lai theo
+        ADR-036 (2026-10-06, nguoi dung yeu cau "cat nhanh nhat, chat luong
+        giu nguyen"), hai thay doi do tren CHINH file ho thay cham:
+        (a) MOI DOAN la mot don vi viec rieng trong executor chung nen cac
+        doan cua cung mot video chay SONG SONG - `scale` cua ffmpeg 2018
+        chi chay MOT luong moi khung (-filter_threads vo tac dung, da do)
+        nen mot tien trinh bi tran ~2-3x du may 20 nhan; tuan tu tung doan
+        chinh la ly do "cham". (b) Bo ma hoa mac dinh doi sang GPU NVENC
+        (preset prefer_gpu: true): qp18 cho SSIM ngang va PSNR +1,3dB so
+        voi x264 medium crf18, doi lai file to ~64%; video 413s 6 doan o
+        Luong 6: NVENC song song 35s - x264 tuan tu 197s. May khong GPU tu
+        lui CPU x264 (short_preset/short_crf) va van duoc phan song song.
 
         Vung cat den tu popup keo tha, luu theo TI LE trong #shortPlace
         ({cx, cy, h} - tam X/Y theo khung, cao theo chieu cao nguon) nen mot
@@ -1546,8 +1555,13 @@ class Api:
         total = len(run_items)
 
         if prefer_gpu:
-            enc_args = self._gpu_h264_args(crf)
-            enc_lbl = 'GPU (prefer_gpu)'
+            # _gpu_h264_args tra ve (args, label) - ban dau quen unpack
+            # nen nhanh nay vo ngay khi bat (TypeError luc ghep lenh);
+            # chi lo ra 2026-10-06 khi doi mac dinh sang GPU (ADR-036).
+            enc_args, gpu_lbl = self._gpu_h264_args(
+                crf, cpu_preset=x264_preset)
+            enc_lbl = (f'{gpu_lbl} qp {crf}' if gpu_lbl.startswith('GPU')
+                       else f'{gpu_lbl} {x264_preset} crf {crf}')
         else:
             enc_args = ['-c:v', 'libx264', '-preset', x264_preset,
                         '-crf', str(crf)]
@@ -1563,7 +1577,28 @@ class Api:
                   + (f", ep fps {output_fps}" if fps_target else "")
                   + f" | {enc_lbl}.", 'info')
 
-        def make_one(idx, name):
+        ok_count = [0]
+        done_count = [0]
+
+        def update(idx, success):
+            with self._lock:
+                if success:
+                    ok_count[0] += 1
+                done_count[0] += 1
+                d = done_count[0]
+            self._mark_row(idx, success)
+            self._js(f"uiApi.setProgress({int(d / total * 100)},"
+                     f" '{d}/{total}')")
+            self._js(f"uiApi.setStatus('Dang chia short... {d}/{total}"
+                     " video')")
+
+        # Pha 1 (tuan tu, chi probe + tinh toan): ke hoach tung dong.
+        # Tach ra truoc de pha 2 chi con cac DOAN thuan ma hoa — don vi
+        # viec cua executor la (video, doan) chu khong phai video, nen
+        # MOT video dai cung an het so Luong (ADR-036).
+        plans = []
+
+        def plan_one(idx, name):
             src = os.path.join(input_dir, name)
             self._log(f"[{idx + 1}/{total}] {name}", 'info')
             spec = self._probe_spec(src)
@@ -1647,58 +1682,88 @@ class Api:
                 vf += f",fps={fn}/{fd}"
                 ts_args = ['-video_track_timescale',
                            str(fn if fd != 1 else fn * 1000)]
-
-            for k, (start, d) in enumerate(segs, 1):
-                if self._stopped:
-                    return False
-                outp = os.path.join(output_dir, f"{stem} short ({k}).mp4")
-                # -ss TRUOC -i: tua nhanh toi keyframe roi giai ma tien toi
-                # moc - chinh xac khi ma hoa lai (khac voi -c copy).
-                cmd = ([self.ffmpeg_path, '-ss', f'{start:.3f}', '-i', src,
-                        '-t', f'{d:.3f}', '-vf', vf]
-                       + enc_args + ts_args + a_args
-                       + ['-progress', 'pipe:1', '-nostats', outp, '-y'])
-                lo = int((k - 1) * 100 / n)
-                hi = max(lo + 1, int(k * 100 / n))
-                ok, _lbl = self._run_ffmpeg_with_table(cmd, idx, d, name,
-                                                       lo=lo, hi=hi)
-                if not ok:
-                    if not self._stopped:
-                        self._log(f"[{idx + 1}/{total}] LOI doan {k}/{n}:"
-                                  f" {name}", 'err')
-                    return False
-            self._log(f"  [{idx + 1}/{total}] OK: {n} video short", 'ok')
+            plans.append({'idx': idx, 'name': name, 'src': src,
+                          'dur': dur, 'n': n, 'segs': segs, 'vf': vf,
+                          'ts': ts_args, 'a': a_args, 'stem': stem})
             return True
 
-        ok_count = [0]
-        done_count = [0]
+        for idx, _lb in run_items:
+            if self._stopped:
+                break
+            try:
+                ok_plan = plan_one(idx, files[idx])
+            except Exception as e:
+                self._log(f"[{idx + 1}/{total}] LOI: {e}", 'err')
+                ok_plan = False
+            if not ok_plan:
+                update(idx, False)
 
-        def update(idx, success):
+        # Pha 2: moi DOAN mot don vi viec, chay song song toi `workers`
+        # tien trinh ffmpeg (ke ca cac doan cua CUNG mot video).
+        rows = {p['idx']: {'p': p, 'done': 0, 'fail': False,
+                           'secs': {}, 'last_pct': -1} for p in plans}
+
+        def do_seg(p, k, start, d):
+            idx, st = p['idx'], rows[p['idx']]
+            ok = False
+            try:
+                if not self._stopped and not st['fail']:
+                    outp = os.path.join(output_dir,
+                                        f"{p['stem']} short ({k}).mp4")
+                    # -ss TRUOC -i: tua nhanh toi keyframe roi giai ma
+                    # tien toi moc - chinh xac khi ma hoa lai.
+                    cmd = ([self.ffmpeg_path, '-ss', f'{start:.3f}',
+                            '-i', p['src'], '-t', f'{d:.3f}',
+                            '-vf', p['vf']]
+                           + enc_args + p['ts'] + p['a']
+                           + ['-progress', 'pipe:1', '-nostats', outp,
+                              '-y'])
+
+                    # % cua dong = tong so giay DA RA cua moi doan / tong
+                    # thoi luong — chi tang, khong bao gio tut, du cac
+                    # doan song song ve dich lech thu tu (ly do bo dai
+                    # lo/hi tuan tu cua ban dau).
+                    def cb(sec):
+                        with self._lock:
+                            st['secs'][k] = min(sec, d)
+                            pct = int(min(0.99, sum(st['secs'].values())
+                                          / p['dur']) * 100)
+                            if pct <= st['last_pct']:
+                                return
+                            st['last_pct'] = pct
+                        self._js(f"uiApi.updateProcessItem({idx}, {pct},"
+                                 " 'running')")
+
+                    ok, _lbl = self._run_ffmpeg_with_table(
+                        cmd, idx, d, p['name'], progress_cb=cb)
+                    if ok:
+                        cb(d)
+                    elif not self._stopped:
+                        self._log(f"[{idx + 1}/{total}] LOI doan"
+                                  f" {k}/{p['n']}: {p['name']}", 'err')
+            except Exception as e:
+                self._log(f"[{idx + 1}/{total}] LOI doan {k}: {e}", 'err')
             with self._lock:
-                if success:
-                    ok_count[0] += 1
-                done_count[0] += 1
-                d = done_count[0]
-            self._mark_row(idx, success)
-            self._js(f"uiApi.setProgress({int(d / total * 100)},"
-                     f" '{d}/{total}')")
-            self._js(f"uiApi.setStatus('Dang chia short... {d}/{total}"
-                     " video')")
+                if not ok:
+                    st['fail'] = True
+                st['done'] += 1
+                fin = st['done'] == p['n']
+            if fin:
+                row_ok = not st['fail']
+                if row_ok:
+                    self._log(f"  [{idx + 1}/{total}] OK: {p['n']} video"
+                              " short", 'ok')
+                update(idx, row_ok)
 
+        jobs = [(p, k, s, d) for p in plans
+                for k, (s, d) in enumerate(p['segs'], 1)]
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {}
-            for idx, _lb in run_items:
-                if self._stopped:
-                    break
-                futures[ex.submit(make_one, idx, files[idx])] = idx
+            futures = [ex.submit(do_seg, *j) for j in jobs]
             for fut in as_completed(futures):
-                idx = futures[fut]
                 try:
-                    success = fut.result()
+                    fut.result()
                 except Exception as e:
-                    self._log(f"[{idx + 1}/{total}] LOI: {e}", 'err')
-                    success = False
-                update(idx, success)
+                    self._log(f"LOI: {e}", 'err')
 
         self._log(f"=== Hoan thanh: {ok_count[0]}/{total} video ===", 'ok')
         self._js(f"uiApi.setStatus('Xong! {ok_count[0]}/{total} video.')")
@@ -5512,14 +5577,17 @@ class Api:
         self._log(f"  [{i}/{total}] LOI: {last_err}", 'err')
         return False, label
 
-    def _run_ffmpeg_with_table(self, cmd, idx, duration, label, lo=0, hi=100):
+    def _run_ffmpeg_with_table(self, cmd, idx, duration, label,
+                               progress_cb=None):
         """Like _run_ffmpeg but updates process table row instead of log.
 
-        lo/hi (tuy chon, mac dinh 0/100 - moi caller cu khong doi mot ly):
-        map tien trinh cua LENH nay vao mot dai cua DONG, cho handler ma mot
-        dong bang sinh ra nhieu lan goi ffmpeg lien tiep (split_short: doan
-        k/n chiem dai [k-1, k]/n). Cung khuon voi lo/hi tuy chon cua
-        _download_music_drive.
+        progress_cb (tuy chon - moi caller cu khong doi mot ly): khi co,
+        ham nay KHONG tu tinh %/push nua ma goi progress_cb(so_giay_da_ra)
+        moi lan ffmpeg bao out_time_ms. Danh cho handler chay NHIEU lenh
+        ffmpeg SONG SONG cho cung mot dong bang (split_short, ADR-036):
+        caller cong don so giay cua moi lenh roi tu push mot con so %
+        khong bao gio tut - chia dai [k-1,k]/n nhu ban tuan tu cu thi cac
+        lenh song song se ghi de % cua nhau va thanh nhay lui.
         """
         if self._stopped:
             self._js(f"uiApi.updateProcessItem({idx}, 0, 'stopped')")
@@ -5548,13 +5616,15 @@ class Api:
             if line.startswith('out_time_ms='):
                 try:
                     val = int(line.split('=')[1])
-                    if val >= 0 and duration > 0:
-                        # lo=0/hi=100 cho ra dung cong thuc cu min(99, ...).
-                        pct = lo + int(min(0.99, val / 1_000_000 / duration)
-                                       * (hi - lo))
-                        if pct > last_pct:
-                            self._js(f"uiApi.updateProcessItem({idx}, {pct}, 'running')")
-                            last_pct = pct
+                    if val >= 0:
+                        if progress_cb is not None:
+                            progress_cb(val / 1_000_000)
+                        elif duration > 0:
+                            pct = int(min(0.99, val / 1_000_000 / duration)
+                                      * 100)
+                            if pct > last_pct:
+                                self._js(f"uiApi.updateProcessItem({idx}, {pct}, 'running')")
+                                last_pct = pct
                 except (ValueError, ZeroDivisionError):
                     pass
         proc.wait()
@@ -5564,7 +5634,8 @@ class Api:
             self._current_procs.remove(proc)
 
         if self._stopped:
-            self._js(f"uiApi.updateProcessItem({idx}, {last_pct}, 'stopped')")
+            self._js(f"uiApi.updateProcessItem({idx}, {max(0, last_pct)},"
+                     " 'stopped')")
             return False, label
 
         if proc.returncode == 0:
