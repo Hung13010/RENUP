@@ -152,7 +152,8 @@ button[hidden] { display: none !important; }
 .btn-muted { background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border); }
 .btn-muted:hover { background: #e0e0e0; }
 .btn-danger { background: #fee2e2; color: var(--danger); border: 1px solid rgba(231,76,60,0.3); }
-.btn-danger:hover { background: #fecaca; }
+.btn-danger:hover:not(:disabled) { background: #fecaca; }
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
 
 #runBtn { height: 40px; font-size: 12px; }
 
@@ -276,6 +277,29 @@ button[hidden] { display: none !important; }
 #tableSection.hidden { display: none; }
 #ghepSection.hidden { display: none; }
 #processSection.hidden { display: none; }
+
+/* ── GHEP NHAC DAI: danh sach bai da chon (hien CUNG #processSection, nhu #tableSection) ── */
+/* flex: 2 = 2/3 chieu cao panel phai: danh sach la thu nguoi dung xem/sua, bang tien
+   trinh (flex: 1) chi co mot dong. Cap #tableSection + #processSection khong doi. */
+#ghepNhacListSection { display: flex; flex-direction: column; flex: 2; overflow: hidden; }
+#ghepNhacListSection.hidden { display: none; }
+/* Dang RUN/Random (gnBusy): danh sach + cai dat bi khoa, nhin phai thay la khoa */
+#ghepNhacListSection.gn-busy tr.gn-row, .gncol-sel input:disabled { cursor: not-allowed; }
+#ghepNhacSection input:disabled { opacity: 0.6; cursor: not-allowed; }
+.browse-btn:disabled, .browse-btn:disabled:hover {
+  background: var(--surface2); border-color: var(--border); opacity: 0.4; cursor: not-allowed;
+}
+.gncol-dur { width: 90px; font-family: monospace; }
+/* Cot tick nam DAU bang: cua so lo tran mep phai thi cot cuoi bi cat mat (da xay ra voi nut ✕ cu) */
+.data-table .gncol-sel { width: 34px; padding: 0; text-align: center; }
+.gncol-sel input { margin: 0; vertical-align: middle; cursor: pointer; }
+.data-table td.gn-empty { text-align: center; color: var(--text-muted); padding: 24px 10px; }
+/* Bam ca dong de tick -> tat boi chu de bam nhanh khong bi to xanh ten bai */
+#gnListBody tr.gn-row { cursor: pointer; user-select: none; }
+#gnListBody tr.gn-sel td { background: var(--accent-light); }
+#gnDelBtn { flex-shrink: 0; white-space: nowrap; }
+/* Tong ngan hon dich: chi xay ra khi kho het bai (khong tick lap kho) hoac da xoa bai */
+.toolbar-count.gn-short { color: var(--danger); border-color: rgba(231,76,60,0.4); }
 
 /* ── YOUTUBE THUMBNAIL GRID (ADR-008) ── */
 #ytThumbGridSection { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
@@ -848,6 +872,68 @@ button[hidden] { display: none !important; }
         <!-- Gia tri do luoi ghi vao; pyApi proxy doc bang getFieldValue. KHONG BAO GIO remove. -->
         <input type="hidden" id="ytThumbSelected" value="">
       </div>
+
+      <!-- Ghep nhac dai (concat_music, TODO #096). Danh sach bai nam o panel
+           phai (#ghepNhacListSection); chu cua no la gnState/gnRender. -->
+      <div id="ghepNhacSection" style="display:none;">
+        <div class="field-label">🎵 Kho nhạc ngắn</div>
+        <div class="input-row">
+          <!-- Go tay sang kho khac cung xoa danh sach, giong nhu chon qua nut duyet.
+               onfocus chup gia tri cu: onchange chi biet gia tri moi. -->
+          <input type="text" id="gnInputDir" placeholder="Thư mục chứa các bài nhạc ngắn..."
+                 onfocus="gnDirAtFocus = this.value" onchange="gnInputDirChanged(this.value)">
+          <button class="browse-btn" id="gnInputBrowse" onclick="pyApi.browseGhepNhacInput()">📂</button>
+        </div>
+
+        <div class="field-label" style="margin-top:6px;">📝 Tên file xuất</div>
+        <input type="text" id="gnName" placeholder="để trống = Ghep nhac + ngày giờ">
+
+        <div class="field-label" style="margin-top:6px;">⏱ Thời lượng đích (giây)</div>
+        <input type="text" id="gnTarget" placeholder="10800 = 3 tiếng · hoặc 3:00:00">
+
+        <div class="settings-row" style="margin-top:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="gnLoopPool">
+            <span>🔁 Lặp lại kho nếu không đủ thời lượng</span>
+          </label>
+        </div>
+
+        <div class="settings-row" style="margin-top:8px;">
+          <button class="btn-sm btn-accent" id="gnRandomBtn" style="height:34px; flex-shrink:0;"
+                  onclick="pyApi.ghepNhacRandom()">🎲 Random</button>
+          <!-- Chi de HIEN so bai; gnRender la noi duy nhat ghi vao -->
+          <input type="text" id="gnCount" readonly tabindex="-1" value="0 bài"
+                 style="flex:1; width:auto; text-align:left;">
+        </div>
+
+        <div class="field-label" style="margin-top:6px;">🎧 Âm nền (tuỳ chọn)</div>
+        <div class="input-row">
+          <input type="text" id="gnBed" placeholder="Một file âm thanh · để trống = không có">
+          <button class="browse-btn" id="gnBedBrowse" onclick="pyApi.browseGhepNhacBed()">📂</button>
+          <button class="browse-btn" id="gnBedClear" onclick="document.getElementById('gnBed').value = ''"
+                  title="Bỏ âm nền">✕</button>
+        </div>
+
+        <!-- Gia tri gui di la chuoi phan tram "0".."200" (Python doi ra he so).
+             De bat ca khi chua chon am nen: luc do no chi khong co tac dung. -->
+        <div class="field-label" style="margin-top:6px;">
+          🔊 Âm lượng âm nền: <b id="gnBedVolLabel">100%</b>
+        </div>
+        <input type="range" id="gnBedVolume" min="0" max="200" step="5" value="100"
+               style="width:100%; margin:0;" oninput="gnShowBedVol()">
+        <div style="font-size:10px; color:var(--text-muted);">
+          100% = ngang bằng nhạc · thấp hơn = âm nền nhỏ hơn
+        </div>
+
+        <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
+          Âm nền lặp suốt file, chỉnh âm lượng bằng thanh trên · xuất MP3 192kbps +
+          file .txt danh sách bài · Luồng = số bài đổi định dạng song song
+        </div>
+
+        <!-- JSON [{path,dur}] cua danh sach HIEN TAI (sau khi xoa bai); gnRender
+             ghi, pyApi proxy doc bang getFieldValue. KHONG BAO GIO remove. -->
+        <input type="hidden" id="gnTracks" value="">
+      </div>
     </div>
 
     <!-- BOTTOM: Controls (cố định) -->
@@ -904,6 +990,34 @@ button[hidden] { display: none !important; }
         </table>
       </div>
       <button id="addToListBtn" onclick="pyApi.addSelectedToEditor()">+ Thêm vào danh sách ghép</button>
+    </div>
+
+    <!-- GHEP NHAC DAI: danh sach bai da chon (hien cung #processSection) -->
+    <div id="ghepNhacListSection" class="hidden">
+      <div class="table-toolbar">
+        <span class="toolbar-title">Danh sách bài đã chọn</span>
+        <!-- Nut nam BEN TRAI, ngay sau tieu de: cua so tran mep phai van thay -->
+        <button class="btn-sm btn-danger" id="gnDelBtn" onclick="gnDeleteSelected()"
+                disabled>🗑 Xoá bài đã chọn</button>
+        <span class="toolbar-count" id="gnListCount">0 bài</span>
+        <span class="toolbar-count" id="gnListTotal">Tổng 00:00:00</span>
+        <div class="toolbar-spacer"></div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="gncol-sel"><input type="checkbox" id="gnSelAll" disabled
+                     onclick="gnSelectAll(this.checked)" title="Chọn tất cả / bỏ chọn"></th>
+              <th class="col-num">#</th>
+              <th class="col-name">Tên bài</th>
+              <th class="gncol-dur">Thời lượng</th>
+            </tr>
+          </thead>
+          <!-- Trang thai ban dau phai giong het gnRender() voi danh sach rong -->
+          <tbody id="gnListBody"><tr><td colspan="4" class="gn-empty">Bấm 🎲 Random để chọn bài</td></tr></tbody>
+        </table>
+      </div>
     </div>
 
     <!-- PROCESS TABLE -->
@@ -1200,10 +1314,10 @@ let ytThumbSelectedIds = new Set();   // tap chon thumbnail (JS la chu, xem F2/I
 // Cac function khong co Folder Input. Moi show*Section chi set co cua rieng no
 // roi goi _syncInputDirRow(); khong callback nao duoc ghi thang vao #inputDirRow.
 const NO_INPUT_DIR = { claim: false, youtube: false, ytthumb: false, claimjazz: false,
-                       loopovl: false };
+                       loopovl: false, ghepnhac: false };
 function _syncInputDirRow() {
   const hide = NO_INPUT_DIR.claim || NO_INPUT_DIR.youtube || NO_INPUT_DIR.ytthumb
-            || NO_INPUT_DIR.claimjazz || NO_INPUT_DIR.loopovl;
+            || NO_INPUT_DIR.claimjazz || NO_INPUT_DIR.loopovl || NO_INPUT_DIR.ghepnhac;
   document.getElementById('inputDirRow').style.display = hide ? 'none' : '';
 }
 
@@ -2070,6 +2184,28 @@ window.uiApi = {
     if (el) el.value = path;
   },
 
+  // Ghep nhac dai (concat_music). Kho nhac den tu #gnInputDir, KHONG tu
+  // #inputDir -> an o Folder Input. #ghepNhacListSection hien CUNG
+  // #processSection (nhu cap #tableSection cua Ghep video) nen ham nay khong
+  // dong vao #processSection - chu cua no van la showYtThumbSection.
+  showGhepNhacSection(show) {
+    document.getElementById('ghepNhacSection').style.display = show ? 'block' : 'none';
+    document.getElementById('ghepNhacListSection').classList.toggle('hidden', !show);
+    NO_INPUT_DIR.ghepnhac = show;
+    _syncInputDirRow();
+  },
+
+  // Doi kho nhac thi danh sach cu la bai cua kho KHAC -> xoa luon, buoc
+  // Random lai thay vi RUN nham danh sach cu. Chon lai DUNG kho dang dung
+  // (khac hoa/thuong, co/khong dau \ cuoi) thi giu danh sach.
+  setGhepNhacField(key, path) {
+    const el = document.getElementById({ input: 'gnInputDir', bed: 'gnBed' }[key]);
+    if (!el) return;
+    const changed = key === 'input' && !gnSameDir(el.value, path);
+    el.value = path;
+    if (changed) gnSetList(null);
+  },
+
   // ── Youtube Thumbnail grid (ADR-008) ──
   showYtThumbSection(show) {
     document.getElementById('ytThumbSection').style.display = show ? 'block' : 'none';
@@ -2202,6 +2338,7 @@ window.uiApi = {
     // Reset pause button state
     const pb = document.getElementById('pauseBtn');
     pb.innerHTML = '⏸'; pb.classList.remove('resumed');
+    gnSetBusy(running);
   },
   setPaused(paused) {
     const pb = document.getElementById('pauseBtn');
@@ -2462,6 +2599,153 @@ function showJazzReport(rows, okCount, total) {
   document.getElementById('jazzReportCloseBtn').focus();
 }
 
+// ── Ghep nhac dai (concat_music, TODO #096) ──
+// Python goi thang gnSetList(payload) sau moi lan Random (khong qua uiApi),
+// giong showJazzReport. Tu do JS la chu duy nhat cua danh sach: nut "Xoa bai
+// da chon" sua gnState, RUN chi doc o an #gnTracks - Python khong giu ban sao
+// nao nen hai ben khong the lech nhau.
+// sel = tap INDEX dong dang tick. Index chi dung voi lan ve hien tai -> moi
+// thao tac doi danh sach (Random, doi kho, xoa) deu xoa sel truoc khi ve lai.
+let gnState = { tracks: [], target: 0, sel: new Set() };
+
+// Dang RUN/Random: Python goi uiApi.setRunning(true|false) quanh ca hai ->
+// setRunning goi gnSetBusy. Trong luc ban, danh sach va cai dat bi khoa de thu
+// tren man hinh luon la thu dang ghep (xoa bai giua chung -> man hinh 10 bai,
+// file 12 bai). sel duoc GIU: mo khoa thi nut xoa hien lai dung lua chon cu.
+let gnBusy = false;
+const GN_LOCK_IDS = ['gnInputDir', 'gnInputBrowse', 'gnLoopPool', 'gnRandomBtn',
+                     'gnBed', 'gnBedBrowse', 'gnBedClear', 'gnBedVolume'];
+function gnSetBusy(busy) {
+  gnBusy = !!busy;
+  GN_LOCK_IDS.forEach(id => { document.getElementById(id).disabled = gnBusy; });
+  gnRender();
+}
+
+// Duong dan Windows: khong phan biet hoa/thuong, / hay \, dau gach cuoi.
+function gnSameDir(a, b) {
+  const norm = s => String(s || '').trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+// Gia tri #gnInputDir luc nhan focus (onfocus ghi) = kho truoc khi go tay.
+let gnDirAtFocus = '';
+function gnInputDirChanged(val) {
+  if (!gnSameDir(gnDirAtFocus, val)) gnSetList(null);
+  gnDirAtFocus = val;
+}
+
+// Luon co gio (00:04:12): file dich dai hang gio, bo gio di thi doc nham.
+function gnFmt(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const p = n => String(n).padStart(2, '0');
+  return p(Math.floor(s / 3600)) + ':' + p(Math.floor(s % 3600 / 60)) + ':' + p(s % 60);
+}
+
+// null -> danh sach rong (doi kho nhac). Ten bai lay tu payload; thieu thi
+// cat tu path de bang khong bao gio co dong trong.
+function gnSetList(payload) {
+  const p = payload || {};
+  const tracks = Array.isArray(p.tracks) ? p.tracks : [];
+  gnState = {
+    tracks: tracks.map(t => {
+      const path = String((t && t.path) || '');
+      return {
+        path: path,
+        name: String((t && t.name) || path.split(/[\\/]/).pop()),
+        dur: Number(t && t.dur) || 0,
+      };
+    }),
+    target: Number(p.target) || 0,
+    sel: new Set(),
+  };
+  gnRender();
+}
+
+// Bam dung o tick thi trinh duyet DA tu dao .checked truoc khi click noi len
+// <tr> -> lay theo no; dao them lan nua o day la mat tac dung cua cu bam.
+// Phim cach tren o tick cung sinh click nen di chung duong nay.
+function gnRowClick(e, i) {
+  if (gnBusy) return;
+  if (!(Number.isInteger(i) && i >= 0 && i < gnState.tracks.length)) return;
+  const box = e && e.target && e.target.type === 'checkbox' ? e.target : null;
+  const on = box ? box.checked : !gnState.sel.has(i);
+  if (on) gnState.sel.add(i); else gnState.sel.delete(i);
+  gnRender();
+}
+
+function gnSelectAll(on) {
+  if (gnBusy) return;
+  gnState.sel = new Set(on ? gnState.tracks.map((_, i) => i) : []);
+  gnRender();
+}
+
+// Loc theo index (khong theo path): mot bai Random trung 2 lan la 2 dong rieng,
+// tick 1 dong thi chi bo dung dong do.
+function gnDeleteSelected() {
+  const sel = gnState.sel;
+  if (gnBusy || !sel.size) return;
+  gnState.tracks = gnState.tracks.filter((_, i) => !sel.has(i));
+  gnState.sel = new Set();
+  gnRender();
+}
+
+function gnShowBedVol() {
+  document.getElementById('gnBedVolLabel').textContent =
+    getFieldValue('gnBedVolume') + '%';
+}
+
+// Tong tinh LAI tu danh sach (khong dung payload.total) vi nguoi dung co the
+// da xoa bai. Tick/bo tick cung ve lai ca bang: chi vai tram dong, va nhu vay
+// o tick, mau dong, o "chon tat ca" va nut xoa khong bao gio lech gnState.sel.
+function gnRender() {
+  const tracks = gnState.tracks;
+  const sel = gnState.sel;
+  const n = tracks.length;
+  const total = tracks.reduce((s, t) => s + t.dur, 0);
+  const target = gnState.target;
+  const uniq = new Set(tracks.map(t => t.path)).size;
+  // escHtml khong thoat dau nhay kep -> tu thoat khi dua vao thuoc tinh title.
+  const attr = s => escHtml(s).replace(/"/g, '&quot;');
+
+  document.getElementById('gnListBody').innerHTML = n === 0
+    ? '<tr><td colspan="4" class="gn-empty">Bấm 🎲 Random để chọn bài</td></tr>'
+    : tracks.map((t, i) => {
+        const on = sel.has(i);
+        return '<tr class="gn-row' + (on ? ' gn-sel' : '') + '"' +
+          ' onclick="gnRowClick(event, ' + i + ')">' +
+          '<td class="gncol-sel"><input type="checkbox"' + (on ? ' checked' : '') +
+            (gnBusy ? ' disabled' : '') + '></td>' +
+          '<td class="col-num">' + (i + 1) + '</td>' +
+          '<td class="col-name" title="' + attr(t.path) + '">' + escHtml(t.name) + '</td>' +
+          '<td class="gncol-dur">' + gnFmt(t.dur) + '</td></tr>';
+      }).join('');
+
+  const k = sel.size;
+  const selAll = document.getElementById('gnSelAll');
+  selAll.checked = n > 0 && k === n;
+  selAll.indeterminate = k > 0 && k < n;
+  selAll.disabled = gnBusy || n === 0;
+  const delBtn = document.getElementById('gnDelBtn');
+  delBtn.disabled = gnBusy || k === 0;
+  document.getElementById('ghepNhacListSection').classList.toggle('gn-busy', gnBusy);
+  delBtn.textContent = '🗑 Xoá ' + (k ? k + ' ' : '') + 'bài đã chọn';
+
+  const countText = n + ' bài' + (uniq < n ? ' · ' + uniq + ' khác nhau' : '');
+  document.getElementById('gnCount').value = countText;
+  document.getElementById('gnListCount').textContent = countText;
+
+  const short = target > 0 && total < target;
+  const totalEl = document.getElementById('gnListTotal');
+  // Tong lam tron XUONG: 2:59:59.6 ma hien 03:00:00 canh chu "thieu" la tu mau thuan.
+  totalEl.textContent = 'Tổng ' + gnFmt(Math.floor(total)) +
+    (target > 0 ? ' / đích ' + gnFmt(target) : '') +
+    (short ? ' · thiếu ' + gnFmt(Math.ceil(target - total)) : '');
+  totalEl.classList.toggle('gn-short', short);
+
+  document.getElementById('gnTracks').value =
+    n ? JSON.stringify(tracks.map(t => ({ path: t.path, dur: t.dur }))) : '';
+}
+
 function toggleLog() {
   document.getElementById('logArea').classList.toggle('collapsed');
   document.getElementById('logToggle').classList.toggle('collapsed');
@@ -2549,6 +2833,13 @@ const pyApi = new Proxy({}, {
           ovlTime: getFieldValue('ovlTime'),
           ovlPlace: getFieldValue('ovlPlace'),
           ovlStyle: getFieldValue('ovlStyle'),
+          gnInputDir: getFieldValue('gnInputDir'),
+          gnName: getFieldValue('gnName'),
+          gnTarget: getFieldValue('gnTarget'),
+          gnLoopPool: getFieldChecked('gnLoopPool'),
+          gnBed: getFieldValue('gnBed'),
+          gnBedVolume: getFieldValue('gnBedVolume'),
+          gnTracks: getFieldValue('gnTracks'),
         }];
       }
       if (method === 'saveNoiTxt') args = [getFieldValue('editor')];

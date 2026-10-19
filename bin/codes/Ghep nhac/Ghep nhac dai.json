@@ -1,0 +1,23 @@
+{
+  "name": "Ghép nhạc dài (random bài ngắn)",
+  "type": "concat_music",
+  "description": "Ghép nhiều bài nhạc ngắn trong MỘT thư mục thành MỘT file MP3 dài. Bấm 🎲 Random để bốc nguyên bài theo thứ tự ngẫu nhiên cho tới khi đủ thời lượng đích (bài cuối được phép làm dư một chút), xoá bớt bài chọn nhầm ở bảng bên phải, rồi RUN để ghép đúng danh sách đang hiện. Tuỳ chọn một file âm nền (tiếng mưa, tiếng lửa...) được lặp suốt file và trộn với nhạc theo thanh trượt âm lượng (100% = ngang bằng). Kèm theo một file .txt cùng tên ghi mốc bắt đầu của từng bài. 1 lần RUN = 1 file.",
+
+  "_comment_audio_ext": "Đuôi file được coi là nhạc khi quét Kho nhạc ngắn (chỉ quét thư mục đó, KHÔNG quét thư mục con).",
+  "audio_ext": [".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"],
+
+  "_comment_mp3_bitrate": "Bitrate MP3 đầu ra (CBR, libmp3lame). Mỗi bài nguồn được đổi sang WAV chung thông số trước rồi mới ghép, nên các bài khác định dạng/sample rate vẫn ghép được với nhau.",
+  "mp3_bitrate": "192k",
+
+  "_comment_sample_rate": "Sample rate của file ra và của mọi file WAV trung gian (bài 48000 Hz được đổi về số này).",
+  "sample_rate": 44100,
+
+  "_comment_channels": "Số kênh của file ra: 2 = stereo. Bài mono được nhân đôi thành stereo.",
+  "channels": 2,
+
+  "_comment_probe_workers": "Số luồng đọc thời lượng (ffprobe) khi bấm Random. Thời lượng được nhớ lại theo (đường dẫn, dung lượng, ngày sửa) nên bấm Random lần sau trên cùng kho gần như tức thì.",
+  "probe_workers": 8,
+
+  "_comment_max_target_seconds": "Giới hạn trên của ô Thời lượng đích, tính bằng giây (360000 = 100 giờ). Chặn để danh sách bài không dài tới mức làm app đơ: đo thực tế 3000 giờ ra 52.644 dòng, bấm Random mất 9 giây và mỗi lần bấm chọn một dòng mất 1,1 giây. Nhập quá số này (hoặc nhập inf/nan) thì báo lỗi đỏ ở log và không tạo danh sách.",
+  "max_target_seconds": 360000
+}
