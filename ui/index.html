@@ -297,9 +297,19 @@ button[hidden] { display: none !important; }
 /* Bam ca dong de tick -> tat boi chu de bam nhanh khong bi to xanh ten bai */
 #gnListBody tr.gn-row { cursor: pointer; user-select: none; }
 #gnListBody tr.gn-sel td { background: var(--accent-light); }
+/* Keo-tha doi thu tu: ⠿ chi la goi y (ca dong deu keo duoc). Vach mau accent
+   = cho se tha; dung box-shadow thay border de bang khong nhay 2px khi keo. */
+#ghepNhacListSection .col-num { width: 56px; white-space: nowrap; }
+.gn-grip { color: var(--text-muted); margin-right: 6px; cursor: grab; }
+#ghepNhacListSection.gn-busy .gn-grip { visibility: hidden; }
+#gnListBody tr.gn-dragging td { opacity: 0.4; }
+#gnListBody tr.gn-drop-before td { box-shadow: inset 0 2px 0 var(--accent); }
+#gnListBody tr.gn-drop-after td { box-shadow: inset 0 -2px 0 var(--accent); }
 #gnDelBtn { flex-shrink: 0; white-space: nowrap; }
 /* Tong ngan hon dich: chi xay ra khi kho het bai (khong tick lap kho) hoac da xoa bai */
 .toolbar-count.gn-short { color: var(--danger); border-color: rgba(231,76,60,0.4); }
+/* Tong dai hon dich ca mot bai tro len: nap ca kho dai -> canh bao, khong phai loi */
+.toolbar-count.gn-over { color: #B9770E; border-color: rgba(185,119,14,0.45); }
 
 /* ── YOUTUBE THUMBNAIL GRID (ADR-008) ── */
 #ytThumbGridSection { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
@@ -926,8 +936,9 @@ button[hidden] { display: none !important; }
         </div>
 
         <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">
-          Âm nền lặp suốt file, chỉnh âm lượng bằng thanh trên · xuất MP3 192kbps +
-          file .txt danh sách bài · Luồng = số bài đổi định dạng song song
+          Không âm nền: nối thẳng, giữ nguyên chất lượng bài gốc (lần sau gần như tức thì) ·
+          Có âm nền: lặp suốt file, mã hoá MP3 192kbps bằng mọi nhân CPU ·
+          kèm file .txt danh sách bài · Luồng = số bài chuyển đổi cùng lúc
         </div>
 
         <!-- JSON [{path,dur}] cua danh sach HIEN TAI (sau khi xoa bai); gnRender
@@ -1015,7 +1026,7 @@ button[hidden] { display: none !important; }
             </tr>
           </thead>
           <!-- Trang thai ban dau phai giong het gnRender() voi danh sach rong -->
-          <tbody id="gnListBody"><tr><td colspan="4" class="gn-empty">Bấm 🎲 Random để chọn bài</td></tr></tbody>
+          <tbody id="gnListBody"><tr><td colspan="4" class="gn-empty">Chọn Kho nhạc ngắn để hiện danh sách bài</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -2195,15 +2206,15 @@ window.uiApi = {
     _syncInputDirRow();
   },
 
-  // Doi kho nhac thi danh sach cu la bai cua kho KHAC -> xoa luon, buoc
-  // Random lai thay vi RUN nham danh sach cu. Chon lai DUNG kho dang dung
-  // (khac hoa/thuong, co/khong dau \ cuoi) thi giu danh sach.
+  // Doi kho nhac thi danh sach cu la bai cua kho KHAC -> xoa roi nap ngay
+  // toan bo kho moi (gnLoadPool). Chon lai DUNG kho dang dung (khac hoa/
+  // thuong, co/khong dau \ cuoi) thi giu danh sach - tru khi no dang rong.
   setGhepNhacField(key, path) {
     const el = document.getElementById({ input: 'gnInputDir', bed: 'gnBed' }[key]);
     if (!el) return;
     const changed = key === 'input' && !gnSameDir(el.value, path);
     el.value = path;
-    if (changed) gnSetList(null);
+    if (changed || (key === 'input' && !gnState.tracks.length)) gnLoadPool();
   },
 
   // ── Youtube Thumbnail grid (ADR-008) ──
@@ -2630,8 +2641,15 @@ function gnSameDir(a, b) {
 // Gia tri #gnInputDir luc nhan focus (onfocus ghi) = kho truoc khi go tay.
 let gnDirAtFocus = '';
 function gnInputDirChanged(val) {
-  if (!gnSameDir(gnDirAtFocus, val)) gnSetList(null);
+  if (!gnSameDir(gnDirAtFocus, val)) gnLoadPool();
   gnDirAtFocus = val;
+}
+
+// Vua chon xong kho: hien NGAY toan bo bai trong kho (theo ten file) de
+// nguoi dung keo/xoa, khong bat buoc Random. O kho rong thi chi xoa bang.
+function gnLoadPool() {
+  gnSetList(null);
+  if (getFieldValue('gnInputDir').trim()) pyApi.ghepNhacLoadPool();
 }
 
 // Luon co gio (00:04:12): file dich dai hang gio, bo gio di thi doc nham.
@@ -2689,6 +2707,84 @@ function gnDeleteSelected() {
   gnRender();
 }
 
+// Keo-tha doi thu tu: nguoi dung tu chon bai mo dau / ket thuc ma khong phai
+// Random lai. Chi doi gnState.tracks -> gnRender ghi lai #gnTracks nen RUN va
+// file .txt theo dung thu tu moi, Python khong can biet gi them.
+// to = vi tri chen tinh tren mang CU (0..n): tha duoi dong cuoi = n.
+let gnDragFrom = -1;
+function gnMove(from, to) {
+  const tracks = gnState.tracks;
+  if (gnBusy || !(from >= 0 && from < tracks.length)) return;
+  const at = Math.min(Math.max(to > from ? to - 1 : to, 0), tracks.length - 1);
+  if (at === from) return;
+  // sel la tap INDEX -> co tick phai di theo bai, khong thi doi cho xong
+  // dong dang tick lai la bai khac va "Xoa bai da chon" xoa nham.
+  const ticked = tracks.map((_, i) => gnState.sel.has(i));
+  tracks.splice(at, 0, tracks.splice(from, 1)[0]);
+  ticked.splice(at, 0, ticked.splice(from, 1)[0]);
+  gnState.sel = new Set(ticked.flatMap((on, i) => on ? [i] : []));
+  gnRender();
+}
+
+// Nghe tren .table-wrap (uy quyen) vi gnRender ve lai innerHTML moi lan, va de
+// tha vao khoang trong duoi dong cuoi van tinh la "xuong cuoi".
+(function gnInitDrag() {
+  const body = document.getElementById('gnListBody');
+  const wrap = body.closest('.table-wrap');
+  const clearMarks = () => body.querySelectorAll('.gn-drop-before, .gn-drop-after')
+    .forEach(tr => tr.classList.remove('gn-drop-before', 'gn-drop-after'));
+  // Nua tren dong -> chen TRUOC dong do, nua duoi -> chen SAU. Ngoai cac dong:
+  // tren than bang (o tieu de) = dau danh sach, con lai = cuoi danh sach.
+  const dropTarget = e => {
+    const rows = body.querySelectorAll('tr.gn-row');
+    if (!rows.length) return null;
+    const tr = e.target.closest && e.target.closest('tr.gn-row');
+    if (tr) {
+      const r = tr.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      return { tr, after, to: Number(tr.dataset.i) + (after ? 1 : 0) };
+    }
+    return e.clientY < body.getBoundingClientRect().top
+      ? { tr: rows[0], after: false, to: 0 }
+      : { tr: rows[rows.length - 1], after: true, to: rows.length };
+  };
+  wrap.addEventListener('dragstart', e => {
+    const tr = e.target.closest && e.target.closest('tr.gn-row');
+    if (gnBusy || !tr) { e.preventDefault(); return; }
+    gnDragFrom = Number(tr.dataset.i);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(gnDragFrom));
+    tr.classList.add('gn-dragging');
+  });
+  wrap.addEventListener('dragover', e => {
+    if (gnDragFrom < 0) return;
+    const d = dropTarget(e);
+    if (!d) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearMarks();
+    d.tr.classList.add(d.after ? 'gn-drop-after' : 'gn-drop-before');
+  });
+  wrap.addEventListener('dragleave', e => {
+    if (!wrap.contains(e.relatedTarget)) clearMarks();
+  });
+  wrap.addEventListener('drop', e => {
+    if (gnDragFrom < 0) return;
+    e.preventDefault();
+    const d = dropTarget(e);
+    const from = gnDragFrom;
+    gnDragFrom = -1;
+    clearMarks();
+    if (d) gnMove(from, d.to);
+  });
+  // Huy keo (Esc / tha ra ngoai): khong co drop -> don dau o day.
+  wrap.addEventListener('dragend', () => {
+    gnDragFrom = -1;
+    clearMarks();
+    body.querySelectorAll('.gn-dragging').forEach(tr => tr.classList.remove('gn-dragging'));
+  });
+})();
+
 function gnShowBedVol() {
   document.getElementById('gnBedVolLabel').textContent =
     getFieldValue('gnBedVolume') + '%';
@@ -2708,14 +2804,15 @@ function gnRender() {
   const attr = s => escHtml(s).replace(/"/g, '&quot;');
 
   document.getElementById('gnListBody').innerHTML = n === 0
-    ? '<tr><td colspan="4" class="gn-empty">Bấm 🎲 Random để chọn bài</td></tr>'
+    ? '<tr><td colspan="4" class="gn-empty">Chọn Kho nhạc ngắn để hiện danh sách bài</td></tr>'
     : tracks.map((t, i) => {
         const on = sel.has(i);
-        return '<tr class="gn-row' + (on ? ' gn-sel' : '') + '"' +
+        return '<tr class="gn-row' + (on ? ' gn-sel' : '') + '" data-i="' + i + '"' +
+          (gnBusy ? '' : ' draggable="true" title="Kéo để đổi thứ tự"') +
           ' onclick="gnRowClick(event, ' + i + ')">' +
           '<td class="gncol-sel"><input type="checkbox"' + (on ? ' checked' : '') +
             (gnBusy ? ' disabled' : '') + '></td>' +
-          '<td class="col-num">' + (i + 1) + '</td>' +
+          '<td class="col-num"><span class="gn-grip">⠿</span>' + (i + 1) + '</td>' +
           '<td class="col-name" title="' + attr(t.path) + '">' + escHtml(t.name) + '</td>' +
           '<td class="gncol-dur">' + gnFmt(t.dur) + '</td></tr>';
       }).join('');
@@ -2735,12 +2832,19 @@ function gnRender() {
   document.getElementById('gnListCount').textContent = countText;
 
   const short = target > 0 && total < target;
+  // "Du" = bo ca bai CUOI di van con >= dich, tuc co it nhat mot bai thua.
+  // Danh sach Random khong bao gio du (chi bai cuoi vuot dich), nen chu nay
+  // chi hien khi nap ca kho dai hon dich hoac nguoi dung tu keo/them.
+  const over = target > 0 && n > 0 && total - tracks[n - 1].dur >= target;
   const totalEl = document.getElementById('gnListTotal');
   // Tong lam tron XUONG: 2:59:59.6 ma hien 03:00:00 canh chu "thieu" la tu mau thuan.
   totalEl.textContent = 'Tổng ' + gnFmt(Math.floor(total)) +
     (target > 0 ? ' / đích ' + gnFmt(target) : '') +
-    (short ? ' · thiếu ' + gnFmt(Math.ceil(target - total)) : '');
+    (short ? ' · thiếu ' + gnFmt(Math.ceil(target - total)) : '') +
+    (over ? ' · dư ' + gnFmt(Math.floor(total - target)) : '');
   totalEl.classList.toggle('gn-short', short);
+  totalEl.classList.toggle('gn-over', over);
+  totalEl.title = over ? 'RUN sẽ ra file dài hơn đích — xoá bớt bài hoặc bấm Random' : '';
 
   document.getElementById('gnTracks').value =
     n ? JSON.stringify(tracks.map(t => ({ path: t.path, dur: t.dur }))) : '';

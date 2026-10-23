@@ -160,7 +160,7 @@ def test_gn_parse_target_bad_cap_falls_back_to_100h(bad_cap):
 
 
 def test_preset_declares_max_target_seconds():
-    path = os.path.join(os.path.dirname(_HERE), 'bin', 'codes', 'Ghep nhac', 'Ghep nhac dai.json')
+    path = os.path.join(os.path.dirname(_HERE), 'bin', 'codes', 'Ghep nhac Jazz', 'Ghep nhac dai.json')
     with open(path, encoding='utf-8') as fh:
         preset = json.load(fh)
     assert preset['type'] == 'concat_music'
@@ -184,19 +184,20 @@ def _rows(text):
 def test_tracklist_layout_hours_always_and_floor_starts():
     items = [("Song A.mp3", 252.4), ("Song B.mp3", 238.6), ("Song C.mp3", 3600.7)]
     txt = tracklist("Lofi 3h.mp3", items, 10800, '', r'D:\Music\Lofi',
-                    '2026-10-15 18:20')
+                    output_dir=r'D:\Music\Out')
     lines, rows = _rows(txt)
     assert lines[0] == "GHEP NHAC DAI - DANH SACH BAI"
-    assert lines[1] == "File        : Lofi 3h.mp3"
+    assert lines[1] == "File         : Lofi 3h.mp3"
     # 252.4 + 238.6 + 3600.7 = 4091.7 -> floor 4091 -> 01:08:11
-    assert lines[2] == "Thoi luong  : 01:08:11  (dich 03:00:00)"
-    assert lines[3] == "So bai      : 3"                     # khong lap -> khong ghi
-    assert lines[4] == "Random      : khong"
-    assert lines[5] == "Am nen      : (khong)"
-    assert lines[6] == r"Kho nguon   : D:\Music\Lofi"
-    assert lines[7] == "Tao luc     : 2026-10-15 18:20"
-    assert lines[8] == ""
-    assert lines[9] == " STT  BAT DAU   TEN FILE"
+    assert lines[2] == "Thoi luong   : 01:08:11  (dich 03:00:00)"
+    assert lines[3] == "So bai       : 3"                     # khong lap -> khong ghi
+    assert lines[4] == "Random       : khong"
+    assert lines[5] == "Am nen       : (khong)"
+    assert lines[6] == "Am luong nen : (khong)"
+    assert lines[7] == r"Input        : D:\Music\Lofi"
+    assert lines[8] == r"Output       : D:\Music\Out"
+    assert lines[9] == ""
+    assert lines[10] == " STT  BAT DAU   TEN FILE"
     # Moc floor cua tong cong don: 0, 252.4 -> 252, 491.0 -> 491
     assert rows == [
         "   1  00:00:00  Song A.mp3",
@@ -241,7 +242,7 @@ def test_tracklist_floor_starts_small_example():
     lines, rows = _rows(tracklist("o.mp3", items))
     # cum 0, 2.6, 5.2, 7.8 -> floor 0, 2, 5, 7
     assert [r.split()[1] for r in rows] == ["00:00:00", "00:00:02", "00:00:05"]
-    assert lines[2] == "Thoi luong  : 00:00:07"
+    assert lines[2] == "Thoi luong   : 00:00:07"
 
 
 @pytest.mark.parametrize('seed', range(30))
@@ -268,7 +269,7 @@ def test_tracklist_floor_is_robust_to_float_accumulation():
 def test_tracklist_unique_count_only_with_repeats():
     items = [("A.mp3", 100.0), ("B.mp3", 100.0), ("A.mp3", 100.0), ("C.mp3", 100.0)]
     txt = tracklist("o.mp3", items, 400)
-    assert "So bai      : 4  (3 bai khac nhau)" in txt
+    assert "So bai       : 4  (3 bai khac nhau)" in txt
 
 
 def _loop_line(items):
@@ -279,13 +280,13 @@ def _loop_line(items):
 
 def test_tracklist_loop_line_no_repeats():
     items = [("A.mp3", 100.0), ("B.mp3", 100.0), ("C.mp3", 100.0)]
-    assert _loop_line(items) == "Random      : khong"
-    assert _loop_line([]) == "Random      : khong"
+    assert _loop_line(items) == "Random       : khong"
+    assert _loop_line([]) == "Random       : khong"
 
 
 def test_tracklist_loop_line_equal_counts():
     items = [("A.mp3", 100.0), ("B.mp3", 100.0), ("A.mp3", 100.0), ("B.mp3", 100.0)]
-    assert _loop_line(items) == "Random      : co - 2 bai, moi bai phat 2 lan"
+    assert _loop_line(items) == "Random       : co - 2 bai, moi bai phat 2 lan"
 
 
 def test_tracklist_loop_line_unequal_counts():
@@ -293,41 +294,52 @@ def test_tracklist_loop_line_unequal_counts():
     names = [f"s{i}.mp3" for i in range(8)]
     items = [(nm, 200.0) for nm in names] * 2 + [(nm, 200.0) for nm in names[:5]]
     assert len(items) == 21
-    assert _loop_line(items) == "Random      : co - 8 bai, moi bai phat 2-3 lan"
+    assert _loop_line(items) == "Random       : co - 8 bai, moi bai phat 2-3 lan"
 
 
 def test_tracklist_header_colons_aligned():
     items = [("A.mp3", 100.0), ("B.mp3", 100.0), ("A.mp3", 100.0)]
-    txt = tracklist("o: x.mp3", items, 3600, 'rain.mp3', r'D:\in', '2026-10-16 09:09')
+    txt = tracklist("o: x.mp3", items, 3600, 'rain.mp3', r'D:\in', output_dir=r'D:\out')
     lines, _ = _rows(txt)
     header = lines[1:lines.index("")]
     assert [ln.split(' :')[0].strip() for ln in header] == [
-        "File", "Thoi luong", "So bai", "Random", "Am nen", "Kho nguon", "Tao luc"]
-    assert {ln.index(' : ') for ln in header} == {11}
+        "File", "Thoi luong", "So bai", "Random", "Am nen", "Am luong nen", "Input", "Output"]
+    assert {ln.index(' : ') for ln in header} == {12}
 
 
-def _bed_line(bed_name, bed_volume=1.0):
+def test_tracklist_has_no_created_or_export_time():
+    txt = tracklist("o.mp3", [("A.mp3", 100.0)], 100, 'rain.mp3', r'D:\in', output_dir=r'D:\out')
+    assert "Tao luc" not in txt
+    assert "Xuat mat" not in txt
+    assert "Kho nguon" not in txt                              # da doi thanh "Input"
+
+
+def _bed_lines(bed_name, bed_volume=1.0):
+    """(dong "Am nen", dong "Am luong nen")."""
     lines = tracklist("o.mp3", [("A.mp3", 60.0)], 60, bed_name,
                       bed_volume=bed_volume).split('\n')
     assert lines[5].startswith("Am nen ")
-    return lines[5]
+    assert lines[6].startswith("Am luong nen ")
+    return lines[5], lines[6]
 
 
 def test_tracklist_bed_line_100_percent_is_equal_mix():
-    assert _bed_line('rain.mp3') == "Am nen      : rain.mp3 - tron ngang bang, lap suot file"
-    assert _bed_line('rain.mp3', 1.0) == _bed_line('rain.mp3')
+    assert _bed_lines('rain.mp3') == ("Am nen       : rain.mp3 - lap suot file",
+                                      "Am luong nen : 100%  (ngang bang nhac)")
+    assert _bed_lines('rain.mp3', 1.0) == _bed_lines('rain.mp3')
 
 
 @pytest.mark.parametrize('factor, pct', [(0.6, 60), (0.5, 50), (0.0, 0),
                                          (1.5, 150), (2.0, 200), (0.05, 5)])
 def test_tracklist_bed_line_other_percent(factor, pct):
-    assert _bed_line('rain.mp3', factor) == \
-        f"Am nen      : rain.mp3 - am luong {pct}%, lap suot file"
+    assert _bed_lines('rain.mp3', factor) == ("Am nen       : rain.mp3 - lap suot file",
+                                              f"Am luong nen : {pct}%")
 
 
 def test_tracklist_bed_line_no_bed():
-    assert _bed_line('') == "Am nen      : (khong)"
-    assert _bed_line('', 0.6) == "Am nen      : (khong)"      # khong co nen -> bo qua %
+    no_bed = ("Am nen       : (khong)", "Am luong nen : (khong)")
+    assert _bed_lines('') == no_bed
+    assert _bed_lines('', 0.6) == no_bed                       # khong co nen -> bo qua %
 
 
 # ── _gn_bed_factor (thanh truot gnBedVolume -> he so) ───────────────
@@ -343,17 +355,16 @@ def test_gn_bed_factor(raw, factor):
 
 
 def test_gn_bed_factor_round_trips_into_bed_line():
-    assert _bed_line('rain.mp3', Api._gn_bed_factor("60")) == \
-        "Am nen      : rain.mp3 - am luong 60%, lap suot file"
-    assert _bed_line('rain.mp3', Api._gn_bed_factor("100")) == \
-        "Am nen      : rain.mp3 - tron ngang bang, lap suot file"
-    assert _bed_line('rain.mp3', Api._gn_bed_factor("")) == \
-        "Am nen      : rain.mp3 - tron ngang bang, lap suot file"
+    assert _bed_lines('rain.mp3', Api._gn_bed_factor("60"))[1] == "Am luong nen : 60%"
+    assert _bed_lines('rain.mp3', Api._gn_bed_factor("100"))[1] == \
+        "Am luong nen : 100%  (ngang bang nhac)"
+    assert _bed_lines('rain.mp3', Api._gn_bed_factor(""))[1] == \
+        "Am luong nen : 100%  (ngang bang nhac)"
 
 
 def test_tracklist_no_target_omits_dich():
     txt = tracklist("o.mp3", [("A.mp3", 61.0)], None)
-    assert "Thoi luong  : 00:01:01\n" in txt
+    assert "Thoi luong   : 00:01:01\n" in txt
 
 
 def test_tracklist_skipped_section():
@@ -468,7 +479,7 @@ def test_gn_is_own_tracklist(line, own):
 
 
 def test_gn_is_own_tracklist_recognises_real_tracklist_output():
-    txt = tracklist("Mix.mp3", [("A.mp3", 60.0)], 60, 'rain.mp3', r'D:\in', '2026-10-16 09:00')
+    txt = tracklist("Mix.mp3", [("A.mp3", 60.0)], 60, 'rain.mp3', r'D:\in', output_dir=r'D:\out')
     assert Api._gn_is_own_tracklist(txt.split('\n')[0])
 
 
@@ -485,3 +496,64 @@ def test_gn_has_own_tracklist_reads_file_written_like_run(tmp_path):
     assert Api._gn_has_own_tracklist(str(tmp_path), "Song.mp3") is False
     assert Api._gn_has_own_tracklist(str(tmp_path), "Lone.mp3") is False      # khong co .txt
     assert Api._gn_has_own_tracklist(str(tmp_path), "Bin.wav") is False       # .txt rac
+
+
+# ── Nap toan bo kho khi vua chon Kho nhac ngan (khong Random) ──────────
+
+def test_gn_name_key_sorts_like_explorer():
+    names = ["b.mp3", "Song 10.mp3", "A.mp3", "song 2.mp3", "Carefree.mp3"]
+    assert sorted(names, key=Api._gn_name_key) == [
+        "A.mp3", "b.mp3", "Carefree.mp3", "song 2.mp3", "Song 10.mp3"]
+
+
+def _list_api(durs):
+    """Api khong GUI: _js ghi lai, _get_duration tra theo ten file."""
+    api = Api.__new__(Api)
+    api.calls = []
+    api._js = api.calls.append
+    api._gn_dur_cache = {}
+    api._stopped = False
+    api.is_running = True
+    api._get_duration = lambda p: durs[os.path.basename(p)]
+    return api
+
+
+def _payload(api):
+    js = next(c for c in api.calls if c.startswith("gnSetList("))
+    return json.loads(js[len("gnSetList("):-1])
+
+
+def test_load_pool_lists_whole_folder_in_name_order_without_target(tmp_path):
+    durs = {"Song 10.mp3": 60.0, "a.mp3": 30.0, "Song 2.mp3": 45.0}
+    for name in durs:
+        (tmp_path / name).write_bytes(b'')
+    (tmp_path / "ghi chu.txt").write_text("x", encoding='utf-8')
+    api = _list_api(durs)
+    # O dich con trong: nap kho van chay, khong bao loi (Random moi bao).
+    api._gn_random_work(str(tmp_path), '', False, {}, shuffle=False)
+    p = _payload(api)
+    assert [t["name"] for t in p["tracks"]] == ["a.mp3", "Song 2.mp3", "Song 10.mp3"]
+    assert p["target"] == 0
+    assert p["total"] == pytest.approx(135.0)
+    assert not any("khong hop le" in c for c in api.calls)
+    assert api.is_running is False
+
+
+def test_load_pool_ignores_target_and_loop_when_folder_longer(tmp_path):
+    durs = {f"{i:02d}.mp3": 100.0 for i in range(1, 6)}
+    for name in durs:
+        (tmp_path / name).write_bytes(b'')
+    api = _list_api(durs)
+    api._gn_random_work(str(tmp_path), '150', True, {}, shuffle=False)
+    p = _payload(api)
+    assert [t["name"] for t in p["tracks"]] == ["01.mp3", "02.mp3", "03.mp3", "04.mp3", "05.mp3"]
+    assert p["target"] == 150
+    assert any("dai hon dich" in c for c in api.calls)
+
+
+def test_random_still_rejects_bad_target(tmp_path):
+    (tmp_path / "a.mp3").write_bytes(b'')
+    api = _list_api({"a.mp3": 30.0})
+    api._gn_random_work(str(tmp_path), '', False, {}, shuffle=True)
+    assert not any(c.startswith("gnSetList(") for c in api.calls)
+    assert any("khong hop le" in c for c in api.calls)

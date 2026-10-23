@@ -116,6 +116,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; tuy chon, mac dinh bat").
 Name: "desktopicon"; Description: "Tao shortcut ngoai Desktop"; GroupDescription: "Icon bo sung:"
 
+[InstallDelete]
+; Cai de len ban cu KHONG xoa file cu - [Files] chi chep them/ghi de. Ten
+; nhom trong dropdown = TEN THU MUC trong bin\codes\, nen doi ten mot thu
+; muc preset ma khong xoa thu muc cu o day thi may da cai se hien HAI nhom
+; chua cung mot chuc nang. Chi xoa dung file preset cua minh, roi xoa thu
+; muc neu no da rong: preset nguoi dung tu them vao do (neu co) van con.
+; 2026-10-23: "Ghep nhac" -> "Ghep nhac Jazz" (ADR-042).
+Type: files; Name: "{app}\bin\codes\Ghep nhac\Ghep nhac dai.json"
+Type: dirifempty; Name: "{app}\bin\codes\Ghep nhac"
+
 [Files]
 ; Toan bo thu muc --onedir: RENUP.exe + thu muc phu thuoc PyInstaller sinh
 ; ra (_internal\... hoac tuong duong tuy phien ban PyInstaller) + bin\...

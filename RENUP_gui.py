@@ -273,7 +273,8 @@ class Api:
         child, leaving ffmpeg orphaned and still downloading/writing to disk
         after Stop/close. 'taskkill /T' kills the whole process tree instead.
         """
-        for proc in self._current_procs:
+        # Ban sao: luong cua proc vua chet tu xoa no khoi list -> duyet list goc se bo sot proc.
+        for proc in list(self._current_procs):
             try:
                 self._resume_process(proc.pid)
             except Exception:
@@ -292,6 +293,31 @@ class Api:
             except Exception:
                 pass
         self._current_procs.clear()
+
+    def _kill_late_proc(self, proc):
+        """Giet + bo theo doi MOT proc vua Popen xong thi moi thay Stop (cung cach
+        _kill_all_ffmpeg: ca cay tien trinh)."""
+        try:
+            subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                if pipe:
+                    pipe.close()
+            except Exception:
+                pass
+        if proc in self._current_procs:
+            self._current_procs.remove(proc)
 
     def cleanup(self):
         """Called when app is closing. Kill all FFmpeg processes."""
@@ -1921,6 +1947,10 @@ class Api:
             text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
         )
         self._current_procs.append(proc)
+        # Stop co the roi giua phep kiem dau ham va Popen: _kill_all_ffmpeg da chay qua, khong thay proc nay.
+        if self._stopped:
+            self._kill_late_proc(proc)
+            return False, 'Da dung.'
 
         stderr_lines = []
         def drain():
@@ -2138,8 +2168,18 @@ class Api:
             self._js(f"uiApi.setGhepNhacField('bed', {json.dumps(result[0])})")
 
     def ghepNhacRandom(self):
-        """Nut Random. Khong tham so, tu doc cac truong bang evaluate_js -
-        cung khuon ytThumbLoad, khong mo rong pyApi proxy.
+        """Nut Random: dao bai, lay nguyen bai cho toi khi du thoi luong dich."""
+        self._gn_start_list(shuffle=True)
+
+    def ghepNhacLoadPool(self):
+        """Vua chon xong Kho nhac ngan (JS goi): hien TOAN BO bai trong kho,
+        moi bai mot lan, theo ten file - nguoi dung tu keo/xoa ma khong phai
+        Random. Kho dai hon dich thi tieu de danh sach bao 'du'."""
+        self._gn_start_list(shuffle=False)
+
+    def _gn_start_list(self, shuffle):
+        """Chung cho Random va nap kho. Khong tham so tu JS, tu doc cac truong
+        bang evaluate_js - cung khuon ytThumbLoad, khong mo rong pyApi proxy.
 
         Dung chung co is_running voi RUN: dang ghep thi khong Random (danh
         sach dang ghep la thu dang hien, doi giua chung se gay nham), va
@@ -2174,16 +2214,26 @@ class Api:
                 return
             self._js("uiApi.setRunning(true)")
             threading.Thread(target=self._gn_random_work,
-                             args=(input_dir, target_raw, loop_pool, code),
+                             args=(input_dir, target_raw, loop_pool, code, shuffle),
                              daemon=True).start()
         except Exception:
             self.is_running = False
             raise
 
-    def _gn_random_work(self, input_dir, target_raw, loop_pool, code):
-        """Than luong nen cua nut Random. Khong di qua run() nen phai tu
-        reset is_running trong finally (giong _yt_thumb_load_work), va khong
-        cham vao trang thai ADR-007 nao.
+    @staticmethod
+    def _gn_name_key(name):
+        """Khoa sap xep ten bai giong Explorer: khong phan biet hoa/thuong,
+        so so sanh theo gia tri ('2 x' truoc '10 x'). re.split co nhom bat
+        luon xen ke chu/so tu vi tri 0 nen hai khoa khong bao gio dem str
+        so voi int."""
+        return [int(t) if t.isdigit() else t.lower()
+                for t in re.split(r'(\d+)', str(name))]
+
+    def _gn_random_work(self, input_dir, target_raw, loop_pool, code, shuffle=True):
+        """Than luong nen cua nut Random (shuffle=True) va cua nap kho khi vua
+        chon Kho nhac ngan (shuffle=False: toan bo kho theo ten file). Khong
+        di qua run() nen phai tu reset is_running trong finally (giong
+        _yt_thumb_load_work), va khong cham vao trang thai ADR-007 nao.
         """
         fmt = self._fmt_hms
         fmt_total = self._fmt_hms_floor
@@ -2198,17 +2248,22 @@ class Api:
                 return
             target, why = self._gn_parse_target(target_raw, code.get('max_target_seconds'))
             if why:
-                self._log(why, 'err')
-                self._gn_end("Loi: thoi luong dich khong hop le - xem log.")
-                return
+                # Nap kho KHONG can dich: nguoi dung thuong chon kho truoc roi
+                # moi go thoi luong -> chi Random moi bao loi o day.
+                if shuffle:
+                    self._log(why, 'err')
+                    self._gn_end("Loi: thoi luong dich khong hop le - xem log.")
+                    return
+                target = 0
 
             exts = {str(e).lower() for e in code.get(
                 'audio_ext', ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.opus', '.wma'])}
             entries = os.listdir(input_dir)
             names = sorted(
-                f for f in entries
-                if os.path.splitext(f)[1].lower() in exts
-                and os.path.isfile(os.path.join(input_dir, f)))
+                (f for f in entries
+                 if os.path.splitext(f)[1].lower() in exts
+                 and os.path.isfile(os.path.join(input_dir, f))),
+                key=self._gn_name_key)
             # Folder Output == Kho: ban ghep lan truoc nam ngay trong kho va se
             # bi boc lai nhu mot "bai". Nhan ra no qua .txt cung ten do RUN ghi.
             txt_stems = {os.path.splitext(f)[0].lower() for f in entries
@@ -2287,9 +2342,12 @@ class Api:
                 self._gn_end("Loi: khong doc duoc bai nao - xem log.")
                 return
 
-            # ADR-027: KHONG seed - moi lan bam la mot lan bot doc lap.
-            picked, total = self._concat_music_pick(pool, target, loop_pool, random.Random())
             pool_total = sum(d for _, d in pool)
+            if shuffle:
+                # ADR-027: KHONG seed - moi lan bam la mot lan bot doc lap.
+                picked, total = self._concat_music_pick(pool, target, loop_pool, random.Random())
+            else:
+                picked, total = list(pool), pool_total
             uniq = len({p for p, _ in picked})
             payload = {
                 "tracks": [{"path": p, "name": os.path.basename(p), "dur": d}
@@ -2304,6 +2362,20 @@ class Api:
 
             # Tong: floor (cung quy uoc voi tieu de danh sach va file .txt);
             # thieu: ceil, giong dong "thieu" o tieu de danh sach.
+            if not shuffle:
+                self._log(f"Kho: {len(pool)} bai, tong {fmt_total(total)} (theo ten file,"
+                          " keo de doi thu tu)", 'ok')
+                if target and total < target:
+                    self._log(f"Ca kho ngan hon dich {fmt(math.ceil(target - total))}."
+                              " Bam Random (tick 'Lap lai kho...') de lay du dich.", 'info')
+                elif target and total - pool[-1][1] >= target:
+                    self._log(f"Ca kho dai hon dich {fmt_total(total - target)} - RUN se ra"
+                              " file dai hon dich. Xoa bot bai, hoac bam Random de lay"
+                              " vua du dich.", 'info')
+                self._js("uiApi.setProgress(100, '')")
+                self._js("uiApi.setStatus("
+                         + json.dumps(f"Kho: {len(pool)} bai, tong {fmt_total(total)}") + ")")
+                return
             rep = f" ({uniq} bai khac nhau)" if uniq < len(picked) else ""
             self._log(f"Random: {len(picked)} bai{rep} | tong {fmt_total(total)}"
                       f" / dich {fmt(target)} | kho: {len(pool)} bai, {fmt_total(pool_total)}",
@@ -2316,8 +2388,9 @@ class Api:
             self._js("uiApi.setStatus("
                      + json.dumps(f"Random: {len(picked)} bai, tong {fmt_total(total)}") + ")")
         except Exception as e:
-            self._log(f"LOI Random: {e}", 'err')
-            self._gn_end("Loi: Random hong - xem log.")
+            what = 'Random' if shuffle else 'doc kho'
+            self._log(f"LOI {what}: {e}", 'err')
+            self._gn_end(f"Loi: {what} hong - xem log.")
         finally:
             # UI truoc, co sau: RUN bam lot giua hai buoc chi bi bo qua, chu
             # khong bi setRunning(false) nay mo khoa nut khi no dang chay.
@@ -2454,13 +2527,18 @@ class Api:
 
     @staticmethod
     def _concat_music_tracklist(file_name, items, target=None, bed_name='',
-                                input_dir='', created='', skipped=None,
-                                bed_volume=1.0):
+                                input_dir='', skipped=None, bed_volume=1.0,
+                                output_dir=''):
         """Noi dung file .txt di kem (ham THUAN, tra ve chuoi, dong ket thuc '\\n').
 
         items: list[(ten_file, giay_chinh_xac)] dung thu tu trong file ra.
+        input_dir / output_dir: Kho nhac ngan / folder chua file ra -> dong
+        "Input" / "Output" (luon ghi, ke ca rong).
         skipped: list[(ten_file, loi)] - chi co muc BO QUA khi khong rong.
-        bed_volume: he so am luong am nen (1.0 = 100%, ngang bang voi nhac).
+        bed_volume: he so am luong am nen (1.0 = 100%, ngang bang voi nhac)
+        -> dong "Am luong nen" rieng, khong nhet vao dong "Am nen".
+        Khong ghi gio tao / thoi gian xuat: nguoi dung khong can (bo theo yeu
+        cau), file he thong da co ngay sua.
         Bang chi co STT / BAT DAU / TEN FILE. Moc BAT DAU = floor cua tong
         cong don so giay CHINH XAC (doc tu WAV), de moc ghi trong file khong
         bao gio chi toi mot cho bai chua bat dau. Dong "Thoi luong" tong cung
@@ -2497,22 +2575,22 @@ class Api:
             loop_txt = "khong"
         if bed_name:
             pct = int(round(float(bed_volume) * 100))
-            if pct == 100:
-                bed_txt = f"{bed_name} - tron ngang bang, lap suot file"
-            else:
-                bed_txt = f"{bed_name} - am luong {pct}%, lap suot file"
+            bed_txt = f"{bed_name} - lap suot file"
+            vol_txt = f"{pct}%" + ("  (ngang bang nhac)" if pct == 100 else "")
         else:
-            bed_txt = "(khong)"
+            bed_txt = vol_txt = "(khong)"
 
+        W = 12                                       # = len("Am luong nen"): ':' thang cot
         lines = [
             Api.GN_TXT_HEADER,                       # Random nhan ra ban ghep cu nho dong nay
-            f"{'File':<11} : {file_name}",
-            f"{'Thoi luong':<11} : {dur_txt}",
-            f"{'So bai':<11} : {count_txt}",
-            f"{'Random':<11} : {loop_txt}",
-            f"{'Am nen':<11} : {bed_txt}",
-            f"{'Kho nguon':<11} : {input_dir}",
-            f"{'Tao luc':<11} : {created}",
+            f"{'File':<{W}} : {file_name}",
+            f"{'Thoi luong':<{W}} : {dur_txt}",
+            f"{'So bai':<{W}} : {count_txt}",
+            f"{'Random':<{W}} : {loop_txt}",
+            f"{'Am nen':<{W}} : {bed_txt}",
+            f"{'Am luong nen':<{W}} : {vol_txt}",
+            f"{'Input':<{W}} : {input_dir}",
+            f"{'Output':<{W}} : {output_dir}",
             "",
             f"{'STT':>4}  {'BAT DAU':<8}  TEN FILE",
         ]
@@ -2540,32 +2618,394 @@ class Api:
             return 1.0
         return min(200.0, max(0.0, pct)) / 100.0
 
-    def _wav_seconds(self, path):
-        """Thoi luong CHINH XAC cua WAV PCM vua ghi = nframes / framerate doc
-        thang tu header. Cac moc trong .txt cong don tu so nay - dung so
-        ffprobe cua file nguon (mp3 VBR, co do tre encoder) thi sau vai chuc
-        bai moc se troi dan so voi file that."""
+    def _wav_nframes(self, path, sr):
+        """So mau (tren mot kenh) cua WAV PCM vua ghi, doc tu header. Duong am
+        nen chia khuc theo dung so mau nay nen khong duoc lam tron qua giay."""
         try:
             with wave.open(path, 'rb') as w:
-                fr = w.getframerate()
-                return w.getnframes() / float(fr) if fr > 0 else 0.0
+                return w.getnframes()
         except Exception:
-            return self._get_duration(path)
+            return int(round(self._get_duration(path) * sr))
+
+    # ── Ghep nhac dai: duong nhanh (ADR-040) ──
+    # Do 2026-10-16, 8 bai that, danh sach 25 bai / 85,6 phut, 12 nhan: ban cu
+    # (WAV -> MOT lenh libmp3lame cho ca file) mat 160 giay, gan het la ma hoa
+    # MP3 don luong. Khong am nen: cache + noi khung (~1 giay). Co am nen: ma
+    # hoa song song nhieu khuc noi lien tung khung.
+    GN_MP3_SPF = 1152           # mau / khung MP3 MPEG-1 Layer III
+    GN_DEC_DELAY = 529          # tre cua bo giai ma MP3
+    # Tre tong cua libmp3lame trong ffmpeg N-91314 = 576 (encoder) + 529. Do
+    # bang xung don: mau 3000 cua WAV nam o mau 4105 khi giai ma tho.
+    GN_LAME_DELAY = 1105
+    GN_CACHE_VERSION = 1
+    GN_ROLL_FRAMES = 4          # pre/post-roll cua moi khuc (>= 2)
+    GN_MIN_CHUNK_FRAMES = 256   # ~6,7 giay: khuc ngan hon khong dang mot tien trinh ffmpeg
+    GN_TAIL_SLACK = 8192        # byte rac cho phep o cuoi bai (khung cut do, ID3v1, APE)
+    _GN_MP3_KBPS = (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320)
+    _GN_MP3_RATES = (44100, 48000, 32000)
+
+    @staticmethod
+    def _gn_cache_key(path, size, mtime_ns, sr, ch, mp3_br):
+        """Ten muc cache cua mot bai nguon. Sua/thay file (size, mtime) hay doi
+        thong so file ra cua preset deu ra khoa moi -> khong dung nham muc cu."""
+        ident = '|'.join([str(Api.GN_CACHE_VERSION),
+                          os.path.normcase(os.path.abspath(str(path))),
+                          str(int(size)), str(int(mtime_ns)), str(int(sr)), str(int(ch)),
+                          str(mp3_br).strip().lower()])
+        return hashlib.sha1(ident.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _gn_cache_mode(probe, sr, ch):
+        """'copy' khi nguon da la MP3 dung sample rate + so kenh cua file ra
+        (chep nguyen khung, 100% chat luong goc), con lai 'encode'. Bai 48 kHz
+        PHAI ma hoa lai: do that, chep -c copy no chung voi bai 44,1 kHz cho ra
+        file hong (ffprobe 544,55 giay trong khi nhac that 527,86 giay)."""
+        if not isinstance(probe, dict):
+            return 'encode'
+        try:
+            same = (str(probe.get('codec_name') or '').lower() == 'mp3'
+                    and int(probe.get('sample_rate') or 0) == int(sr)
+                    and int(probe.get('channels') or 0) == int(ch))
+        except (TypeError, ValueError):
+            same = False
+        return 'copy' if same else 'encode'
+
+    @staticmethod
+    def _gn_mp3_scan(data, sr, ch=2):
+        """Duyet cac khung MP3 MPEG-1 Layer III cua `data` (bytes hoac mmap, khong
+        co the ID3/Xing). Tra (offsets, problem, first_mdb):
+          offsets[i] = vi tri khung i, offsets[-1] = het khung tron ven cuoi cung;
+          problem None | 'junk' | 'format' (khac sample rate / so kenh) | 'partial';
+          first_mdb = main_data_begin cua khung dau (None khi khong co khung).
+        """
+        kbps, rates = Api._GN_MP3_KBPS, Api._GN_MP3_RATES
+        mono = int(ch) == 1
+        offs, off, size = [], 0, len(data)
+        problem, first_mdb = None, None
+        while off + 4 <= size:
+            b1, b2, b3 = data[off + 1], data[off + 2], data[off + 3]
+            if data[off] != 0xFF or (b1 & 0xFE) != 0xFA:
+                problem = 'junk'
+                break
+            bi, si = b2 >> 4, (b2 >> 2) & 3
+            if bi in (0, 15) or si == 3 or rates[si] != sr or ((b3 >> 6) == 3) != mono:
+                problem = 'format'
+                break
+            ln = 144000 * kbps[bi] // sr + ((b2 >> 1) & 1)
+            nxt = off + ln
+            if nxt > size:
+                problem = 'partial'
+                break
+            # Khung cut do + the ID3v1 phia sau co the dai bang mot khung that:
+            # chi tin khung khi ngay sau no la khung khac, the tag, hoac het file.
+            if nxt < size and not (data[nxt] == 0xFF and (
+                    nxt + 1 == size or (data[nxt + 1] & 0xFE) == 0xFA)):
+                if bytes(data[nxt:nxt + 3]) not in (b'TAG', b'ID3', b'APE', b'LYR'):
+                    problem = 'junk'
+                    break
+            if first_mdb is None:
+                o = off + (4 if b1 & 1 else 6)          # bit protection = 0 -> co 2 byte CRC
+                first_mdb = (data[o] << 1) | (data[o + 1] >> 7)
+            offs.append(off)
+            off += ln
+        if (offs and off > size - 128 > offs[-1]
+                and bytes(data[size - 128:size - 125]) == b'TAG'):
+            # Truong hop khop dung mot khung: ID3v1 nam TRONG khung cuoi.
+            off = offs.pop()
+            problem = problem or 'junk'
+        if problem is None and off < size:
+            problem = 'partial'
+        offs.append(off)
+        return offs, problem, first_mdb
+
+    @staticmethod
+    def _gn_copy_usable(offsets, problem, first_mdb, size):
+        """Khung trong file cache co noi thang bang byte duoc khong -> so byte
+        giu lai, hoac None (phai ma hoa lai).
+
+        Khung dau phai co main_data_begin = 0: neu khong, dat sau bai khac thi
+        bo giai ma muon byte cua bai truoc lam bit reservoir -> re o dau bai.
+        Duoi file chi duoc la khung cut do / the tag ngan, va phai CAT BO: do
+        2026-10-16, -c copy chep ca khung cut do (dinh luon ID3v1 vao no); khi
+        noi, khung do nuot mat khung dau cua bai ke tiep."""
+        if len(offsets) < 2 or first_mdb != 0:
+            return None
+        good = offsets[-1]
+        if problem is None:
+            return good
+        if problem in ('partial', 'junk') and size - good <= Api.GN_TAIL_SLACK:
+            return good
+        return None
+
+    @staticmethod
+    def _gn_copy_starts(entries):
+        """Moc bat dau cua tung bai trong file noi khung, tinh bang mau theo
+        dung thu bo giai ma phat ra. entries: list[(so_khung, skip)], skip = so
+        mau dau ma ban phat file goc bo qua (the LAME: 1105, khong the: 0, bai
+        ma hoa lai: GN_LAME_DELAY). File noi khong co tre trong the Xing (cache
+        ghi -write_xing 0) nen bo giai ma chi bo GN_DEC_DELAY mau dau. Da kiem
+        tren 25 bai: lech 0 mau. Tra (moc, tong_mau)."""
+        spf, dd = Api.GN_MP3_SPF, Api.GN_DEC_DELAY
+        starts, f = [], 0
+        for frames, skip in entries:
+            starts.append(max(0, f * spf - dd + int(skip)))
+            f += int(frames)
+        return starts, max(0, f * spf - dd)
+
+    @staticmethod
+    def _gn_track_secs(starts, total, sr):
+        """Moc bat dau (mau) -> 'giay' tung muc cho _concat_music_tracklist, de
+        tong cong don cua no ra dung moc that. Bai 1 luon ghi 00:00:00."""
+        bounds = [0] + list(starts[1:]) + [total]
+        return [max(0, bounds[i + 1] - bounds[i]) / float(sr) for i in range(len(starts))]
+
+    @staticmethod
+    def _gn_bed_chunks(raw, cpu):
+        """bed_encode_chunks cua preset -> so khuc ma hoa song song. 'auto' /
+        thieu / sai -> max(2, min(16, cpu - 1)); so nguyen duong -> toi da 32.
+        Do 2026-10-16 (6 nhan / 12 luong): 6 khuc 32,9 s, 11 khuc 23,3 s,
+        16 khuc 22,7 s - mot tien trinh moi luong CPU la vua."""
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            return max(2, min(16, int(cpu or 1) - 1))
+        return min(32, n)
+
+    @staticmethod
+    def _gn_chunk_plan(total, n, spf=1152, pre=4, post=4, min_frames=256):
+        """Chia ban tron dai `total` mau thanh <= n khuc ma hoa song song.
+
+        Bien khuc = boi so cua spf trong thoi gian RA (khung MP3 toan cuc
+        a[k]); dau vao khuc k bat dau som hon `pre` khung va (tru khuc cuoi) dai
+        them `post` khung, de MDCT o cho noi thay nhac that ca hai phia. Khi noi
+        chi giu khung [skip, skip + keep) cua khuc (keep None = toi het file).
+        Tra list[dict(a, in0, in1, skip, keep)]; [in0, in1) la mau dau vao.
+        """
+        total = int(total)
+        fr = total // spf
+        n = max(1, int(n))
+        if fr < post + 2 * min_frames:
+            n = 1
+        else:
+            n = min(n, (fr - post) // min_frames)
+        a = [(k * fr) // n for k in range(n)]
+        plan = []
+        for k in range(n):
+            last = k == n - 1
+            skip = 0 if k == 0 else pre
+            plan.append({
+                'a': a[k],
+                'in0': (a[k] - skip) * spf,
+                'in1': total if last else (a[k + 1] + post) * spf,
+                'skip': skip,
+                'keep': None if last else a[k + 1] - a[k],
+            })
+        return plan
+
+    @staticmethod
+    def _gn_chunk_inputs(lens, in0, in1):
+        """Cac WAV can doc cho mau [in0, in1) cua chuoi WAV dai `lens`: tra
+        (j, m, off) = doc lens[j:m], bo `off` mau dau cua WAV j."""
+        cum, j = 0, 0
+        while j < len(lens) and cum + lens[j] <= in0:
+            cum += lens[j]
+            j += 1
+        m, end = j, cum
+        while m < len(lens) and end < in1:
+            end += lens[m]
+            m += 1
+        return j, m, in0 - cum
+
+    def _gn_probe_audio(self, path):
+        """Luong tieng dau tien -> dict(codec_name, sample_rate, channels,
+        bit_rate, start_time) hoac None."""
+        try:
+            r = subprocess.run(
+                [self.ffprobe_path, '-v', 'error', '-select_streams', 'a:0', '-show_entries',
+                 'stream=codec_name,sample_rate,channels,bit_rate,start_time', '-of', 'json', path],
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
+                timeout=PROBE_TIMEOUT_SEC)
+            streams = json.loads(r.stdout or '{}').get('streams') or []
+            return streams[0] if streams and isinstance(streams[0], dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _gn_scan_file(path, sr, ch):
+        """_gn_mp3_scan tren file (mmap, khong nap ca file vao RAM)."""
+        import mmap
+        with open(path, 'rb') as fh:
+            size = os.fstat(fh.fileno()).st_size
+            if size == 0:
+                return ([0], None, None) + (0,)
+            with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                return Api._gn_mp3_scan(mm, sr, ch) + (size,)
+
+    @staticmethod
+    def _gn_cache_get(cache_dir, key):
+        """Muc cache hop le -> meta (them 'file'), khong thi None. .json ghi
+        SAU .mp3 nen la dau 'da xong'; .mp3 phai dung so byte ghi trong do."""
+        mp3 = os.path.join(cache_dir, key + '.mp3')
+        try:
+            with open(os.path.join(cache_dir, key + '.json'), 'r', encoding='utf-8') as fh:
+                meta = json.load(fh)
+            if (int(meta.get('frames', 0)) > 0
+                    and os.path.getsize(mp3) == int(meta.get('bytes', -1))):
+                meta['file'] = mp3
+                return meta
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        return None
+
+    def _gn_cache_build(self, k, path, key, cache_dir, job):
+        """Tao muc cache cho MOT bai (chay trong pool, dong k cua bang).
+        Tra (True, meta) hoac (False, loi_ngan)."""
+        label = os.path.basename(path)
+        sr, ch = job['sr'], job['ch']
+        mp3 = os.path.join(cache_dir, key + '.mp3')
+        part = mp3 + '.part'
+        jpart = os.path.join(cache_dir, key + '.json.part')
+        self._js(f"uiApi.updateProcessItem({k}, 0, 'running')")
+        try:
+            probe = self._gn_probe_audio(path)
+            if not probe:
+                msg = 'khong doc duoc luong tieng (ffprobe)'
+                self._log(f"LOI {label}: {msg}", 'err')
+                return False, msg
+            first = self._gn_cache_mode(probe, sr, ch)
+            good, mode = None, first
+            for mode in ([first, 'encode'] if first == 'copy' else ['encode']):
+                cmd = [self.ffmpeg_path, '-i', path, '-map', '0:a:0', '-vn', '-map_metadata', '-1']
+                if mode == 'copy':
+                    cmd += ['-c:a', 'copy']
+                else:
+                    cmd += ['-ac', str(ch), '-ar', str(sr), '-c:a', 'libmp3lame', '-b:a', job['mp3_br']]
+                # Chi khung tieng, khong the ID3/Xing: noi thang bang byte duoc, va
+                # file noi ra co tre giai ma co dinh (xem _gn_copy_starts). De the
+                # LAME thi muxer lay tre cua bai NAO co truoc -> moc lech theo thu tu.
+                cmd += ['-write_xing', '0', '-id3v2_version', '0', '-f', 'mp3', part,
+                        '-progress', 'pipe:1', '-nostats', '-y']
+                errs = []
+                ok, _ = self._run_ffmpeg_with_table(
+                    cmd, k, job['first_dur'].get(path, 0.0), label, err_out=errs)
+                if not ok:
+                    return False, (errs[0] if errs else 'Da dung.')
+                offs, problem, mdb, size = self._gn_scan_file(part, sr, ch)
+                good = self._gn_copy_usable(offs, problem, mdb, size)
+                if good is not None:
+                    break
+                if mode == 'copy':
+                    self._log(f"{label}: khung MP3 goc khong noi thang duoc"
+                              f" ({problem or 'main_data_begin'}) -> ma hoa lai.", 'info')
+            if good is None:
+                msg = 'khong tao duoc khung MP3 hop le'
+                self._log(f"LOI {label}: {msg}", 'err')
+                return False, msg
+            if good < size:
+                with open(part, 'r+b') as fh:
+                    fh.truncate(good)
+            if mode == 'copy':
+                try:
+                    st = float(probe.get('start_time') or 0)
+                except (TypeError, ValueError):
+                    st = 0.0
+                skip = min(4 * self.GN_MP3_SPF, max(0, int(round(st * sr))))
+            else:
+                skip = self.GN_LAME_DELAY
+            frames = len(offs) - 1
+            meta = {
+                'v': self.GN_CACHE_VERSION, 'mode': mode, 'frames': frames, 'bytes': good,
+                'skip': skip, 'sample_rate': sr, 'channels': ch,
+                'bitrate': probe.get('bit_rate') if mode == 'copy' else job['mp3_br'],
+                'src': path, 'name': label,
+                'seconds': round(frames * self.GN_MP3_SPF / float(sr), 6),
+            }
+            os.replace(part, mp3)
+            with open(jpart, 'w', encoding='utf-8') as fh:
+                json.dump(meta, fh, ensure_ascii=False)
+            os.replace(jpart, os.path.join(cache_dir, key + '.json'))
+            meta['file'] = mp3
+            return True, meta
+        finally:
+            for f in (part, jpart):
+                if os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+
+    @staticmethod
+    def _gn_join(parts, dst):
+        """Noi cac doan byte [(file, dau, cuoi)] cua khung MP3 vao dst."""
+        with open(dst, 'wb') as out:
+            for path, a, b in parts:
+                with open(path, 'rb') as src:
+                    src.seek(a)
+                    left = b - a
+                    while left > 0:
+                        buf = src.read(min(left, 1 << 22))
+                        if not buf:
+                            raise OSError(f"file ngan hon du kien: {path}")
+                        out.write(buf)
+                        left -= len(buf)
+
+    def _gn_remux(self, joined, job, total_secs, on_progress):
+        """Buoc cuoi chung: dong goi khung da noi thanh file MP3 (ffmpeg ghi the
+        Xing: so khung + muc luc tua, de trinh phat biet thoi luong / tua dung
+        khi bitrate tung bai khac nhau). Chi stream copy. Noi bang Python roi
+        dong goi mot input nhanh hon concat demuxer: do 0,1 s + 0,56 s so voi
+        1,0 s cho 85 phut, ra file giong het tung byte.
+        Tra True khi file ra da o vi tri cuoi; False khi da dung / loi (da bao)."""
+        idx = job['final_idx']
+        cmd = [self.ffmpeg_path, '-f', 'mp3', '-i', joined, '-map', '0:a', '-c', 'copy',
+               '-f', 'mp3', job['part'], '-progress', 'pipe:1', '-nostats', '-y']
+        ok, _ = self._run_ffmpeg_with_table(cmd, idx, total_secs, f"{job['name']}.mp3",
+                                            progress_cb=on_progress)
+        if not ok:
+            if self._stopped:
+                self._js(f"uiApi.updateProcessItem({idx}, {max(0, job['final_pct'][0])},"
+                         " 'stopped')")
+                self._gn_end("Da dung.")
+            else:
+                self._mark_row(idx, False)
+                self._gn_end("Loi: ghep MP3 hong - xem log.")
+            return False
+        os.replace(job['part'], job['final_mp3'])
+        return True
+
+    def _gn_disk_ok(self, folder, need):
+        """O dia chua `folder` con >= need byte khong; thieu thi log + bao."""
+        try:
+            free = shutil.disk_usage(folder).free
+        except OSError:
+            return True
+        if need <= free:
+            return True
+        gb = 1024 ** 3
+        self._log(f"Khong du dung luong o dia: can ~{need / gb:.2f} GB, con trong"
+                  f" {free / gb:.2f} GB ({folder}).", 'err')
+        self._gn_end("Loi: khong du dung luong o dia - xem log.")
+        return False
 
     def _run_concat_music(self, params, code):
-        """RUN cua Ghep nhac dai.
+        """RUN cua Ghep nhac dai - hai duong (ADR-040).
 
-        Pha 1: doi moi file nguon KHAC NHAU sang WAV PCM chung thong so (mot
-        lan, bai lap lai dung chung WAV). Pha 2: concat demuxer + ma hoa MP3
-        mot lenh (co am nen thi tron bang amix). Pha 3: ghi .txt.
+        Khong am nen (_gn_run_copy): moi bai nguon KHAC NHAU duoc chuan bi MOT
+        lan vao bin/_ghepnhac_cache - MP3 dung sample rate / so kenh thi chep
+        nguyen khung (100% chat luong goc), con lai ma hoa lai mot lan - roi
+        noi khung bang stream copy. Co am nen (_gn_run_bed): doi moi bai sang
+        WAV, tron, ma hoa SONG SONG nhieu khuc noi lien tung khung MP3.
+        Pha cuoi chung: ghi .txt.
 
         CO Y khong goi _begin_batch (ngoai co che chay-lai-dong-loi cua
-        ADR-007): moi lan chay chi ra MOT file va cac WAV trung gian bi xoa,
+        ADR-007): moi lan chay chi ra MOT file va file trung gian bi xoa,
         nen "chay lai cac dong loi" khong co nghia - chay lai = bam RUN.
         _batch_labels giu None nen _mark_row chi to mau dong, _end_run bo
         qua, va _retry_failed khong bao gio co gi -> khong hien popup.
         """
-        fmt = self._fmt_hms
         fmt_total = self._fmt_hms_floor
         self._js("uiApi.setStatus('Dang ghep nhac...')")
         self._js("uiApi.setProgress(0, '')")
@@ -2591,6 +3031,12 @@ class Api:
         bed_volume = self._gn_bed_factor(params.get('gnBedVolume'))
 
         # ── Pha 0: kiem tra ──
+        if sr not in self._GN_MP3_RATES:
+            # Khung 1152 mau va bo duyet khung chi dung cho MPEG-1 (32/44,1/48 kHz).
+            self._log(f"sample_rate {sr} trong preset khong ho tro - dung 44100, 48000"
+                      " hoac 32000.", 'err')
+            self._gn_end("Loi: sample_rate trong preset khong hop le - xem log.")
+            return
         if not output_dir:
             self._log("Chua chon folder Output.", 'err')
             self._gn_end("Loi: chua chon folder Output - xem log.")
@@ -2657,206 +3103,44 @@ class Api:
         final_txt = os.path.join(output_dir, name + '.txt')
         part = final_mp3 + '.part'
 
-        # Dia: WAV trung gian (moi file khac nhau + am nen) + MP3 ra, them 5%.
         first_dur = {}
         for p, d in tracks:
             first_dur.setdefault(p, d)
-        est_total = sum(d for _, d in tracks)
-        bed_est = self._get_duration(bed) if bed else 0.0
-        need = ((sum(first_dur.values()) + bed_est) * sr * ch * 2
-                + est_total * br_bytes) * 1.05
-        try:
-            free = shutil.disk_usage(output_dir).free
-        except OSError:
-            free = None
-        if free is not None and need > free:
-            gb = 1024 ** 3
-            self._log(f"Khong du dung luong o dia: can ~{need / gb:.2f} GB, con trong"
-                      f" {free / gb:.2f} GB ({output_dir}).", 'err')
-            self._gn_end("Loi: khong du dung luong o dia - xem log.")
-            return
-
         labels = [os.path.basename(p) for p in uniq] + [f"=> {name}.mp3"]
-        final_idx = len(uniq)
-        bed_log =(f"{os.path.basename(bed)} ({int(round(bed_volume * 100))}%)"
+        bed_log = (f"{os.path.basename(bed)} ({int(round(bed_volume * 100))}%)"
                    if bed else 'khong')
         self._log(f"{len(tracks)} bai ({len(uniq)} file khac nhau) | {workers} luong"
                   f" | am nen: {bed_log} | xuat: {final_mp3}", 'info')
 
         tmp_dir = os.path.join(output_dir, f"_ghepnhac_tmp_{uuid.uuid4().hex[:8]}")
+        job = {
+            'tracks': tracks, 'uniq': uniq, 'first_dur': first_dur, 'labels': labels,
+            'final_idx': len(uniq), 'name': name, 'part': part, 'final_mp3': final_mp3,
+            'tmp_dir': tmp_dir, 'output_dir': output_dir, 'workers': workers,
+            'sr': sr, 'ch': ch, 'lay': lay, 'mp3_br': mp3_br, 'br_bytes': br_bytes,
+            'bed': bed, 'bed_volume': bed_volume, 'final_pct': [-1],
+            'chunks': self._gn_bed_chunks(code.get('bed_encode_chunks', 'auto'), os.cpu_count()),
+        }
         try:
             os.makedirs(tmp_dir)
-
-            def to_wav_cmd(src, dst):
-                return [self.ffmpeg_path, '-i', src, '-vn', '-map', '0:a:0',
-                        '-map_metadata', '-1', '-ac', str(ch), '-ar', str(sr),
-                        '-c:a', 'pcm_s16le', dst]
-
-            # ── Pha 1a: am nen TRUOC cac bai - am nen hong thi dung ngay,
-            # khong ton cong doi dinh dang ca kho roi moi bao. Bo am nen di ma
-            # van ghep la sai voi y nguoi dung (ho da chon no).
-            bed_secs = 0.0
-            if bed:
-                self._js("uiApi.setStatus('Dang doi dinh dang am nen...')")
-                bed_wav = os.path.join(tmp_dir, 'bed.wav')
-                ok_b, err_b = self._ffmpeg_quiet(to_wav_cmd(bed, bed_wav) + ['-y'])
-                if self._stopped:
-                    self._gn_end("Da dung.")
-                    return
-                if ok_b:
-                    bed_secs = self._wav_seconds(bed_wav)
-                # < 1 giay: file danh sach lap se dai hang van dong (3 tieng /
-                # 0.1 giay = 108000 lan mo file) - coi nhu am nen hong.
-                if not ok_b or bed_secs < 1.0:
-                    why = err_b if not ok_b else f"qua ngan ({bed_secs:.2f} giay, can >= 1 giay)"
-                    self._log(f"LOI am nen {os.path.basename(bed)}: {why}. Dung lai.", 'err')
-                    self._gn_end("Loi: am nen hong - xem log.")
-                    return
-                self._log(f"Am nen: {os.path.basename(bed)} ({fmt(bed_secs)})", 'info')
-
-            # Bang bai chi hien SAU am nen: am nen hong thi bang de trong,
-            # khong de lai cac dong "Cho" cua nhung bai khong bao gio chay.
-            self._js(f"uiApi.initProcessTable({json.dumps(labels)})")
-
-            # ── Pha 1b: moi file khac nhau -> WAV, song song `workers` luong ──
-            self._js("uiApi.setStatus('Dang doi dinh dang cac bai...')")
-            wav_info = {}            # path -> (ten_wav, giay_chinh_xac)
-            fail_info = {}           # path -> loi
-
-            def norm_one(k, path):
-                label = os.path.basename(path)
-                self._js(f"uiApi.updateProcessItem({k}, 0, 'running')")
-                wav_name = f"{k + 1:04d}.wav"
-                wav_path = os.path.join(tmp_dir, wav_name)
-                cmd = to_wav_cmd(path, wav_path) + ['-progress', 'pipe:1', '-nostats', '-y']
-                errs = []
-                ok, _ = self._run_ffmpeg_with_table(
-                    cmd, k, first_dur.get(path, 0.0), label, err_out=errs)
-                if not ok:
-                    return False, (errs[0] if errs else 'Da dung.')
-                secs = self._wav_seconds(wav_path)
-                if secs <= 0:
-                    msg = 'khong co tieng (0 giay sau khi doi dinh dang)'
-                    self._log(f"LOI {label}: {msg}", 'err')
-                    return False, msg
-                return True, (wav_name, secs)
-
-            n_u = len(uniq)
-            done = 0
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {}
-                for k, p in enumerate(uniq):
-                    if self._stopped:
-                        break
-                    futs[ex.submit(norm_one, k, p)] = (k, p)
-                for fut in as_completed(futs):
-                    k, p = futs[fut]
-                    try:
-                        ok, info = fut.result()
-                    except Exception as e:
-                        self._log(f"LOI {os.path.basename(p)}: {e}", 'err')
-                        ok, info = False, str(e)
-                    if ok:
-                        wav_info[p] = info
-                    elif not self._stopped:
-                        fail_info[p] = info
-                    # Da Stop: _run_ffmpeg_with_table da to dong voi % THAT
-                    # ("37% Da dung"); _mark_row se ghi de thanh 100%.
-                    if not self._stopped:
-                        self._mark_row(k, ok)
-                    elif ok:
-                        self._js(f"uiApi.updateProcessItem({k}, 100, 'done')")
-                    done += 1
-                    self._js(f"uiApi.setProgress({int(done / n_u * 40)},"
-                             f" 'Doi dinh dang {done}/{n_u}')")
-            if self._stopped:
-                self._gn_end("Da dung.")
+            res = self._gn_run_bed(job) if bed else self._gn_run_copy(job)
+            if res is None:
                 return
-            if not wav_info:
-                self._log("Khong doi dinh dang duoc file nao - dung lai.", 'err')
-                self._mark_row(final_idx, False)
-                self._gn_end("Loi: khong doi dinh dang duoc bai nao - xem log.")
-                return
-            if fail_info:
-                self._log(f"Bo qua {len(fail_info)} file loi (bo ca moi lan no xuat hien"
-                          " trong danh sach), ghep tiep phan con lai.", 'err')
+            items, fail_info, total = res
 
-            # ── Pha 2: concat + ma hoa MP3 ──
-            items = [(p,) + wav_info[p] for p, _ in tracks if p in wav_info]
-            total = sum(s for _, _, s in items)
-
-            # Ten TUONG DOI trong danh sach: ten WAV chi gom chu so, nen khoi
-            # phai escape dau nhay cua ten bai (vd "Don't Stop"). Do that
-            # 2026-10-15: ffmpeg 2018 chi tim file tuong doi canh danh sach khi
-            # duong dan TOI file danh sach dung '/' - dung '\' thi bao
-            # "Impossible to open '0001.wav'". Vi vay doi '\' -> '/' khi truyen.
-            def ff_path(p):
-                return p.replace('\\', '/')
-
-            main_list = os.path.join(tmp_dir, 'main.txt')
-            with open(main_list, 'w', encoding='utf-8') as fh:
-                for _, wav_name, _ in items:
-                    fh.write(f"file '{wav_name}'\n")
-            cmd = [self.ffmpeg_path, '-f', 'concat', '-safe', '0', '-i', ff_path(main_list)]
-            if bed:
-                # Lap am nen bang danh sach concat, KHONG dung -stream_loop
-                # (ADR-019: co do thoi lap ngay khi lenh co input thu hai).
-                reps = int(math.ceil(total / bed_secs)) + 1
-                bed_list = os.path.join(tmp_dir, 'bed.txt')
-                with open(bed_list, 'w', encoding='utf-8') as fh:
-                    fh.write("file 'bed.wav'\n" * reps)
-                # ADR-033: aformat ep cung thong so truoc khi tron; amix chia
-                # doi bien do moi duong va ffmpeg 2018 chua co normalize= nen
-                # volume=2 tra ca hai ve 100%. -t ro rang thay vi -shortest.
-                # volume=<he so> tren duong am nen = thanh truot gnBedVolume.
-                af = f"aformat=sample_rates={sr}:channel_layouts={lay}"
-                fc = (f"[0:a]{af}[ma];[1:a]{af},volume={bed_volume:.4f}[ba];"
-                      "[ma][ba]amix=inputs=2:duration=first:dropout_transition=0,volume=2[a]")
-                cmd += ['-f', 'concat', '-safe', '0', '-i', ff_path(bed_list),
-                        '-filter_complex', fc, '-map', '[a]', '-t', f'{total:.3f}']
-            cmd += ['-c:a', 'libmp3lame', '-b:a', mp3_br, '-ar', str(sr), '-ac', str(ch),
-                    '-f', 'mp3', part, '-progress', 'pipe:1', '-nostats', '-y']
-
-            last_pct = [-1]
-
-            def on_progress(sec):
-                frac = min(0.99, sec / total) if total > 0 else 0.0
-                pct = int(frac * 100)
-                if pct > last_pct[0]:
-                    last_pct[0] = pct
-                    self._js(f"uiApi.updateProcessItem({final_idx}, {pct}, 'running')")
-                    self._js(f"uiApi.setProgress({40 + int(frac * 60)}, 'Ghep {pct}%')")
-
-            self._js(f"uiApi.updateProcessItem({final_idx}, 0, 'running')")
-            self._js("uiApi.setStatus('Dang ghep + ma hoa MP3...')")
-            self._log(f"Ghep {len(items)} bai -> {fmt_total(total)} ...", 'info')
-            ok, _ = self._run_ffmpeg_with_table(cmd, final_idx, total, f"{name}.mp3",
-                                                progress_cb=on_progress)
-            if not ok:
-                if self._stopped:
-                    # progress_cb giu % o day, ham chay ffmpeg chi biet 0%.
-                    self._js(f"uiApi.updateProcessItem({final_idx}, {max(0, last_pct[0])},"
-                             " 'stopped')")
-                    self._gn_end("Da dung.")
-                else:
-                    self._mark_row(final_idx, False)
-                    self._gn_end("Loi: ghep MP3 hong - xem log.")
-                return
-            os.replace(part, final_mp3)
-
-            # ── Pha 3: file .txt danh sach bai ──
+            # ── Pha cuoi: file .txt danh sach bai ──
             src_dir = (str(params.get('gnInputDir') or '').strip()
-                       or os.path.dirname(items[0][0]))
+                       or os.path.dirname(uniq[0]))
             txt = self._concat_music_tracklist(
                 f"{name}.mp3",
-                [(os.path.basename(p), s) for p, _, s in items],
+                items,
                 self._gn_parse_target(params.get('gnTarget'),
                                       code.get('max_target_seconds'))[0],
                 os.path.basename(bed) if bed else '',
                 src_dir,
-                time.strftime('%Y-%m-%d %H:%M'),
-                [(os.path.basename(p), fail_info[p]) for p in uniq if p in fail_info],
-                bed_volume)
+                skipped=[(os.path.basename(p), fail_info[p]) for p in uniq if p in fail_info],
+                bed_volume=bed_volume,
+                output_dir=output_dir)
             txt_ok = False
             try:
                 # utf-8-sig + che do text (CRLF tren Windows): Notepad cu mo
@@ -2867,7 +3151,7 @@ class Api:
             except OSError as e:
                 self._log(f"Khong ghi duoc file danh sach {final_txt}: {e}", 'err')
 
-            self._mark_row(final_idx, True)
+            self._mark_row(job['final_idx'], True)
             self._js("uiApi.setProgress(100, '')")
             self._log(f"=== Hoan thanh: {final_mp3} ({fmt_total(total)}, {len(items)} bai) ===",
                       'ok')
@@ -2893,6 +3177,364 @@ class Api:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 if os.path.exists(tmp_dir):
                     self._log(f"Khong xoa duoc thu muc tam (xoa tay): {tmp_dir}", 'err')
+
+    def _gn_run_copy(self, job):
+        """Duong KHONG am nen: cache + noi khung MP3 bang stream copy.
+        Tra (items_txt, fail_info, tong_giay) hoac None (da dung / loi, da bao)."""
+        uniq, tracks, sr = job['uniq'], job['tracks'], job['sr']
+        final_idx = job['final_idx']
+        fmt_total = self._fmt_hms_floor
+        cache_dir = os.path.join(self.bin_dir, '_ghepnhac_cache')
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+        except OSError as e:
+            self._log(f"Khong tao duoc thu muc cache {cache_dir} ({e}) - dung thu muc tam,"
+                      " lan sau phai chuan bi lai.", 'info')
+            cache_dir = job['tmp_dir']
+
+        metas, todo, hits, fail_info = {}, [], [], {}
+        for k, p in enumerate(uniq):
+            try:
+                st = os.stat(p)
+            except OSError as e:
+                fail_info[p] = str(e)
+                continue
+            key = self._gn_cache_key(p, st.st_size, st.st_mtime_ns, sr, job['ch'], job['mp3_br'])
+            meta = self._gn_cache_get(cache_dir, key)
+            if meta is None:
+                todo.append((k, p, key, st.st_size))
+            else:
+                metas[p] = meta
+                hits.append(k)
+
+        # Dia: file noi tam + file ra (moi cai ~ tong cac muc trong danh sach) + muc cache moi.
+        est = {p: m['bytes'] for p, m in metas.items()}
+        for _, p, _, size in todo:
+            est[p] = max(size, job['first_dur'].get(p, 0.0) * job['br_bytes'])
+        out_need = 2 * sum(est.get(p, 0) for p, _ in tracks) * 1.05
+        new_need = sum(est[p] for _, p, _, _ in todo) * 1.05
+
+        def drive(f):
+            return os.path.splitdrive(os.path.abspath(f))[0].lower()
+
+        if drive(cache_dir) == drive(job['output_dir']):
+            if not self._gn_disk_ok(job['output_dir'], out_need + new_need):
+                return None
+        elif not (self._gn_disk_ok(job['output_dir'], out_need)
+                  and (not todo or self._gn_disk_ok(cache_dir, new_need))):
+            return None
+
+        self._js(f"uiApi.initProcessTable({json.dumps(job['labels'])})")
+        done_js = [f"uiApi.updateProcessItem({k}, 100, 'done')" for k in hits]
+        done_js += [f"uiApi.updateProcessItem({k}, 100, 'error')"
+                    for k, p in enumerate(uniq) if p in fail_info]
+        if done_js:
+            # Mot lan evaluate_js cho moi dong co san: moi lan goi la mot vong qua lai voi UI.
+            self._js(';'.join(done_js))
+        self._log(f"Cache: {len(hits)} bai co san, {len(todo)} bai can chuan bi.", 'info')
+
+        if todo:
+            self._js("uiApi.setStatus('Dang chuan bi cac bai (chi lan dau)...')")
+            n_t, done = len(todo), 0
+            with ThreadPoolExecutor(max_workers=job['workers']) as ex:
+                futs = {}
+                for k, p, key, _ in todo:
+                    if self._stopped:
+                        break
+                    futs[ex.submit(self._gn_cache_build, k, p, key, cache_dir, job)] = (k, p)
+                for fut in as_completed(futs):
+                    k, p = futs[fut]
+                    try:
+                        ok, info = fut.result()
+                    except Exception as e:
+                        self._log(f"LOI {os.path.basename(p)}: {e}", 'err')
+                        ok, info = False, str(e)
+                    if ok:
+                        metas[p] = info
+                    elif not self._stopped:
+                        fail_info[p] = info
+                    if not self._stopped:
+                        self._mark_row(k, ok)
+                    elif ok:
+                        self._js(f"uiApi.updateProcessItem({k}, 100, 'done')")
+                    done += 1
+                    self._js(f"uiApi.setProgress({int(done / n_t * 40)},"
+                             f" 'Chuan bi {done}/{n_t}')")
+            if self._stopped:
+                self._gn_end("Da dung.")
+                return None
+        if not metas:
+            self._log("Khong doi dinh dang duoc file nao - dung lai.", 'err')
+            self._mark_row(final_idx, False)
+            self._gn_end("Loi: khong doi dinh dang duoc bai nao - xem log.")
+            return None
+        if fail_info:
+            self._log(f"Bo qua {len(fail_info)} file loi (bo ca moi lan no xuat hien"
+                      " trong danh sach), ghep tiep phan con lai.", 'err')
+        n_copy = sum(1 for m in metas.values() if m.get('mode') == 'copy')
+        self._log(f"{n_copy} bai chep nguyen khung (100% chat luong goc), {len(metas) - n_copy}"
+                  " bai ma hoa lai mot lan (khac dinh dang / sample rate).", 'info')
+
+        items = [(p, metas[p]) for p, _ in tracks if p in metas]
+        starts, total = self._gn_copy_starts([(m['frames'], m.get('skip', 0)) for _, m in items])
+        total_secs = total / float(sr)
+        joined = os.path.join(job['tmp_dir'], 'joined.mp3')
+        last = job['final_pct']
+
+        def on_progress(sec):
+            frac = min(0.99, sec / total_secs) if total_secs > 0 else 0.0
+            pct = int(frac * 100)
+            if pct > last[0]:
+                last[0] = pct
+                self._js(f"uiApi.updateProcessItem({final_idx}, {pct}, 'running');"
+                         f"uiApi.setProgress({40 + int(frac * 60)}, 'Ghep {pct}%')")
+
+        self._js(f"uiApi.updateProcessItem({final_idx}, 0, 'running');"
+                 "uiApi.setStatus('Dang noi cac bai (khong ma hoa lai)...')")
+        self._log(f"Noi {len(items)} bai -> {fmt_total(total_secs)} ...", 'info')
+        self._gn_join([(m['file'], 0, m['bytes']) for _, m in items], joined)
+        if not self._gn_remux(joined, job, total_secs, on_progress):
+            return None
+        secs = self._gn_track_secs(starts, total, sr)
+        return ([(os.path.basename(p), s) for (p, _), s in zip(items, secs)],
+                fail_info, total_secs)
+
+    def _gn_run_bed(self, job):
+        """Duong CO am nen: moi bai -> WAV, tron voi am nen, ma hoa song song
+        nhieu khuc roi noi khung. Tra (items_txt, fail_info, tong_giay) hoac None.
+
+        Noi khung lien mach: bien khuc la bien khung MP3; moi khuc ma hoa tu
+        ban tron lien tuc co pre/post-roll that va TAT bit reservoir
+        (-reservoir 0) de moi khung giu lai tu du, roi khi noi bo khung roll.
+        Do 2026-10-16: 9/10 cua so +-50 ms quanh cho noi giai ma ra GIONG HET
+        tung mau so voi ma hoa mot lenh (cung reservoir 0); tat reservoir ton
+        0,14 dB SNR so voi ban cu."""
+        sr, ch, lay, tmp_dir = job['sr'], job['ch'], job['lay'], job['tmp_dir']
+        bed, bed_volume = job['bed'], job['bed_volume']
+        uniq, tracks, final_idx = job['uniq'], job['tracks'], job['final_idx']
+        fmt = self._fmt_hms
+        fmt_total = self._fmt_hms_floor
+
+        # Dia: WAV trung gian (moi file khac nhau + am nen) + cac khuc MP3, file
+        # noi tam va file ra (moi thu ~ mot ban MP3), them 5%.
+        est_total = sum(d for _, d in tracks)
+        bed_est = self._get_duration(bed)
+        need = ((sum(job['first_dur'].values()) + bed_est) * sr * ch * 2
+                + 3 * est_total * job['br_bytes']) * 1.05
+        if not self._gn_disk_ok(job['output_dir'], need):
+            return None
+
+        def to_wav_cmd(src, dst):
+            return [self.ffmpeg_path, '-i', src, '-vn', '-map', '0:a:0',
+                    '-map_metadata', '-1', '-ac', str(ch), '-ar', str(sr),
+                    '-c:a', 'pcm_s16le', dst]
+
+        # ── Pha 1a: am nen TRUOC cac bai - am nen hong thi dung ngay,
+        # khong ton cong doi dinh dang ca kho roi moi bao. Bo am nen di ma
+        # van ghep la sai voi y nguoi dung (ho da chon no).
+        self._js("uiApi.setStatus('Dang doi dinh dang am nen...')")
+        bed_wav = os.path.join(tmp_dir, 'bed.wav')
+        ok_b, err_b = self._ffmpeg_quiet(to_wav_cmd(bed, bed_wav) + ['-y'])
+        if self._stopped:
+            self._gn_end("Da dung.")
+            return None
+        bed_n = self._wav_nframes(bed_wav, sr) if ok_b else 0
+        # < 1 giay: file danh sach lap se dai hang van dong (3 tieng /
+        # 0.1 giay = 108000 lan mo file) - coi nhu am nen hong.
+        if not ok_b or bed_n < sr:
+            why = err_b if not ok_b else f"qua ngan ({bed_n / sr:.2f} giay, can >= 1 giay)"
+            self._log(f"LOI am nen {os.path.basename(bed)}: {why}. Dung lai.", 'err')
+            self._gn_end("Loi: am nen hong - xem log.")
+            return None
+        self._log(f"Am nen: {os.path.basename(bed)} ({fmt(bed_n / sr)})", 'info')
+
+        # Bang bai chi hien SAU am nen: am nen hong thi bang de trong,
+        # khong de lai cac dong "Cho" cua nhung bai khong bao gio chay.
+        self._js(f"uiApi.initProcessTable({json.dumps(job['labels'])})")
+
+        # ── Pha 1b: moi file khac nhau -> WAV, song song `workers` luong ──
+        self._js("uiApi.setStatus('Dang doi dinh dang cac bai...')")
+        wav_info = {}            # path -> (ten_wav, so_mau)
+        fail_info = {}           # path -> loi
+
+        def norm_one(k, path):
+            label = os.path.basename(path)
+            self._js(f"uiApi.updateProcessItem({k}, 0, 'running')")
+            wav_name = f"{k + 1:04d}.wav"
+            wav_path = os.path.join(tmp_dir, wav_name)
+            cmd = to_wav_cmd(path, wav_path) + ['-progress', 'pipe:1', '-nostats', '-y']
+            errs = []
+            ok, _ = self._run_ffmpeg_with_table(
+                cmd, k, job['first_dur'].get(path, 0.0), label, err_out=errs)
+            if not ok:
+                return False, (errs[0] if errs else 'Da dung.')
+            n_smp = self._wav_nframes(wav_path, sr)
+            if n_smp <= 0:
+                msg = 'khong co tieng (0 giay sau khi doi dinh dang)'
+                self._log(f"LOI {label}: {msg}", 'err')
+                return False, msg
+            return True, (wav_name, n_smp)
+
+        n_u = len(uniq)
+        done = 0
+        with ThreadPoolExecutor(max_workers=job['workers']) as ex:
+            futs = {}
+            for k, p in enumerate(uniq):
+                if self._stopped:
+                    break
+                futs[ex.submit(norm_one, k, p)] = (k, p)
+            for fut in as_completed(futs):
+                k, p = futs[fut]
+                try:
+                    ok, info = fut.result()
+                except Exception as e:
+                    self._log(f"LOI {os.path.basename(p)}: {e}", 'err')
+                    ok, info = False, str(e)
+                if ok:
+                    wav_info[p] = info
+                elif not self._stopped:
+                    fail_info[p] = info
+                # Da Stop: _run_ffmpeg_with_table da to dong voi % THAT
+                # ("37% Da dung"); _mark_row se ghi de thanh 100%.
+                if not self._stopped:
+                    self._mark_row(k, ok)
+                elif ok:
+                    self._js(f"uiApi.updateProcessItem({k}, 100, 'done')")
+                done += 1
+                self._js(f"uiApi.setProgress({int(done / n_u * 40)},"
+                         f" 'Doi dinh dang {done}/{n_u}')")
+        if self._stopped:
+            self._gn_end("Da dung.")
+            return None
+        if not wav_info:
+            self._log("Khong doi dinh dang duoc file nao - dung lai.", 'err')
+            self._mark_row(final_idx, False)
+            self._gn_end("Loi: khong doi dinh dang duoc bai nao - xem log.")
+            return None
+        if fail_info:
+            self._log(f"Bo qua {len(fail_info)} file loi (bo ca moi lan no xuat hien"
+                      " trong danh sach), ghep tiep phan con lai.", 'err')
+
+        # ── Pha 2: tron + ma hoa song song tung khuc ──
+        items = [(p,) + wav_info[p] for p, _ in tracks if p in wav_info]
+        lens = [n_smp for _, _, n_smp in items]
+        total = sum(lens)
+        plan = self._gn_chunk_plan(total, job['chunks'], self.GN_MP3_SPF,
+                                   self.GN_ROLL_FRAMES, self.GN_ROLL_FRAMES,
+                                   self.GN_MIN_CHUNK_FRAMES)
+        n_c = len(plan)
+
+        # Ten TUONG DOI trong danh sach: ten WAV chi gom chu so, nen khoi
+        # phai escape dau nhay cua ten bai (vd "Don't Stop"). Do that
+        # 2026-10-15: ffmpeg 2018 chi tim file tuong doi canh danh sach khi
+        # duong dan TOI file danh sach dung '/' - dung '\' thi bao
+        # "Impossible to open '0001.wav'". Vi vay doi '\' -> '/' khi truyen.
+        def ff_path(p):
+            return p.replace('\\', '/')
+
+        # ADR-033: aformat ep cung thong so truoc khi tron; amix chia doi bien
+        # do moi duong va ffmpeg 2018 chua co normalize= nen volume=2 tra ca
+        # hai ve 100%. Lap am nen bang danh sach concat, KHONG -stream_loop
+        # (ADR-019). atrim dem theo SO MAU nen moi khuc la dung doan [in0, in1)
+        # cua ban tron mot lenh - da so tung mau 4 khuc: giong het.
+        af = f"aformat=sample_rates={sr}:channel_layouts={lay}"
+        cmds, outs, secs = [], [], []
+        for i, c in enumerate(plan):
+            j, m, off = self._gn_chunk_inputs(lens, c['in0'], c['in1'])
+            length = c['in1'] - c['in0']
+            mlist = os.path.join(tmp_dir, f'main_{i:02d}.txt')
+            with open(mlist, 'w', encoding='utf-8') as fh:
+                for _, wav_name, _ in items[j:m]:
+                    fh.write(f"file '{wav_name}'\n")
+            boff = c['in0'] % bed_n
+            blist = os.path.join(tmp_dir, f'bed_{i:02d}.txt')
+            with open(blist, 'w', encoding='utf-8') as fh:
+                fh.write("file 'bed.wav'\n" * ((boff + length) // bed_n + 2))
+            fc = (f"[0:a]{af},atrim=start_sample={off}[ma];"
+                  f"[1:a]{af},atrim=start_sample={boff},volume={bed_volume:.4f}[ba];"
+                  "[ma][ba]amix=inputs=2:duration=first:dropout_transition=0,volume=2,"
+                  f"atrim=end_sample={length},asetpts=PTS-STARTPTS[a]")
+            out = os.path.join(tmp_dir, f'khuc_{i:02d}.mp3')
+            # Mot khuc thi khong co cho noi: giu bit reservoir nhu ban cu.
+            cmds.append([self.ffmpeg_path, '-f', 'concat', '-safe', '0', '-i', ff_path(mlist),
+                         '-f', 'concat', '-safe', '0', '-i', ff_path(blist),
+                         '-filter_complex', fc, '-map', '[a]',
+                         '-t', f'{length / float(sr) + 0.05:.3f}',
+                         '-c:a', 'libmp3lame', '-b:a', job['mp3_br'],
+                         '-reservoir', '0' if n_c > 1 else '1',
+                         '-ar', str(sr), '-ac', str(ch), '-write_xing', '0', '-id3v2_version', '0',
+                         '-f', 'mp3', out, '-progress', 'pipe:1', '-nostats', '-y'])
+            outs.append(out)
+            secs.append(length / float(sr))
+
+        tot = sum(secs)
+        done_s = [0.0] * n_c
+        lock = threading.Lock()
+        last = job['final_pct']
+
+        def make_cb(i):
+            def cb(sec):
+                # Khoa ca phan day JS: hai luong day xen nhau thi % co the tut.
+                with lock:
+                    done_s[i] = min(max(0.0, sec), secs[i])
+                    frac = min(0.99, sum(done_s) / tot) if tot > 0 else 0.0
+                    pct = int(frac * 100)
+                    if pct > last[0]:
+                        last[0] = pct
+                        self._js(f"uiApi.updateProcessItem({final_idx}, {pct}, 'running');"
+                                 f"uiApi.setProgress({40 + int(frac * 60)}, 'Ghep {pct}%')")
+            return cb
+
+        self._js(f"uiApi.updateProcessItem({final_idx}, 0, 'running');"
+                 "uiApi.setStatus('Dang tron + ma hoa MP3...')")
+        self._log(f"Ghep {len(items)} bai -> {fmt_total(total / sr)} | ma hoa song song"
+                  f" {n_c} khuc ...", 'info')
+        label = f"{job['name']}.mp3"
+        oks = []
+        with ThreadPoolExecutor(max_workers=n_c) as ex:
+            futs = [ex.submit(self._run_ffmpeg_with_table, cmds[i], final_idx, secs[i],
+                              f"{label} (khuc {i + 1}/{n_c})", progress_cb=make_cb(i))
+                    for i in range(n_c)]
+            for f in futs:
+                try:
+                    oks.append(bool(f.result()[0]))
+                except Exception as e:
+                    self._log(f"LOI {label}: {e}", 'err')
+                    oks.append(False)
+        if self._stopped:
+            # progress_cb giu % o day, ham chay ffmpeg chi biet 0%.
+            self._js(f"uiApi.updateProcessItem({final_idx}, {max(0, last[0])}, 'stopped')")
+            self._gn_end("Da dung.")
+            return None
+        if not all(oks):
+            self._mark_row(final_idx, False)
+            self._gn_end("Loi: ghep MP3 hong - xem log.")
+            return None
+
+        # ── Pha 3: noi khung (bo khung roll) ──
+        parts = []
+        for i, c in enumerate(plan):
+            offs, problem, _, _ = self._gn_scan_file(outs[i], sr, ch)
+            have = len(offs) - 1
+            end = have if c['keep'] is None else c['skip'] + c['keep']
+            if problem is not None or end > have:
+                self._log(f"LOI khuc {i + 1}/{n_c}: {have} khung MP3"
+                          f" ({problem or 'thieu khung'}), can {end}.", 'err')
+                self._mark_row(final_idx, False)
+                self._gn_end("Loi: ghep MP3 hong - xem log.")
+                return None
+            parts.append((outs[i], offs[c['skip']], offs[end]))
+        joined = os.path.join(tmp_dir, 'joined.mp3')
+        self._gn_join(parts, joined)
+        # Pha nay chi vai tram ms: giu nguyen % cua dong, khong cho no tut ve 0.
+        if not self._gn_remux(joined, job, total / float(sr), lambda _sec: None):
+            return None
+        # File ra khong mang tre LAME trong the Xing: bai 1 bat dau tre
+        # GN_LAME_DELAY - GN_DEC_DELAY mau (13 ms), moi moc sau lui theo.
+        lead = (self.GN_LAME_DELAY - self.GN_DEC_DELAY) / float(sr)
+        out_items = [(os.path.basename(p), n_smp / float(sr)) for p, _, n_smp in items]
+        out_items[0] = (out_items[0][0], out_items[0][1] + lead)
+        return out_items, fail_info, total / float(sr) + lead
 
     # ── Re-encode ──
 
@@ -6443,6 +7085,11 @@ class Api:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  text=True, encoding='utf-8', errors='replace', creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
         self._current_procs.append(proc)
+        # Stop co the roi giua phep kiem dau ham va Popen: _kill_all_ffmpeg da chay qua, khong thay proc nay.
+        if self._stopped:
+            self._kill_late_proc(proc)
+            self._js(f"uiApi.updateProcessItem({idx}, 0, 'stopped')")
+            return False, label
 
         stderr_lines = []
         def drain():
